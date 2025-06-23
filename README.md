@@ -30,9 +30,10 @@ This project provides a Model Context Protocol (MCP) server that allows Large La
 4.  **Configure environment variables:**
     Create a `.env` file in the project root and add your InsightFinder credentials:
     ```
-    INSIGHTFINDER_API_URL="[https://lenovo.insightfinder.com](https://lenovo.insightfinder.com)"
+    INSIGHTFINDER_API_URL="[https://app.insightfinder.com](https://app.insightfinder.com)"
     INSIGHTFINDER_JWT_TOKEN="your_jwt_token_here"
-    INSIGHTFINDER_CUSTOMER_NAME="LenovoProjectOwner"
+    INSIGHTFINDER_SYSTEM_NAME="system_name"
+    INSIGHTFINDER_USER_NAME="user"
     ```
 
 ## Running the Server
