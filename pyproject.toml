@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "insightfinder-mcp-server"
+version = "0.1.0"
+description = "An MCP server for fetching incident data from InsightFinder."
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "mcp[cli]>=0.1.0",
+    "httpx>=0.25.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+]
+
+[project.scripts]
+run-insightfinder-mcp-server = "insightfinder_mcp_server.main:run"
