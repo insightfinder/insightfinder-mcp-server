@@ -13,4 +13,4 @@ mcp_server = CustomFastMCP(
 )
 
 # Import tool definitions to ensure they are registered with the server instance
-from .tools import incident_tools
+from .tools import incident_tools, get_time
