@@ -20,12 +20,6 @@ COPY README.md* ./
 # Install the package in development mode
 RUN pip install -e .
 
-# Set environment variables
-ENV INSIGHTFINDER_API_URL=""
-ENV INSIGHTFINDER_JWT_TOKEN=""
-ENV INSIGHTFINDER_SYSTEM_NAME=""
-ENV INSIGHTFINDER_USER_NAME=""
-
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import sys; sys.path.append('/app/src'); import insightfinder_mcp_server; print('OK')" || exit 1
