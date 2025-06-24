@@ -4,13 +4,19 @@
 
 # Configuration
 IMAGE_NAME="insightfinder-mcp-server"
-REGISTRY="ghcr.io"
-USERNAME="insightfinder"  # InsightFinder organization
-TAG="latest"
+REGISTRY="docker.io"  # Docker Hub registry
+USERNAME="${DOCKER_USERNAME:-insightfinder}"  # Docker Hub username (can be overridden with env var)
+TAG="${DOCKER_TAG:-latest}"  # Tag (can be overridden with env var)
 
 FULL_IMAGE_NAME="${REGISTRY}/${USERNAME}/${IMAGE_NAME}:${TAG}"
 
 echo "Building Docker image: ${FULL_IMAGE_NAME}"
+
+# Check if Docker is running
+if ! docker info > /dev/null 2>&1; then
+    echo "✗ Docker is not running or accessible"
+    exit 1
+fi
 
 # Build the Docker image
 docker build -t "${FULL_IMAGE_NAME}" .
@@ -22,6 +28,13 @@ if [ $? -eq 0 ]; then
     read -p "Do you want to push to registry? (y/N): " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
+        # Check if logged into Docker Hub
+        if ! docker info | grep -q "Username:"; then
+            echo "Please log in to Docker Hub first:"
+            echo "docker login"
+            exit 1
+        fi
+        
         echo "Pushing to registry..."
         docker push "${FULL_IMAGE_NAME}"
         
