@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional, List
 
 from ..server import mcp_server
 from ...api_client.insightfinder_client import api_client
+from ...config.settings import settings
 
 @mcp_server.tool()
 async def fetch_incidents(
@@ -44,7 +45,6 @@ async def fetch_incidents(
         # print(f"Tool 'fetch_incidents' called for system: '{systemName}', customer: '{customerName}', subdomain: '{subdomain}' from {startTime} to {endTime}", file=sys.stderr)
 
 
-        startTimehhh = time.time()
         # Call the InsightFinder API client with the rootcausetimelinesJWT endpoint
         result = await api_client.get_root_cause_timelines(
             zone_name=zoneName,
@@ -55,13 +55,11 @@ async def fetch_incidents(
             include_past_occurrence=includePastOccurrence,
         )
 
-        endTimehhh = time.time()
-        print(f"Time taken for fetch_incidents: {endTimehhh - startTimehhh:.2f} seconds", file=sys.stderr)
-
         # print(f"Tool 'fetch_incidents' completed for system: '{systemName}', customer: '{customerName}'", file=sys.stderr)
         return result
         
     except Exception as e:
         error_message = f"Error in fetch_incidents: {str(e)}"
-        print(error_message, file=sys.stderr)
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(error_message, file=sys.stderr)
         return {"status": "error", "message": error_message}

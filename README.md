@@ -34,6 +34,7 @@ This project provides a Model Context Protocol (MCP) server that allows Large La
     INSIGHTFINDER_JWT_TOKEN="your_jwt_token_here"
     INSIGHTFINDER_SYSTEM_NAME="system_name"
     INSIGHTFINDER_USER_NAME="user"
+    ENABLE_DEBUG_MESSAGES="false"
     ```
 
 ## Running the Server
@@ -56,6 +57,7 @@ docker run -i --rm \
   -e INSIGHTFINDER_JWT_TOKEN=your_jwt_token \
   -e INSIGHTFINDER_SYSTEM_NAME=your_system_name \
   -e INSIGHTFINDER_USER_NAME=your_user_name \
+  -e ENABLE_DEBUG_MESSAGES=false \
   docker.io/insightfinder/insightfinder-mcp-server:latest
 ```
 
@@ -64,6 +66,7 @@ docker run -i --rm \
 - `INSIGHTFINDER_JWT_TOKEN`: Your JWT authentication token
 - `INSIGHTFINDER_SYSTEM_NAME`: The system name to query incidents for
 - `INSIGHTFINDER_USER_NAME`: Your InsightFinder username
+- `ENABLE_DEBUG_MESSAGES`: Set to `"true"` to enable debug logging and startup messages (default: `"false"`)
 
 **MCP Client Configuration:**
 When configuring your MCP client, use the following configuration:
@@ -80,6 +83,7 @@ When configuring your MCP client, use the following configuration:
       "-e", "INSIGHTFINDER_JWT_TOKEN=your_jwt_token",
       "-e", "INSIGHTFINDER_SYSTEM_NAME=your_system_name",
       "-e", "INSIGHTFINDER_USER_NAME=your_user_name",
+      "-e", "ENABLE_DEBUG_MESSAGES=false",
       "docker.io/insightfinder/insightfinder-mcp-server:latest"
     ],
     "transport": "stdio",

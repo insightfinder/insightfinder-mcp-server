@@ -1,9 +1,13 @@
 import httpx
 import json
+import logging
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse
 
 from ..config.settings import settings
+
+# Disable httpx info logging to reduce console output
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 class InsightFinderAPIClient:
     """
