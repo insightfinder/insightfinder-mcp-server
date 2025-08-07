@@ -1,12 +1,121 @@
 import sys
 import os
 from typing import Dict, Any, Optional, List
-from datetime import datetime
-
+from datetime import datetime, timezone, timedelta
 from ..server import mcp_server
 from ...api_client.insightfinder_client import api_client
 from ...config.settings import settings
 from .get_time import get_timezone_aware_timestamp_ms, get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, get_today_time_range_ms, format_timestamp_no_conversion, format_api_timestamp_corrected
+
+"""
+=== INCIDENT INVESTIGATION TOOLS - LLM USAGE GUIDELINES ===
+
+IMPORTANT: All timestamp parameters in these tools use UTC milliseconds format.
+
+🕐 TIMESTAMP FORMAT REQUIREMENTS:
+- start_time_ms: UTC timestamp in milliseconds (e.g., 1691234567890)
+- end_time_ms: UTC timestamp in milliseconds (e.g., 1691234567890)
+- Default behavior: If not provided, tools automatically use last 24 hours
+
+📅 TIME RANGE BEST PRACTICES:
+1. For "today's incidents": Use get_today_incidents() tool
+2. For specific dates: Convert user's local date to UTC midnight-to-midnight
+3. For time periods: Convert user's timezone to UTC range
+4. For specific times: Always convert local time to UTC milliseconds
+
+🔧 WHEN TO USE EACH TOOL (Progressive Investigation):
+
+Layer 0 - OVERVIEW (Start here):
+├── get_incidents_overview() - Quick counts and basic metrics
+├── get_today_incidents() - Today's incidents in user timezone
+├── get_utc_time_range_for_query() - Convert time descriptions to UTC
+└── Use when: User asks "any incidents?" or "what happened today?"
+
+Layer 1 - LIST (Browse incidents):
+├── get_incidents_list() - Compact list with basic info
+└── Use when: Need to see individual incidents without detail
+
+Layer 2 - SUMMARY (Get context):
+├── get_incidents_summary() - Detailed summary with root cause
+└── Use when: Need understanding of specific incidents
+
+Layer 3 - DETAILS (Investigate specific):
+├── get_incident_details() - Full incident information
+└── Use when: User wants complete info about one incident
+
+Layer 4 - RAW DATA (Deep dive):
+├── get_incident_raw_data() - Stack traces, logs, error details
+└── Use when: Need actual error messages or stack traces
+
+Layer 5 - ANALYTICS (Pattern analysis):
+├── get_incidents_statistics() - Patterns, trends, frequency
+└── Use when: Need to understand patterns or root causes
+
+🎯 QUERY PARAMETER GUIDELINES:
+
+Time Ranges:
+- start_time_ms: UTC midnight of start date (e.g., for Aug 7, 2025: start of day UTC)
+- end_time_ms: UTC end of period or current time
+- If omitted: Tools default to last 24 hours automatically
+
+System Names:
+- Always required: system_name parameter
+- Use exact system identifier from user's environment
+
+Filtering:
+- only_true_incidents=True: For confirmed incidents only
+- limit: Control response size (default varies by tool)
+- include_root_cause=True: Include diagnostic information
+
+🚨 COMMON USER QUESTIONS → TOOL MAPPING:
+
+"Any incidents today?" → get_today_incidents()
+"What happened yesterday?" → get_utc_time_range_for_query("yesterday") then get_incidents_overview()
+"List recent incidents" → get_incidents_list()
+"Tell me about incident X" → get_incident_details() with specific timestamp
+"Why did the system fail?" → get_incidents_summary() then get_incident_raw_data()
+"Show me patterns" → get_incidents_statistics()
+"What broke the most?" → get_incidents_statistics() for top components
+
+💡 TIMEZONE HANDLING:
+- All API queries use UTC internally
+- Tools automatically handle timezone conversion for display
+- User sees human-readable times in their timezone
+- When user specifies times, convert to UTC milliseconds
+- Use get_utc_time_range_for_query() to convert time descriptions
+
+⚡ PERFORMANCE TIPS:
+- Start with overview tools for quick assessment
+- Use specific timestamp when drilling down
+- Limit raw data requests to avoid overwhelming responses
+- Filter for true incidents when investigating real issues
+
+🔍 INVESTIGATION WORKFLOW EXAMPLE:
+1. get_incidents_overview() - "Are there any incidents?"
+2. get_incidents_list() - "Show me what happened"
+3. get_incidents_summary() - "Tell me more about these incidents"
+4. get_incident_details() - "Investigate this specific incident"
+5. get_incident_raw_data() - "Show me the actual error"
+6. get_incidents_statistics() - "What patterns do we see?"
+
+📋 COMPLETE USAGE EXAMPLE:
+
+User: "Show me incidents from yesterday 9 AM to 5 PM"
+
+Step 1: Convert time range
+→ get_utc_time_range_for_query("yesterday 9 AM to 5 PM")
+
+Step 2: Get overview
+→ get_incidents_overview(system_name="prod-web", start_time_ms=1723114800000, end_time_ms=1723143600000)
+
+Step 3: Get details if incidents found
+→ get_incidents_list(system_name="prod-web", start_time_ms=1723114800000, end_time_ms=1723143600000)
+
+Step 4: Investigate specific incident
+→ get_incident_details(system_name="prod-web", incident_timestamp=1723125400000)
+
+Remember: Always start with overview tools and progressively drill down!
+"""
 
 # Layer 0: Ultra-compact incident overview (just counts and basic info)
 @mcp_server.tool()
@@ -22,10 +131,18 @@ async def get_incidents_overview(
 
     Args:
         system_name (str): The name of the system to query for incidents.
-        start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
+        start_time_ms (int): Optional. The start of the time window in UTC milliseconds.
                          If not provided, defaults to 24 hours ago.
-        end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
+                         Example: For Aug 7, 2025 00:00 UTC = 1723075200000
+        end_time_ms (int): Optional. The end of the time window in UTC milliseconds.
                        If not provided, defaults to the current time.
+                       Example: For Aug 7, 2025 23:59 UTC = 1723161540000
+    
+    Time Conversion Examples:
+        - "Today's incidents" → use get_today_incidents() instead
+        - "Yesterday 9 AM to 5 PM EST" → convert to UTC: (9 AM EST = 1 PM UTC, 5 PM EST = 9 PM UTC)
+        - "Last 24 hours" → omit parameters (uses default range)
+        - "This week" → start_time_ms=Monday_midnight_UTC, end_time_ms=current_time_UTC
     """
     try:
         # print(f"[DEBUG] get_incidents_overview called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}", file=sys.stderr)
@@ -132,12 +249,17 @@ async def get_incidents_list(
 
     Args:
         system_name (str): The name of the system to query for incidents.
-        start_time_ms (int): Optional. The start of the time window in UTC milliseconds 
-                          (typically midnight of the day to query).
-        end_time_ms (int): Optional. The end of the time window in UTC milliseconds
-                        (typically the current time or end of query window).
+        start_time_ms (int): Optional. The start of the time window in UTC milliseconds.
+                          Example: For midnight Aug 7, 2025 UTC = 1723075200000
+        end_time_ms (int): Optional. The end of the time window in UTC milliseconds.
+                        Example: For end of Aug 7, 2025 UTC = 1723161599000
         limit (int): Maximum number of incidents to return (default: 10).
         only_true_incidents (bool): If True, only return events marked as true incidents.
+    
+    UTC Conversion Notes:
+        - Always provide timestamps in UTC milliseconds format
+        - Use tools like get_current_datetime() or get_time_range_query() for conversion
+        - Default range is last 24 hours if parameters omitted
     """
     try:
         # Set default time range if not provided (timezone-aware)
@@ -730,3 +852,99 @@ async def get_today_incidents(
         if settings.ENABLE_DEBUG_MESSAGES:
             print(error_message, file=sys.stderr)
         return {"status": "error", "message": error_message}
+
+# Helper tool for LLMs to convert time ranges to proper UTC milliseconds
+@mcp_server.tool()
+async def get_utc_time_range_for_query(
+    time_description: str
+) -> Dict[str, Any]:
+    """
+    Converts human-readable time descriptions to UTC milliseconds for use in incident queries.
+    This tool helps LLMs generate proper start_time_ms and end_time_ms parameters.
+    
+    Args:
+        time_description (str): Human description like "today", "yesterday", "last 24 hours", 
+                               "this week", "August 7, 2025", "last Monday", etc.
+    
+    Returns:
+        Dictionary with start_time_ms and end_time_ms in UTC milliseconds, plus human-readable info.
+    
+    Examples:
+        - "today" → Returns today's start/end in UTC milliseconds
+        - "yesterday" → Returns yesterday's full day range
+        - "last 24 hours" → Returns current time minus 24 hours to now
+        - "this week" → Returns Monday to current time
+        - "August 7, 2025" → Returns full day range for that date
+    """
+    try:
+        time_desc = time_description.lower().strip()
+        
+        # Get current time in UTC
+        now_utc = datetime.now(timezone.utc)
+        current_ms = int(now_utc.timestamp() * 1000)
+        
+        # Parse common time descriptions
+        if time_desc in ["today", "today's incidents"]:
+            start_ms, end_ms = get_today_time_range_ms()
+            description = "Today in user's timezone"
+            
+        elif time_desc in ["yesterday", "yesterday's incidents"]:
+            start_ms, end_ms = get_timezone_aware_time_range_ms(1)
+            description = "Yesterday in user's timezone"
+            
+        elif "last 24 hours" in time_desc or "past 24 hours" in time_desc:
+            start_ms = current_ms - (24 * 60 * 60 * 1000)  # 24 hours ago
+            end_ms = current_ms
+            description = "Last 24 hours"
+            
+        elif "last hour" in time_desc or "past hour" in time_desc:
+            start_ms = current_ms - (60 * 60 * 1000)  # 1 hour ago
+            end_ms = current_ms
+            description = "Last hour"
+            
+        elif "this week" in time_desc:
+            # Get start of week (Monday) to current time
+            days_since_monday = now_utc.weekday()
+            monday_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_since_monday)
+            start_ms = int(monday_utc.timestamp() * 1000)
+            end_ms = current_ms
+            description = "This week (Monday to now)"
+            
+        elif "last week" in time_desc:
+            # Previous Monday to Sunday
+            days_since_monday = now_utc.weekday()
+            this_monday = now_utc.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_since_monday)
+            last_monday = this_monday - timedelta(days=7)
+            last_sunday = this_monday - timedelta(days=1, seconds=1)
+            start_ms = int(last_monday.timestamp() * 1000)
+            end_ms = int(last_sunday.timestamp() * 1000)
+            description = "Last week (Monday to Sunday)"
+            
+        else:
+            # Default to last 24 hours for unrecognized descriptions
+            start_ms = current_ms - (24 * 60 * 60 * 1000)
+            end_ms = current_ms
+            description = f"Default range (last 24 hours) for: {time_description}"
+        
+        return {
+            "status": "success",
+            "time_description": time_description,
+            "query_parameters": {
+                "start_time_ms": start_ms,
+                "end_time_ms": end_ms
+            },
+            "human_readable": {
+                "description": description,
+                "start_time": format_timestamp_in_user_timezone(start_ms),
+                "end_time": format_timestamp_in_user_timezone(end_ms),
+                "duration_hours": round((end_ms - start_ms) / (1000 * 60 * 60), 1)
+            },
+            "usage_example": f"get_incidents_overview(system_name='your-system', start_time_ms={start_ms}, end_time_ms={end_ms})"
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Error parsing time description '{time_description}': {str(e)}",
+            "suggestion": "Use descriptions like 'today', 'yesterday', 'last 24 hours', 'this week', etc."
+        }
