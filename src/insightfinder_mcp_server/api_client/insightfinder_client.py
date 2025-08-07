@@ -149,7 +149,8 @@ class InsightFinderAPIClient:
         Returns:
             A dictionary containing metric anomaly timeline data
         """
-        return await self._fetch_timeline_data("metricanomaly", system_name, start_time_ms, end_time_ms)
+        result = await self._fetch_timeline_data("metricanomaly", system_name, start_time_ms, end_time_ms)
+        return result
 
     async def get_deployment(
         self,

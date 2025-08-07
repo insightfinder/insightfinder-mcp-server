@@ -615,47 +615,6 @@ async def fetch_log_anomalies(
         return {"status": "error", "message": error_message}
 
 @mcp_server.tool()
-async def fetch_metric_anomalies(
-    system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
-) -> Dict[str, Any]:
-    """
-    Fetches metric anomaly timeline data from InsightFinder for a specific system within a given time range.
-    Use this tool when a user asks for metric anomalies, performance issues, or infrastructure monitoring data.
-
-    Args:
-        system_name (str): The name of the system to query for metric anomalies.
-        start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
-                         If not provided, defaults to 24 hours ago.
-        end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
-                       If not provided, defaults to the current time.
-    """
-    try:
-        # Set default time range if not provided (timezone-aware)
-        if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(24)
-            if end_time_ms is None:
-                end_time_ms = default_end_ms
-            if start_time_ms is None:
-                start_time_ms = default_start_ms
-
-        # Call the InsightFinder API client with the timeline endpoint
-        result = await api_client.get_metricanomaly(
-            system_name=system_name,
-            start_time_ms=start_time_ms,
-            end_time_ms=end_time_ms,
-        )
-
-        return result
-        
-    except Exception as e:
-        error_message = f"Error in fetch_metric_anomalies: {str(e)}"
-        if settings.ENABLE_DEBUG_MESSAGES:
-            print(error_message, file=sys.stderr)
-        return {"status": "error", "message": error_message}
-
-@mcp_server.tool()
 async def fetch_deployments(
     system_name: str,
     start_time_ms: Optional[int] = None,

@@ -5,7 +5,7 @@ from datetime import datetime
 from ..server import mcp_server
 from ...api_client.insightfinder_client import api_client
 from ...config.settings import settings
-from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, format_timestamp_in_user_timezone
+from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, format_api_timestamp_corrected
 
 # Layer 0: Ultra-compact log anomaly overview (just counts and basic info)
 @mcp_server.tool()
@@ -102,8 +102,8 @@ async def get_log_anomalies_overview(
                     "min_score": round(min_score, 2),
                     "avg_score": round(avg_score, 2)
                 },
-                "first_anomaly": format_timestamp_in_user_timezone(first_anomaly) if first_anomaly else None,
-                "last_anomaly": format_timestamp_in_user_timezone(last_anomaly) if last_anomaly else None,
+                "first_anomaly": format_api_timestamp_corrected(first_anomaly) if first_anomaly else None,
+                "last_anomaly": format_api_timestamp_corrected(last_anomaly) if last_anomaly else None,
                 "has_anomalies": total_anomalies > 0
             }
         }
@@ -179,7 +179,7 @@ async def get_log_anomalies_list(
             anomaly_info = {
                 "id": i + 1,
                 "timestamp": anomaly["timestamp"],
-                "timestamp_human": format_timestamp_in_user_timezone(anomaly["timestamp"]),
+                "timestamp_human": format_api_timestamp_corrected(anomaly["timestamp"]),
                 "component": anomaly.get("componentName", "Unknown"),
                 "instance": anomaly.get("instanceName", "Unknown"),
                 "pattern": anomaly.get("patternName", "Unknown"),
@@ -267,7 +267,7 @@ async def get_log_anomalies_summary(
         anomalies_summary = []
         for anomaly in log_anomalies:
             # Convert timestamp to human readable
-            timestamp_str = format_timestamp_in_user_timezone(anomaly["timestamp"])
+            timestamp_str = format_api_timestamp_corrected(anomaly["timestamp"])
             
             # Determine severity category
             score = anomaly.get("anomalyScore", 0)
@@ -379,7 +379,7 @@ async def get_log_anomaly_details(
         # Build detailed response without raw data
         anomaly_details = {
             "timestamp": target_anomaly["timestamp"],
-            "timestamp_human": format_timestamp_in_user_timezone(target_anomaly["timestamp"]),
+            "timestamp_human": format_api_timestamp_corrected(target_anomaly["timestamp"]),
             "instanceName": target_anomaly.get("instanceName"),
             "componentName": target_anomaly.get("componentName"),
             "patternName": target_anomaly.get("patternName"),
@@ -459,7 +459,7 @@ async def get_log_anomaly_raw_data(
         return {
             "status": "success",
             "anomaly_timestamp": anomaly_timestamp,
-            "timestamp_human": format_timestamp_in_user_timezone(anomaly_timestamp),
+            "timestamp_human": format_api_timestamp_corrected(anomaly_timestamp),
             "instanceName": target_anomaly.get("instanceName"),
             "componentName": target_anomaly.get("componentName"),
             "patternName": target_anomaly.get("patternName"),
