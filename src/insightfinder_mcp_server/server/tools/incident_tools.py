@@ -28,7 +28,7 @@ async def get_incidents_overview(
                        If not provided, defaults to the current time.
     """
     try:
-        print(f"[DEBUG] get_incidents_overview called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}", file=sys.stderr)
+        # print(f"[DEBUG] get_incidents_overview called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}", file=sys.stderr)
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
             default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
@@ -36,7 +36,7 @@ async def get_incidents_overview(
                 end_time_ms = default_end_ms
             if start_time_ms is None:
                 start_time_ms = default_start_ms
-        print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
+        # print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
         # Call the InsightFinder API client
         result = await api_client.get_incidents(
             system_name=system_name,

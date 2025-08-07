@@ -16,7 +16,7 @@ class Settings:
 
     # MCP Server Configuration
     SERVER_NAME: str = "InsightFinderMCPServer"
-    SERVER_VERSION: str = "1.0.0"
+    SERVER_VERSION: str = "1.1.0"
     
     # Logging Configuration
     ENABLE_DEBUG_MESSAGES: bool = os.getenv("ENABLE_DEBUG_MESSAGES", "false").lower() == "true"
