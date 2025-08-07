@@ -10,7 +10,7 @@ class Settings:
     """
     # InsightFinder API Configuration
     INSIGHTFINDER_API_URL: str = os.getenv("INSIGHTFINDER_API_URL", "https://app.insightfinder.com")
-    INSIGHTFINDER_JWT_TOKEN: str = os.getenv("INSIGHTFINDER_JWT_TOKEN")
+    INSIGHTFINDER_LICENSE_KEY: str = os.getenv("INSIGHTFINDER_LICENSE_KEY")
     INSIGHTFINDER_SYSTEM_NAME: str = os.getenv("INSIGHTFINDER_SYSTEM_NAME")
     INSIGHTFINDER_USER_NAME: str = os.getenv("INSIGHTFINDER_USER_NAME")
 
@@ -25,8 +25,8 @@ class Settings:
 settings = Settings()
 
 # Validate that required settings are present
-if not settings.INSIGHTFINDER_JWT_TOKEN:
-    raise ValueError("Missing required environment variable: INSIGHTFINDER_JWT_TOKEN")
+if not settings.INSIGHTFINDER_LICENSE_KEY:
+    raise ValueError("Missing required environment variable: INSIGHTFINDER_LICENSE_KEY")
 
 if not settings.INSIGHTFINDER_SYSTEM_NAME:
     raise ValueError("Missing required environment variable: INSIGHTFINDER_SYSTEM_NAME")
