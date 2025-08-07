@@ -28,14 +28,15 @@ async def get_incidents_overview(
                        If not provided, defaults to the current time.
     """
     try:
+        print(f"[DEBUG] get_incidents_overview called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}", file=sys.stderr)
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(24)
+            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
                 start_time_ms = default_start_ms
-
+        print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
         # Call the InsightFinder API client
         result = await api_client.get_incidents(
             system_name=system_name,
@@ -131,15 +132,17 @@ async def get_incidents_list(
 
     Args:
         system_name (str): The name of the system to query for incidents.
-        start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
-        end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
+        start_time_ms (int): Optional. The start of the time window in UTC milliseconds 
+                          (typically midnight of the day to query).
+        end_time_ms (int): Optional. The end of the time window in UTC milliseconds
+                        (typically the current time or end of query window).
         limit (int): Maximum number of incidents to return (default: 10).
         only_true_incidents (bool): If True, only return events marked as true incidents.
     """
     try:
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(24)
+            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -225,7 +228,7 @@ async def get_incidents_summary(
     try:
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(24)
+            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -469,7 +472,7 @@ async def get_incidents_statistics(
     try:
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(24)
+            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -552,7 +555,7 @@ async def fetch_traces(
     try:
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(24)
+            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -593,7 +596,7 @@ async def fetch_log_anomalies(
     try:
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(24)
+            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -634,7 +637,7 @@ async def fetch_deployments(
     try:
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(24)
+            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:

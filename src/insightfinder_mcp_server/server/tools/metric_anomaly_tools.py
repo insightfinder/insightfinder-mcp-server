@@ -53,7 +53,7 @@ async def get_metric_anomalies_overview(
     try:
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(24)
+            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -210,7 +210,7 @@ async def get_metric_anomalies_list(
         
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(24)
+            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -354,7 +354,7 @@ async def get_metric_anomalies_summary(
         
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(24)
+            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -791,7 +791,7 @@ async def get_metric_anomalies_statistics(
         
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(24)
+            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -1011,7 +1011,7 @@ async def fetch_metric_anomalies(
         
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(24)
+            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:

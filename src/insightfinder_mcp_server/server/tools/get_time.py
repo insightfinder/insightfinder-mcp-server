@@ -141,10 +141,22 @@ def get_timezone_aware_timestamp_ms() -> int:
     now_utc = datetime.now(timezone.utc)
     return int(now_utc.timestamp() * 1000)
 
-def get_timezone_aware_time_range_ms(hours_back: int = 24) -> tuple[int, int]:
-    """Get start and end timestamps in milliseconds for a time range in user's timezone."""
+def get_timezone_aware_time_range_ms(days_back: int = 1) -> tuple[int, int]:
+    """Get start and end timestamps in milliseconds for a time range in user's timezone.
+    
+    Args:
+        days_back: Number of days to go back from current day (default: 1)
+                  days_back=0 means today only
+                  days_back=1 means from yesterday midnight to end of today
+    
+    Returns:
+        tuple: (start_time_ms, end_time_ms) where:
+               - start_time_ms is midnight of the day N days back
+               - end_time_ms is end of current day (23:59:59.999)
+    """
     # Get timezone from environment variable, default to UTC
-    tz_name = normalize_timezone(os.getenv('TZ', 'UTC'))
+    # tz_name = normalize_timezone(os.getenv('TZ', 'UTC'))
+    tz_name = normalize_timezone('UTC')  # Always use UTC for time range calculation
     
     try:
         # Try to parse the timezone
@@ -159,30 +171,36 @@ def get_timezone_aware_time_range_ms(hours_back: int = 24) -> tuple[int, int]:
     # Get current time in user's timezone
     now_user_tz = datetime.now(user_timezone)
     
-    # Calculate start time by going back the specified hours in user's timezone
-    start_time_user_tz = now_user_tz - timedelta(hours=hours_back)
+    # Calculate start time: midnight of the day N days back
+    start_day = now_user_tz - timedelta(days=days_back)
+    start_time_user_tz = start_day.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # Calculate end time: end of current day (23:59:59.999)
+    end_time_user_tz = now_user_tz.replace(hour=23, minute=59, second=59, microsecond=999000)
     
     # Convert both times to UTC timestamps in milliseconds
-    end_time_ms = int(now_user_tz.timestamp() * 1000)
     start_time_ms = int(start_time_user_tz.timestamp() * 1000)
+    end_time_ms = int(end_time_user_tz.timestamp() * 1000)
     
     # Debug logging
     from ...config.settings import settings
     if settings.ENABLE_DEBUG_MESSAGES:
         import sys
-        print(f"[DEBUG TIME] get_timezone_aware_time_range_ms({hours_back}h):", file=sys.stderr)
+        print(f"[DEBUG TIME] get_timezone_aware_time_range_ms({days_back} days):", file=sys.stderr)
         print(f"  Timezone: {tz_name} -> {user_timezone}", file=sys.stderr)
         print(f"  Current time (local): {now_user_tz.strftime('%Y-%m-%d %H:%M:%S %Z')}", file=sys.stderr)
         print(f"  Start time (local): {start_time_user_tz.strftime('%Y-%m-%d %H:%M:%S %Z')}", file=sys.stderr)
-        print(f"  End timestamp (ms): {end_time_ms}", file=sys.stderr)
+        print(f"  End time (local): {end_time_user_tz.strftime('%Y-%m-%d %H:%M:%S %Z')}", file=sys.stderr)
         print(f"  Start timestamp (ms): {start_time_ms}", file=sys.stderr)
+        print(f"  End timestamp (ms): {end_time_ms}", file=sys.stderr)
     
     return start_time_ms, end_time_ms
 
 def get_today_time_range_ms() -> tuple[int, int]:
     """Get start and end timestamps for 'today' in the user's timezone."""
     # Get timezone from environment variable, default to UTC
-    tz_name = normalize_timezone(os.getenv('TZ', 'UTC'))
+    # tz_name = normalize_timezone(os.getenv('TZ', 'UTC'))
+    tz_name = normalize_timezone('UTC')  # For testing, always use UTC
     
     try:
         # Try to parse the timezone
