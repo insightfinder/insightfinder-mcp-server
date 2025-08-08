@@ -30,10 +30,11 @@ This project provides a Model Context Protocol (MCP) server that allows Large La
 4.  **Configure environment variables:**
     Create a `.env` file in the project root and add your InsightFinder credentials:
     ```
-    INSIGHTFINDER_API_URL="[https://app.insightfinder.com](https://app.insightfinder.com)"
-    INSIGHTFINDER_JWT_TOKEN="your_jwt_token_here"
+    INSIGHTFINDER_API_URL="https://app.insightfinder.com"
+    INSIGHTFINDER_LICENSE_KEY="your_license_key_here"
     INSIGHTFINDER_SYSTEM_NAME="system_name"
     INSIGHTFINDER_USER_NAME="user"
+    ENABLE_DEBUG_MESSAGES="false"
     ```
 
 ## Running the Server
@@ -53,17 +54,19 @@ You can run the MCP server using Docker without needing to install Python or dep
 ```bash
 docker run -i --rm \
   -e INSIGHTFINDER_API_URL=your_api_url \
-  -e INSIGHTFINDER_JWT_TOKEN=your_jwt_token \
+  -e INSIGHTFINDER_LICENSE_KEY=your_license_key \
   -e INSIGHTFINDER_SYSTEM_NAME=your_system_name \
   -e INSIGHTFINDER_USER_NAME=your_user_name \
+  -e ENABLE_DEBUG_MESSAGES=false \
   docker.io/insightfinder/insightfinder-mcp-server:latest
 ```
 
 **Environment Variables:**
 - `INSIGHTFINDER_API_URL`: Your InsightFinder API endpoint (e.g., `https://app.insightfinder.com`)
-- `INSIGHTFINDER_JWT_TOKEN`: Your JWT authentication token
+- `INSIGHTFINDER_LICENSE_KEY`: Your license key for authentication
 - `INSIGHTFINDER_SYSTEM_NAME`: The system name to query incidents for
 - `INSIGHTFINDER_USER_NAME`: Your InsightFinder username
+- `ENABLE_DEBUG_MESSAGES`: Set to `"true"` to enable debug logging and startup messages (default: `"false"`)
 
 **MCP Client Configuration:**
 When configuring your MCP client, use the following configuration:
@@ -77,9 +80,10 @@ When configuring your MCP client, use the following configuration:
       "-i",
       "--rm",
       "-e", "INSIGHTFINDER_API_URL=your_api_url",
-      "-e", "INSIGHTFINDER_JWT_TOKEN=your_jwt_token",
+      "-e", "INSIGHTFINDER_LICENSE_KEY=your_license_key",
       "-e", "INSIGHTFINDER_SYSTEM_NAME=your_system_name",
       "-e", "INSIGHTFINDER_USER_NAME=your_user_name",
+      "-e", "ENABLE_DEBUG_MESSAGES=false",
       "docker.io/insightfinder/insightfinder-mcp-server:latest"
     ],
     "transport": "stdio",

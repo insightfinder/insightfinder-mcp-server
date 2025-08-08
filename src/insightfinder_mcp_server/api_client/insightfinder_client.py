@@ -1,123 +1,199 @@
 import httpx
 import json
+import logging
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse
 
 from ..config.settings import settings
 
+# Disable httpx info logging to reduce console output
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
+
 class InsightFinderAPIClient:
     """
     A client for interacting with the InsightFinder API.
     """
-    def __init__(self, api_url: str, jwt_token: str, system_name: str, user_name: str):
-        self.base_url = api_url.rstrip("/") if api_url else api_url
-        self.jwt_token = jwt_token
+    def __init__(self, system_name: str, user_name: str, license_key: str, api_url: str = "https://app.insightfinder.com"):
+        self.base_url = api_url.rstrip("/") if api_url else "https://app.insightfinder.com"
         self.system_name = system_name
         self.user_name = user_name
+        self.license_key = license_key
         self.headers = {
-            "Authorization": f"Bearer {self.jwt_token}"
+            "X-User-Name": self.user_name,
+            "X-License-Key": self.license_key
         }
 
-    def _extract_metric_root_causes(self, response_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Extract and parse all metricRootCause values from the response.
-        
-        Args:
-            response_data: The raw API response data
-            
-        Returns:
-            A list of parsed metricRootCause objects
-        """
-        metric_root_causes = []
-        
-        for item in response_data:
-            if "anomalyTimelines" in item:
-                for timeline in item["anomalyTimelines"]:
-                    if "metricRootCause" in timeline and timeline["metricRootCause"]:
-                        try:
-                            # Parse the JSON string in metricRootCause
-                            root_cause_data = json.loads(timeline["metricRootCause"])
-                            metric_root_causes.append(root_cause_data)
-                        except json.JSONDecodeError:
-                            # If JSON parsing fails, skip this entry
-                            continue
-        
-        return metric_root_causes
-
-    async def get_root_cause_timelines(
+    async def _fetch_timeline_data(
         self,
-        zone_name: Optional[str] = None,
-        zone_list: Optional[List[str]] = None,
-        start_time_ms: Optional[int] = None,
-        end_time_ms: Optional[int] = None,
-        environment_name: str = "All",
-        include_past_occurrence: bool = True,
+        timeline_event_type: str,
+        system_name: str,
+        start_time_ms: int,
+        end_time_ms: int
     ) -> Dict[str, Any]:
         """
-        Fetches incident timelines from the InsightFinder rootcausetimelinesJWT API.
-
+        Generic method to fetch timeline data from the InsightFinder API.
+        
         Args:
-            system_name: The name of the system to query.
-            customer_name: The customer name for the request.
-            subdomain: The subdomain to use for the API URL.
-            zone_name: The zone name (defaults to all_zone_{system_name}).
-            zone_list: List of zones to query.
-            start_time_ms: The start of the time window in milliseconds since epoch.
-            end_time_ms: The end of the time window in milliseconds since epoch.
-            environment_name: The environment name to filter by.
-            include_past_occurrence: Whether to include past occurrences.
-
+            timeline_event_type: The type of timeline event (incident, trace, loganomaly, metricanomaly, deployment)
+            system_name: The name of the system to query
+            start_time_ms: The start of the time window in milliseconds since epoch
+            end_time_ms: The end of the time window in milliseconds since epoch
+            
         Returns:
-            A dictionary containing the extracted metricRootCause data.
+            A dictionary containing the API response data
         """
-        api_path = "/api/v2/rootcausetimelinesJWT"
+        api_path = "/api/v2/timeline"
         url = f"{self.base_url}{api_path}"
         
-        # Set defaults
-        if zone_name is None:
-            zone_name = f"all_zone_{self.system_name}"
-        if zone_list is None:
-            zone_list = []
-        
         params = {
-            "systemName": self.system_name,
-            "customerName": self.user_name,
-            "jwt": self.jwt_token,  # JWT token is passed as query parameter
-            "zoneName": zone_name,
-            "zoneList": str(zone_list),  # Convert list to string representation
-            "environmentName": environment_name,
-            "includePastOccurrence": str(include_past_occurrence).lower(),
+            "systemName": system_name,
+            "startTime": start_time_ms,
+            "endTime": end_time_ms,
+            "timelineEventType": timeline_event_type
         }
-        
-        # Add time parameters if provided
-        if start_time_ms is not None:
-            params["startTime"] = start_time_ms
-        if end_time_ms is not None:
-            params["endTime"] = end_time_ms
 
-        async with httpx.AsyncClient() as client:
+        # Basic input validation
+        if not system_name or len(system_name) > 100:
+            return {"status": "error", "message": "Invalid system_name"}
+        
+        if end_time_ms - start_time_ms > 365 * 24 * 60 * 60 * 1000:  # Max 1 year
+            return {"status": "error", "message": "Time range too large (max 1 year)"}
+
+        async with httpx.AsyncClient(timeout=30.0) as client:  # Shorter timeout
             try:
-                response = await client.get(url, params=params, timeout=100.0)
-                response.raise_for_status()  # Raise an exception for 4xx or 5xx status codes
+                response = await client.get(url, params=params, headers=self.headers)
+                response.raise_for_status()
                 
-                # Extract metricRootCause data from the response
+                # Check response size (prevent large payloads)
+                content_length = response.headers.get('content-length')
+                if content_length and int(content_length) > 10 * 1024 * 1024:  # 10MB limit
+                    return {"status": "error", "message": "Response too large"}
+                
                 raw_data = response.json()
-                metric_root_causes = self._extract_metric_root_causes(raw_data)
+                timeline_list = raw_data.get("timelineList", [])
                 
-                return {"status": "success", "data": metric_root_causes[:100]}
+                # Limit number of items to prevent memory issues
+                if len(timeline_list) > 5000:
+                    timeline_list = timeline_list[:5000]
+                
+                return {
+                    "status": "success", 
+                    "data": timeline_list,
+                    "total_count": len(timeline_list),
+                    "event_type": timeline_event_type
+                }
             except httpx.HTTPStatusError as e:
-                error_message = f"API request failed with status {e.response.status_code}: {e.response.text}"
-                print(error_message) # For server-side logging
-                return {"status": "error", "message": error_message}
+                logger.error(f"API error {e.response.status_code} for {timeline_event_type}")
+                return {"status": "error", "message": "API request failed"}
             except httpx.RequestError as e:
-                error_message = f"An error occurred while requesting {e.request.url!r}: {str(e)}"
-                print(error_message) # For server-side logging
-                return {"status": "error", "message": error_message}
+                logger.error(f"Network error for {timeline_event_type}: {str(e)}")
+                return {"status": "error", "message": "Network error"}
+            except Exception as e:
+                logger.error(f"Unexpected error: {str(e)}")
+                return {"status": "error", "message": "Internal error"}
+
+    async def get_incidents(
+        self,
+        system_name: str,
+        start_time_ms: int,
+        end_time_ms: int
+    ) -> Dict[str, Any]:
+        """
+        Fetch incident timeline data from the InsightFinder API.
+        
+        Args:
+            system_name: The name of the system to query
+            start_time_ms: The start of the time window in milliseconds since epoch
+            end_time_ms: The end of the time window in milliseconds since epoch
+            
+        Returns:
+            A dictionary containing incident timeline data
+        """
+        return await self._fetch_timeline_data("incident", system_name, start_time_ms, end_time_ms)
+
+    async def get_traces(
+        self,
+        system_name: str,
+        start_time_ms: int,
+        end_time_ms: int
+    ) -> Dict[str, Any]:
+        """
+        Fetch trace timeline data from the InsightFinder API.
+        
+        Args:
+            system_name: The name of the system to query
+            start_time_ms: The start of the time window in milliseconds since epoch
+            end_time_ms: The end of the time window in milliseconds since epoch
+            
+        Returns:
+            A dictionary containing trace timeline data
+        """
+        return await self._fetch_timeline_data("trace", system_name, start_time_ms, end_time_ms)
+
+    async def get_loganomaly(
+        self,
+        system_name: str,
+        start_time_ms: int,
+        end_time_ms: int
+    ) -> Dict[str, Any]:
+        """
+        Fetch log anomaly timeline data from the InsightFinder API.
+        
+        Args:
+            system_name: The name of the system to query
+            start_time_ms: The start of the time window in milliseconds since epoch
+            end_time_ms: The end of the time window in milliseconds since epoch
+            
+        Returns:
+            A dictionary containing log anomaly timeline data
+        """
+        return await self._fetch_timeline_data("loganomaly", system_name, start_time_ms, end_time_ms)
+
+    async def get_metricanomaly(
+        self,
+        system_name: str,
+        start_time_ms: int,
+        end_time_ms: int
+    ) -> Dict[str, Any]:
+        """
+        Fetch metric anomaly timeline data from the InsightFinder API.
+        
+        Args:
+            system_name: The name of the system to query
+            start_time_ms: The start of the time window in milliseconds since epoch
+            end_time_ms: The end of the time window in milliseconds since epoch
+            
+        Returns:
+            A dictionary containing metric anomaly timeline data
+        """
+        result = await self._fetch_timeline_data("metricanomaly", system_name, start_time_ms, end_time_ms)
+        return result
+
+    async def get_deployment(
+        self,
+        system_name: str,
+        start_time_ms: int,
+        end_time_ms: int
+    ) -> Dict[str, Any]:
+        """
+        Fetch deployment timeline data from the InsightFinder API.
+        
+        Args:
+            system_name: The name of the system to query
+            start_time_ms: The start of the time window in milliseconds since epoch
+            end_time_ms: The end of the time window in milliseconds since epoch
+            
+        Returns:
+            A dictionary containing deployment timeline data
+        """
+        return await self._fetch_timeline_data("deployment", system_name, start_time_ms, end_time_ms)
 
 # Singleton instance of the API client
 api_client = InsightFinderAPIClient(
-    api_url=settings.INSIGHTFINDER_API_URL,
-    jwt_token=settings.INSIGHTFINDER_JWT_TOKEN,
     system_name=settings.INSIGHTFINDER_SYSTEM_NAME,
-    user_name=settings.INSIGHTFINDER_USER_NAME
+    user_name=settings.INSIGHTFINDER_USER_NAME,
+    license_key=settings.INSIGHTFINDER_LICENSE_KEY,
+    api_url=settings.INSIGHTFINDER_API_URL if hasattr(settings, 'INSIGHTFINDER_API_URL') and settings.INSIGHTFINDER_API_URL else "https://app.insightfinder.com"
 )
