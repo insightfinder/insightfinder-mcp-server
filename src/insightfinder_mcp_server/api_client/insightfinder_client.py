@@ -9,6 +9,8 @@ from ..config.settings import settings
 # Disable httpx info logging to reduce console output
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+logger = logging.getLogger(__name__)
+
 class InsightFinderAPIClient:
     """
     A client for interacting with the InsightFinder API.
@@ -52,13 +54,29 @@ class InsightFinderAPIClient:
             "timelineEventType": timeline_event_type
         }
 
-        async with httpx.AsyncClient() as client:
+        # Basic input validation
+        if not system_name or len(system_name) > 100:
+            return {"status": "error", "message": "Invalid system_name"}
+        
+        if end_time_ms - start_time_ms > 365 * 24 * 60 * 60 * 1000:  # Max 1 year
+            return {"status": "error", "message": "Time range too large (max 1 year)"}
+
+        async with httpx.AsyncClient(timeout=30.0) as client:  # Shorter timeout
             try:
-                response = await client.get(url, params=params, headers=self.headers, timeout=100.0)
-                response.raise_for_status()  # Raise an exception for 4xx or 5xx status codes
+                response = await client.get(url, params=params, headers=self.headers)
+                response.raise_for_status()
+                
+                # Check response size (prevent large payloads)
+                content_length = response.headers.get('content-length')
+                if content_length and int(content_length) > 10 * 1024 * 1024:  # 10MB limit
+                    return {"status": "error", "message": "Response too large"}
                 
                 raw_data = response.json()
                 timeline_list = raw_data.get("timelineList", [])
+                
+                # Limit number of items to prevent memory issues
+                if len(timeline_list) > 5000:
+                    timeline_list = timeline_list[:5000]
                 
                 return {
                     "status": "success", 
@@ -67,13 +85,14 @@ class InsightFinderAPIClient:
                     "event_type": timeline_event_type
                 }
             except httpx.HTTPStatusError as e:
-                error_message = f"API request failed with status {e.response.status_code}: {e.response.text}"
-                print(error_message) # For server-side logging
-                return {"status": "error", "message": error_message}
+                logger.error(f"API error {e.response.status_code} for {timeline_event_type}")
+                return {"status": "error", "message": "API request failed"}
             except httpx.RequestError as e:
-                error_message = f"An error occurred while requesting {e.request.url!r}: {str(e)}"
-                print(error_message) # For server-side logging
-                return {"status": "error", "message": error_message}
+                logger.error(f"Network error for {timeline_event_type}: {str(e)}")
+                return {"status": "error", "message": "Network error"}
+            except Exception as e:
+                logger.error(f"Unexpected error: {str(e)}")
+                return {"status": "error", "message": "Internal error"}
 
     async def get_incidents(
         self,

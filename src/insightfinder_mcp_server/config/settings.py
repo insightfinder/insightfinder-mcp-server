@@ -20,6 +20,10 @@ class Settings:
     
     # Logging Configuration
     ENABLE_DEBUG_MESSAGES: bool = os.getenv("ENABLE_DEBUG_MESSAGES", "false").lower() == "true"
+    
+    # Basic Security Configuration
+    MAX_REQUESTS_PER_MINUTE: int = int(os.getenv("MAX_REQUESTS_PER_MINUTE", "60"))
+    MAX_PAYLOAD_SIZE: int = int(os.getenv("MAX_PAYLOAD_SIZE", str(1024 * 1024)))  # 1MB default
 
 # Create a singleton instance of the settings
 settings = Settings()
