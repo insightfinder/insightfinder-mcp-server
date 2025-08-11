@@ -22,6 +22,7 @@ from datetime import datetime
 
 from ..server import mcp_server
 from ...api_client.insightfinder_client import api_client
+from ...config.settings import settings
 from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, format_api_timestamp_corrected, get_today_time_range_ms
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,11 @@ async def get_metric_anomalies_overview(
             if start_time_ms is None:
                 start_time_ms = default_start_ms
         
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(f"[DEBUG] get_metric_anomalies_overview called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}", file=sys.stderr)
+            print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
+            print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
+        
         client = api_client
         
         # Fetch raw data
@@ -67,6 +73,13 @@ async def get_metric_anomalies_overview(
             start_time_ms=start_time_ms,
             end_time_ms=end_time_ms
         )
+        
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(f"[DEBUG] API response status: {raw_data.get('status', 'unknown')}", file=sys.stderr)
+            if raw_data.get("status") == "success":
+                print(f"[DEBUG] API response data length: {len(raw_data.get('data', []))}", file=sys.stderr)
+            else:
+                print(f"[DEBUG] API response error: {raw_data.get('message', 'No message')}", file=sys.stderr)
         
         if raw_data.get("status") != "success":
             return raw_data
@@ -216,6 +229,12 @@ async def get_metric_anomalies_list(
             if start_time_ms is None:
                 start_time_ms = default_start_ms
         
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(f"[DEBUG] get_metric_anomalies_list called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}", file=sys.stderr)
+            print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
+            print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
+            print(f"[DEBUG] Filters: limit={limit}, min_severity={min_severity}, sort_by={sort_by}", file=sys.stderr)
+        
         client = api_client
         
         # Fetch raw data
@@ -224,6 +243,13 @@ async def get_metric_anomalies_list(
             start_time_ms=start_time_ms,
             end_time_ms=end_time_ms
         )
+        
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(f"[DEBUG] API response status: {raw_data.get('status', 'unknown')}", file=sys.stderr)
+            if raw_data.get("status") == "success":
+                print(f"[DEBUG] API response data length: {len(raw_data.get('data', []))}", file=sys.stderr)
+            else:
+                print(f"[DEBUG] API response error: {raw_data.get('message', 'No message')}", file=sys.stderr)
         
         if raw_data.get("status") != "success":
             return raw_data
@@ -360,6 +386,12 @@ async def get_metric_anomalies_summary(
             if start_time_ms is None:
                 start_time_ms = default_start_ms
         
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(f"[DEBUG] get_metric_anomalies_summary called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}", file=sys.stderr)
+            print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
+            print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
+            print(f"[DEBUG] Filters: limit={limit}, min_severity={min_severity}, include_context={include_context}", file=sys.stderr)
+        
         client = api_client
         
         # Fetch raw data
@@ -368,6 +400,13 @@ async def get_metric_anomalies_summary(
             start_time_ms=start_time_ms,
             end_time_ms=end_time_ms
         )
+        
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(f"[DEBUG] API response status: {raw_data.get('status', 'unknown')}", file=sys.stderr)
+            if raw_data.get("status") == "success":
+                print(f"[DEBUG] API response data length: {len(raw_data.get('data', []))}", file=sys.stderr)
+            else:
+                print(f"[DEBUG] API response error: {raw_data.get('message', 'No message')}", file=sys.stderr)
         
         if raw_data.get("status") != "success":
             return raw_data
@@ -797,6 +836,12 @@ async def get_metric_anomalies_statistics(
             if start_time_ms is None:
                 start_time_ms = default_start_ms
         
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(f"[DEBUG] get_metric_anomalies_statistics called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}", file=sys.stderr)
+            print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
+            print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
+            print(f"[DEBUG] Include trends: {include_trends}", file=sys.stderr)
+        
         client = api_client
         
         # Fetch raw data
@@ -805,6 +850,13 @@ async def get_metric_anomalies_statistics(
             start_time_ms=start_time_ms,
             end_time_ms=end_time_ms
         )
+        
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(f"[DEBUG] API response status: {raw_data.get('status', 'unknown')}", file=sys.stderr)
+            if raw_data.get("status") == "success":
+                print(f"[DEBUG] API response data length: {len(raw_data.get('data', []))}", file=sys.stderr)
+            else:
+                print(f"[DEBUG] API response error: {raw_data.get('message', 'No message')}", file=sys.stderr)
         
         if raw_data.get("status") != "success":
             return raw_data
@@ -1017,12 +1069,24 @@ async def fetch_metric_anomalies(
             if start_time_ms is None:
                 start_time_ms = default_start_ms
 
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(f"[DEBUG] fetch_metric_anomalies called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}", file=sys.stderr)
+            print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
+            print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
+
         # Call the InsightFinder API client with the timeline endpoint
         result = await api_client.get_metricanomaly(
             system_name=system_name,
             start_time_ms=start_time_ms,
             end_time_ms=end_time_ms,
         )
+
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(f"[DEBUG] API response status: {result.get('status', 'unknown')}", file=sys.stderr)
+            if result.get("status") == "success":
+                print(f"[DEBUG] API response data length: {len(result.get('data', []))}", file=sys.stderr)
+            else:
+                print(f"[DEBUG] API response error: {result.get('message', 'No message')}", file=sys.stderr)
 
         if isinstance(result, dict):
             if result.get("data"):
@@ -1054,6 +1118,10 @@ async def get_today_metric_anomalies(
         # Get today's time range in user's timezone
         start_time_ms, end_time_ms = get_today_time_range_ms()
         
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(f"[DEBUG] get_today_metric_anomalies called with system_name={system_name}, min_severity={min_severity}", file=sys.stderr)
+            print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
+            print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
 
         # Call the InsightFinder API client
         result = await api_client.get_metricanomaly(
@@ -1061,6 +1129,13 @@ async def get_today_metric_anomalies(
             start_time_ms=start_time_ms,
             end_time_ms=end_time_ms,
         )
+
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(f"[DEBUG] API response status: {result.get('status', 'unknown')}", file=sys.stderr)
+            if result.get("status") == "success":
+                print(f"[DEBUG] API response data length: {len(result.get('data', []))}", file=sys.stderr)
+            else:
+                print(f"[DEBUG] API response error: {result.get('message', 'No message')}", file=sys.stderr)
 
         if result.get("status") != "success":
             return result
