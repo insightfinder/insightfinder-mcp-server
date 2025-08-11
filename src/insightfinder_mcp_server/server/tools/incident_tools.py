@@ -875,88 +875,114 @@ async def get_today_incidents(
 # Helper tool for LLMs to convert time ranges to proper UTC milliseconds
 @mcp_server.tool()
 async def get_utc_time_range_for_query(
-    time_description: str
+    starttime: str,
+    endtime: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Converts human-readable time descriptions to UTC milliseconds for use in incident queries.
-    This tool helps LLMs generate proper start_time_ms and end_time_ms parameters.
+    Converts specific start time and optional end time to UTC milliseconds for incident queries.
+    Accepts only these formats: "MM-DD-YYYY", "MM-DD-YYYY HH:MM", "MM-DD".
     
     Args:
-        time_description (str): Human description like "today", "yesterday", "last 24 hours", 
-                               "this week", "August 7, 2025", "last Monday", etc.
+        starttime (str): Start time in format "MM-DD-YYYY", "MM-DD-YYYY HH:MM", or "MM-DD"
+        endtime (str, optional): End time in same formats. If not provided, defaults to current time.
     
-    Returns:
-        Dictionary with start_time_ms and end_time_ms in UTC milliseconds, plus human-readable info.
-    
-    Examples:
-        - "today" → Returns today's start/end in UTC milliseconds
-        - "yesterday" → Returns yesterday's full day range
-        - "last 24 hours" → Returns current time minus 24 hours to now
-        - "this week" → Returns Monday to current time
-        - "August 7, 2025" → Returns full day range for that date
+    Supported formats:
+        - "MM-DD-YYYY" (e.g., "08-07-2025") - defaults to 00:00 for start, 23:59 for end
+        - "MM-DD-YYYY HH:MM" (e.g., "08-07-2025 14:30")
+        - "MM-DD" (e.g., "08-07") - assumes current year
     """
     try:
-        time_desc = time_description.lower().strip()
+        import re
         
-        # Get current time in UTC
+        # Get current time in UTC for defaults
         now_utc = datetime.now(timezone.utc)
+        current_year = now_utc.year
         current_ms = int(now_utc.timestamp() * 1000)
         
-        # Parse common time descriptions
-        if time_desc in ["today", "today's incidents"]:
-            start_ms, end_ms = get_today_time_range_ms()
-            description = "Today in user's timezone"
+        def parse_time_string(time_str: str, is_end_time: bool = False) -> int:
+            """Parse time string into UTC milliseconds"""
+            time_str = time_str.strip()
             
-        elif time_desc in ["yesterday", "yesterday's incidents"]:
-            start_ms, end_ms = get_timezone_aware_time_range_ms(1)
-            description = "Yesterday in user's timezone"
+            # Pattern 1: MM-DD-YYYY HH:MM
+            if re.match(r'^\d{1,2}-\d{1,2}-\d{4}\s+\d{1,2}:\d{2}$', time_str):
+                dt = datetime.strptime(time_str, "%m-%d-%Y %H:%M")
+                return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
             
-        elif "last 24 hours" in time_desc or "past 24 hours" in time_desc:
-            start_ms = current_ms - (24 * 60 * 60 * 1000)  # 24 hours ago
-            end_ms = current_ms
-            description = "Last 24 hours"
+            # Pattern 2: MM-DD-YYYY
+            elif re.match(r'^\d{1,2}-\d{1,2}-\d{4}$', time_str):
+                dt = datetime.strptime(time_str, "%m-%d-%Y")
+                if is_end_time:
+                    # For end time, set to 23:59:59
+                    dt = dt.replace(hour=23, minute=59, second=59)
+                return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
             
-        elif "last hour" in time_desc or "past hour" in time_desc:
-            start_ms = current_ms - (60 * 60 * 1000)  # 1 hour ago
-            end_ms = current_ms
-            description = "Last hour"
+            # Pattern 3: MM-DD (assume current year)
+            elif re.match(r'^\d{1,2}-\d{1,2}$', time_str):
+                time_str_with_year = f"{time_str}-{current_year}"
+                dt = datetime.strptime(time_str_with_year, "%m-%d-%Y")
+                if is_end_time:
+                    # For end time, set to 23:59:59
+                    dt = dt.replace(hour=23, minute=59, second=59)
+                return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
             
-        elif "this week" in time_desc:
-            # Get start of week (Monday) to current time
-            days_since_monday = now_utc.weekday()
-            monday_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_since_monday)
-            start_ms = int(monday_utc.timestamp() * 1000)
-            end_ms = current_ms
-            description = "This week (Monday to now)"
-            
-        elif "last week" in time_desc:
-            # Previous Monday to Sunday
-            days_since_monday = now_utc.weekday()
-            this_monday = now_utc.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_since_monday)
-            last_monday = this_monday - timedelta(days=7)
-            last_sunday = this_monday - timedelta(days=1, seconds=1)
-            start_ms = int(last_monday.timestamp() * 1000)
-            end_ms = int(last_sunday.timestamp() * 1000)
-            description = "Last week (Monday to Sunday)"
-            
+            else:
+                raise ValueError(f"Invalid time format: '{time_str}'")
+        
+        # Parse start time
+        try:
+            start_ms = parse_time_string(starttime, is_end_time=False)
+        except ValueError as e:
+            return {
+                "status": "error",
+                "message": f"Invalid starttime format: '{starttime}'",
+                "supported_formats": ["MM-DD-YYYY", "MM-DD-YYYY HH:MM", "MM-DD"],
+                "examples": ["08-07-2025", "08-07-2025 14:30", "08-07"],
+                "error": str(e)
+            }
+        
+        # Parse end time or use current time
+        if endtime is not None:
+            try:
+                end_ms = parse_time_string(endtime, is_end_time=True)
+            except ValueError as e:
+                return {
+                    "status": "error",
+                    "message": f"Invalid endtime format: '{endtime}'",
+                    "supported_formats": ["MM-DD-YYYY", "MM-DD-YYYY HH:MM", "MM-DD"],
+                    "examples": ["08-07-2025", "08-07-2025 17:00", "08-07"],
+                    "error": str(e)
+                }
         else:
-            # Default to last 24 hours for unrecognized descriptions
-            start_ms = current_ms - (24 * 60 * 60 * 1000)
             end_ms = current_ms
-            description = f"Default range (last 24 hours) for: {time_description}"
+            endtime = "current time"
+        
+        # Validate time range
+        if end_ms <= start_ms:
+            return {
+                "status": "error",
+                "message": "End time must be after start time",
+                "starttime": starttime,
+                "endtime": endtime
+            }
+        
+        # Calculate duration
+        duration_hours = (end_ms - start_ms) / (1000 * 60 * 60)
         
         return {
             "status": "success",
-            "time_description": time_description,
+            "input": {
+                "starttime": starttime,
+                "endtime": endtime
+            },
             "query_parameters": {
                 "start_time_ms": start_ms,
                 "end_time_ms": end_ms
             },
             "human_readable": {
-                "description": description,
                 "start_time": format_timestamp_in_user_timezone(start_ms),
                 "end_time": format_timestamp_in_user_timezone(end_ms),
-                "duration_hours": round((end_ms - start_ms) / (1000 * 60 * 60), 1)
+                "duration_hours": round(duration_hours, 1),
+                "description": f"Time range: {starttime} to {endtime}"
             },
             "usage_example": f"get_incidents_overview(system_name='your-system', start_time_ms={start_ms}, end_time_ms={end_ms})"
         }
@@ -964,6 +990,97 @@ async def get_utc_time_range_for_query(
     except Exception as e:
         return {
             "status": "error",
-            "message": f"Error parsing time description '{time_description}': {str(e)}",
-            "suggestion": "Use descriptions like 'today', 'yesterday', 'last 24 hours', 'this week', etc."
+            "message": f"Error parsing time range: {str(e)}",
+            "input": {"starttime": starttime, "endtime": endtime},
+            "help": "Use formats: MM-DD-YYYY, MM-DD-YYYY HH:MM, or MM-DD"
+        }
+
+# Helper tool for LLMs to convert specific start/end times to UTC milliseconds
+@mcp_server.tool()
+async def parse_specific_time_range(
+    start_time: str,
+    end_time: str,
+    timezone_hint: str = "user's local timezone"
+) -> Dict[str, Any]:
+    """
+    Converts specific start_time and end_time strings to UTC milliseconds for incident queries.
+    Use this tool when you have explicit start and end times in MM-DD-YYYY HH:MM format.
+    
+    Args:
+        start_time (str): Start time in format MM-DD-YYYY HH:MM (e.g., "08-07-2025 09:00")
+        end_time (str): End time in format MM-DD-YYYY HH:MM (e.g., "08-07-2025 17:00") 
+        timezone_hint (str): Optional timezone context (for documentation purposes)
+    
+    Returns:
+        Dictionary with start_time_ms and end_time_ms in UTC milliseconds, plus validation info.
+    
+    Examples:
+        - start_time="08-07-2025 09:00", end_time="08-07-2025 17:00" → Work day on Aug 7
+        - start_time="08-06-2025 00:00", end_time="08-06-2025 23:59" → Full day Aug 6
+    """
+    try:
+        # Parse start time
+        try:
+            start_dt = datetime.strptime(start_time, "%m-%d-%Y %H:%M")
+            # Assume user's local timezone, but treat as UTC for API purposes
+            start_ms = int(start_dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+        except ValueError:
+            return {
+                "status": "error",
+                "message": f"Invalid start_time format: '{start_time}'",
+                "expected_format": "MM-DD-YYYY HH:MM",
+                "example": "08-07-2025 09:00"
+            }
+        
+        # Parse end time
+        try:
+            end_dt = datetime.strptime(end_time, "%m-%d-%Y %H:%M")
+            # Assume user's local timezone, but treat as UTC for API purposes
+            end_ms = int(end_dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+        except ValueError:
+            return {
+                "status": "error",
+                "message": f"Invalid end_time format: '{end_time}'",
+                "expected_format": "MM-DD-YYYY HH:MM",
+                "example": "08-07-2025 17:00"
+            }
+        
+        # Validate time range
+        if end_ms <= start_ms:
+            return {
+                "status": "error",
+                "message": "End time must be after start time",
+                "start_time": start_time,
+                "end_time": end_time
+            }
+        
+        # Calculate duration
+        duration_hours = (end_ms - start_ms) / (1000 * 60 * 60)
+        
+        return {
+            "status": "success",
+            "input": {
+                "start_time": start_time,
+                "end_time": end_time,
+                "timezone_hint": timezone_hint
+            },
+            "query_parameters": {
+                "start_time_ms": start_ms,
+                "end_time_ms": end_ms
+            },
+            "human_readable": {
+                "start_time": format_timestamp_in_user_timezone(start_ms),
+                "end_time": format_timestamp_in_user_timezone(end_ms),
+                "duration_hours": round(duration_hours, 1),
+                "description": f"Custom time range: {start_time} to {end_time}"
+            },
+            "usage_example": f"get_incidents_overview(system_name='your-system', start_time_ms={start_ms}, end_time_ms={end_ms})"
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Error parsing time range: {str(e)}",
+            "input": {"start_time": start_time, "end_time": end_time},
+            "help": "Use format MM-DD-YYYY HH:MM for both start_time and end_time"
         }

@@ -32,8 +32,8 @@ def get_current_datetime() -> str:
     now_utc = datetime.now(timezone.utc)
     now_user_tz = now_utc.astimezone(user_timezone)
     
-    # Convert to milliseconds (multiply by 1000)
-    current_time_ms = int(now_utc.timestamp() * 1000)
+    # Convert to milliseconds (multiply by 1000) and round to nearest second
+    current_time_ms = int(now_utc.timestamp()) * 1000
     
     result = {
         'user_timezone': tz_name,
@@ -48,15 +48,15 @@ def get_current_datetime() -> str:
         }
     }
     
-    # Add relative time helpers in milliseconds
+    # Add relative time helpers in milliseconds (rounded to nearest second)
     result['relative_times_milliseconds'] = {
-        '1_hour_ago': int((now_utc - timedelta(hours=1)).timestamp() * 1000),
-        '30_minutes_ago': int((now_utc - timedelta(minutes=30)).timestamp() * 1000),
-        '6_hours_ago': int((now_utc - timedelta(hours=6)).timestamp() * 1000),
-        '12_hours_ago': int((now_utc - timedelta(hours=12)).timestamp() * 1000),
-        '24_hours_ago': int((now_utc - timedelta(hours=24)).timestamp() * 1000),
-        '1_week_ago': int((now_utc - timedelta(days=7)).timestamp() * 1000),
-        '1_month_ago': int((now_utc - timedelta(days=30)).timestamp() * 1000)
+        '1_hour_ago': int((now_utc - timedelta(hours=1)).timestamp()) * 1000,
+        '30_minutes_ago': int((now_utc - timedelta(minutes=30)).timestamp()) * 1000,
+        '6_hours_ago': int((now_utc - timedelta(hours=6)).timestamp()) * 1000,
+        '12_hours_ago': int((now_utc - timedelta(hours=12)).timestamp()) * 1000,
+        '24_hours_ago': int((now_utc - timedelta(hours=24)).timestamp()) * 1000,
+        '1_week_ago': int((now_utc - timedelta(days=7)).timestamp()) * 1000,
+        '1_month_ago': int((now_utc - timedelta(days=30)).timestamp()) * 1000
     }
     
     # Add relative time helpers in seconds (for backward compatibility)
@@ -105,14 +105,14 @@ def get_time_range(hours_back: int = 24) -> str:
         'timezone': tz_name,
         'query_period_hours': hours_back,
         'end_time': {
-            'milliseconds': int(now_utc.timestamp() * 1000),
+            'milliseconds': int(now_utc.timestamp()) * 1000,
             'seconds': int(now_utc.timestamp()),
             'iso_utc': now_utc.isoformat(),
             'iso_user_tz': now_user_tz.isoformat(),
             'human_readable': now_user_tz.strftime('%Y-%m-%d %H:%M:%S %Z')
         },
         'start_time': {
-            'milliseconds': int(start_time_utc.timestamp() * 1000),
+            'milliseconds': int(start_time_utc.timestamp()) * 1000,
             'seconds': int(start_time_utc.timestamp()),
             'iso_utc': start_time_utc.isoformat(),
             'iso_user_tz': start_time_user_tz.isoformat(),
@@ -137,9 +137,9 @@ def get_timezone_aware_timestamp_ms() -> int:
         # Fallback to UTC if timezone is invalid
         user_timezone = timezone.utc
     
-    # Get current time in UTC (since timestamps are always UTC)
+    # Get current time in UTC (since timestamps are always UTC) and round to nearest second
     now_utc = datetime.now(timezone.utc)
-    return int(now_utc.timestamp() * 1000)
+    return int(now_utc.timestamp()) * 1000
 
 def get_timezone_aware_time_range_ms(days_back: int = 1) -> tuple[int, int]:
     """Get start and end timestamps in milliseconds for a time range in user's timezone.
@@ -178,9 +178,9 @@ def get_timezone_aware_time_range_ms(days_back: int = 1) -> tuple[int, int]:
     # Calculate end time: end of current day (23:59:59.999)
     end_time_user_tz = now_user_tz.replace(hour=23, minute=59, second=59, microsecond=999000)
     
-    # Convert both times to UTC timestamps in milliseconds
-    start_time_ms = int(start_time_user_tz.timestamp() * 1000)
-    end_time_ms = int(end_time_user_tz.timestamp() * 1000)
+    # Convert both times to UTC timestamps in milliseconds (rounded to nearest second)
+    start_time_ms = int(start_time_user_tz.timestamp()) * 1000
+    end_time_ms = int(end_time_user_tz.timestamp()) * 1000
     
     # Debug logging
     from ...config.settings import settings
@@ -218,9 +218,9 @@ def get_today_time_range_ms() -> tuple[int, int]:
     # Get start of today (midnight) in user's timezone
     start_of_today = now_user_tz.replace(hour=0, minute=0, second=0, microsecond=0)
     
-    # Convert to UTC timestamps in milliseconds
-    start_time_ms = int(start_of_today.timestamp() * 1000)
-    end_time_ms = int(now_user_tz.timestamp() * 1000)
+    # Convert to UTC timestamps in milliseconds (rounded to nearest second)
+    start_time_ms = int(start_of_today.timestamp()) * 1000
+    end_time_ms = int(now_user_tz.timestamp()) * 1000
     
     return start_time_ms, end_time_ms
 
