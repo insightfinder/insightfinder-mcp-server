@@ -27,9 +27,9 @@ from langgraph.prebuilt import create_react_agent
 
 def make_connections() -> Dict[str, Any]:
     api_url = os.getenv("INSIGHTFINDER_API_URL", "https://stg.insightfinder.com")
-    system_name = os.getenv("INSIGHTFINDER_SYSTEM_NAME", "IF Prod System")
-    user_name = os.getenv("INSIGHTFINDER_USER_NAME", "mustafa")
-    license_key = os.getenv("INSIGHTFINDER_LICENSE_KEY", "47b73a737d8a806ef37e1c6d7245b0671261faea")
+    system_name = os.getenv("INSIGHTFINDER_SYSTEM_NAME", "system_name")
+    user_name = os.getenv("INSIGHTFINDER_USER_NAME", "username")
+    license_key = os.getenv("INSIGHTFINDER_LICENSE_KEY", "your_license_key_here")
     enable_debug = os.getenv("ENABLE_DEBUG_MESSAGES", "false")
 
     return {
