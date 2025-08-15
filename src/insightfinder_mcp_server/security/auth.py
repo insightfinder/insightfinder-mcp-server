@@ -217,23 +217,55 @@ class SecurityManager:
             raise AuthenticationError(f"Unsupported authentication method: {settings.HTTP_AUTH_METHOD}")
     
     def _get_client_ip(self, request: Request) -> str:
-        """Get the real client IP address."""
-        # Check for forwarded headers (in case behind proxy)
-        forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            # Take the first IP in the chain
-            return forwarded_for.split(",")[0].strip()
-        
-        forwarded = request.headers.get("X-Forwarded")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        
-        real_ip = request.headers.get("X-Real-IP")
-        if real_ip:
-            return real_ip
+        """Get the real client IP address with enhanced proxy support."""
+        # When behind a trusted proxy, check forwarded headers
+        if settings.BEHIND_PROXY and settings.TRUST_PROXY_HEADERS:
+            # Check X-Forwarded-For header (most common)
+            forwarded_for = request.headers.get("X-Forwarded-For")
+            if forwarded_for:
+                # Take the first IP in the chain (original client)
+                # Format: "client_ip, proxy1_ip, proxy2_ip"
+                client_ip = forwarded_for.split(",")[0].strip()
+                if self._is_valid_ip(client_ip):
+                    return client_ip
+            
+            # Check X-Real-IP header (nginx specific)
+            real_ip = request.headers.get("X-Real-IP")
+            if real_ip and self._is_valid_ip(real_ip.strip()):
+                return real_ip.strip()
+            
+            # Check CF-Connecting-IP header (CloudFlare)
+            cf_connecting_ip = request.headers.get("CF-Connecting-IP")
+            if cf_connecting_ip and self._is_valid_ip(cf_connecting_ip.strip()):
+                return cf_connecting_ip.strip()
+            
+            # Check X-Forwarded header (less common)
+            forwarded = request.headers.get("X-Forwarded")
+            if forwarded:
+                # Extract IP from format "for=ip;proto=https"
+                parts = forwarded.split(";")
+                for part in parts:
+                    if part.strip().startswith("for="):
+                        ip = part.split("=", 1)[1].strip()
+                        if self._is_valid_ip(ip):
+                            return ip
         
         # Fallback to direct client IP
         return request.client.host if request.client else "unknown"
+    
+    def _is_valid_ip(self, ip: str) -> bool:
+        """Validate if string is a valid IP address."""
+        try:
+            # Remove port if present (IPv4:port or [IPv6]:port)
+            if ':' in ip and not ip.startswith('['):
+                ip = ip.split(':')[0]
+            elif ip.startswith('[') and ']:' in ip:
+                ip = ip.split(']:')[0][1:]
+            
+            ipaddress.ip_address(ip)
+            return True
+        except ValueError:
+            return False
 
 # Create a singleton instance
 security_manager = SecurityManager()

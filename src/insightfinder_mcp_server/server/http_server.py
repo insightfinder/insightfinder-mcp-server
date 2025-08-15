@@ -1,11 +1,13 @@
 import asyncio
 import sys
-from typing import Optional
+import time
+from typing import Optional, AsyncGenerator, Dict, Any
 import uvicorn
 from fastapi import FastAPI, Request, Response, Depends
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from sse_starlette.sse import EventSourceResponse
 import json
 import logging
 from ..config.settings import settings
@@ -16,15 +18,19 @@ logger = logging.getLogger(__name__)
 
 class HTTPMCPServer:
     """
-    HTTP MCP Server that provides streaming JSON-RPC over HTTP.
+    HTTP MCP Server that provides streaming JSON-RPC over HTTP with SSE support.
     """
     
     def __init__(self):
         self.app = FastAPI(
             title=settings.SERVER_NAME,
             version=settings.SERVER_VERSION,
-            description="InsightFinder MCP Server - HTTP Transport"
+            description="InsightFinder MCP Server - HTTP Transport with SSE Streaming"
         )
+        
+        # SSE connection tracking
+        self.sse_connections: Dict[str, Dict[str, Any]] = {}
+        self.connection_counter = 0
         
         # Add security middleware
         self.setup_middleware()
@@ -47,15 +53,26 @@ class HTTPMCPServer:
     def setup_middleware(self):
         """Setup FastAPI middleware for security."""
         
+        # Add trusted host middleware when behind proxy
+        if settings.BEHIND_PROXY:
+            allowed_hosts = [host.strip() for host in settings.ALLOWED_HOSTS.split(",")]
+            self.app.add_middleware(
+                TrustedHostMiddleware,
+                allowed_hosts=allowed_hosts + ["*"]  # Allow all hosts if behind proxy
+            )
+        
         # Add CORS middleware if enabled
-        if settings.HTTP_CORS_ENABLED:
+        if settings.HTTP_CORS_ENABLED or settings.SSE_ENABLED:
             origins = [origin.strip() for origin in settings.HTTP_CORS_ORIGINS.split(",")]
+            sse_headers = [header.strip() for header in settings.SSE_CORS_HEADERS.split(",")]
+            
             self.app.add_middleware(
                 CORSMiddleware,
                 allow_origins=origins,
                 allow_credentials=True,
-                allow_methods=["GET", "POST"],
-                allow_headers=["*"],
+                allow_methods=["GET", "POST", "OPTIONS"],
+                allow_headers=["*"] + sse_headers,
+                expose_headers=sse_headers,
             )
         
         # Add request size limiting
@@ -78,6 +95,21 @@ class HTTPMCPServer:
                 # Skip authentication for health check and root endpoints
                 if request.url.path in ["/", "/health", "/docs", "/openapi.json"]:
                     return await call_next(request)
+                
+                # Handle proxy headers for HTTPS detection
+                if settings.BEHIND_PROXY and settings.TRUST_PROXY_HEADERS:
+                    # Check if request came through HTTPS proxy
+                    forwarded_proto = request.headers.get("X-Forwarded-Proto", "").lower()
+                    if forwarded_proto == "https":
+                        request.scope["scheme"] = "https"
+                    
+                    # Update host if forwarded
+                    forwarded_host = request.headers.get("X-Forwarded-Host")
+                    if forwarded_host:
+                        request.scope["headers"] = [
+                            (name, value) if name != b"host" else (b"host", forwarded_host.encode())
+                            for name, value in request.scope.get("headers", [])
+                        ]
                 
                 # Authenticate the request
                 await security_manager.authenticate(request)
@@ -117,6 +149,91 @@ class HTTPMCPServer:
         @self.app.get("/health")
         async def health_check():
             return {"status": "healthy", "service": settings.SERVER_NAME}
+        
+        # SSE endpoints for streaming
+        if settings.SSE_ENABLED:
+            @self.app.get("/mcp/events")
+            async def mcp_sse_events(request: Request):
+                """SSE endpoint for MCP streaming protocol."""
+                connection_id = self._add_sse_connection(request)
+                return EventSourceResponse(
+                    self._generate_sse_events(request, connection_id),
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Connection-ID": connection_id
+                    }
+                )
+            
+            @self.app.post("/mcp/stream")
+            async def mcp_stream_request(request: Request):
+                """Handle streaming MCP requests via SSE."""
+                connection_id = self._add_sse_connection(request)
+                
+                try:
+                    body = await request.body()
+                    if not body:
+                        raise ValueError("Empty request body")
+                    
+                    mcp_request = json.loads(body.decode('utf-8'))
+                    
+                    return EventSourceResponse(
+                        self._handle_streaming_mcp_request(request, connection_id, mcp_request),
+                        headers={
+                            "Cache-Control": "no-cache", 
+                            "Connection": "keep-alive",
+                            "X-Connection-ID": connection_id
+                        }
+                    )
+                    
+                except Exception as e:
+                    self._remove_sse_connection(connection_id)
+                    return Response(
+                        content=json.dumps({"error": str(e)}),
+                        status_code=400,
+                        media_type="application/json"
+                    )
+            
+            @self.app.post("/tools/{tool_name}/stream")
+            async def stream_tool_execution(tool_name: str, request: Request):
+                """Stream individual tool execution via SSE."""
+                connection_id = self._add_sse_connection(request)
+                
+                try:
+                    body = await request.body()
+                    tool_args = json.loads(body.decode('utf-8')) if body else {}
+                    
+                    return EventSourceResponse(
+                        self._stream_tool_execution(request, connection_id, tool_name, tool_args),
+                        headers={
+                            "Cache-Control": "no-cache",
+                            "Connection": "keep-alive", 
+                            "X-Connection-ID": connection_id
+                        }
+                    )
+                    
+                except Exception as e:
+                    self._remove_sse_connection(connection_id)
+                    return Response(
+                        content=json.dumps({"error": str(e)}),
+                        status_code=400,
+                        media_type="application/json"
+                    )
+            
+            @self.app.get("/sse/connections")
+            async def get_sse_connections():
+                """Get active SSE connections (debug endpoint)."""
+                return {
+                    "total_connections": len(self.sse_connections),
+                    "connections": [
+                        {
+                            "id": conn_id,
+                            "created_at": info["created_at"],
+                            "active": info["active"]
+                        }
+                        for conn_id, info in self.sse_connections.items()
+                    ]
+                }
         
         @self.app.get("/tools")
         async def list_tools_http():
@@ -267,6 +384,346 @@ class HTTPMCPServer:
                     media_type="application/json"
                 )
     
+    def _add_sse_connection(self, request: Request) -> str:
+        """Add and track SSE connection."""
+        connection_id = f"conn_{self.connection_counter}_{int(time.time())}"
+        self.connection_counter += 1
+        
+        self.sse_connections[connection_id] = {
+            "created_at": time.time(),
+            "request": request,
+            "active": True
+        }
+        
+        # Clean up old connections if we exceed max
+        if len(self.sse_connections) > settings.SSE_MAX_CONNECTIONS:
+            oldest_conn = min(self.sse_connections.items(), 
+                            key=lambda x: x[1]["created_at"])
+            del self.sse_connections[oldest_conn[0]]
+        
+        return connection_id
+    
+    def _remove_sse_connection(self, connection_id: str):
+        """Remove SSE connection from tracking."""
+        self.sse_connections.pop(connection_id, None)
+    
+    async def _generate_sse_events(self, request: Request, connection_id: str) -> AsyncGenerator[Dict[str, Any], None]:
+        """Generate SSE events for a connection."""
+        try:
+            # Send initial connection event
+            yield {
+                "event": "connected",
+                "data": json.dumps({
+                    "connection_id": connection_id,
+                    "timestamp": time.time(),
+                    "server": settings.SERVER_NAME
+                })
+            }
+            
+            # Keep connection alive with heartbeats
+            while True:
+                if await request.is_disconnected():
+                    break
+                
+                connection = self.sse_connections.get(connection_id)
+                if not connection or not connection.get("active"):
+                    break
+                
+                if settings.SSE_HEARTBEAT_ENABLED:
+                    yield {
+                        "event": "heartbeat",
+                        "data": json.dumps({
+                            "timestamp": time.time(),
+                            "connection_id": connection_id
+                        })
+                    }
+                
+                await asyncio.sleep(settings.SSE_PING_INTERVAL)
+                
+        except asyncio.CancelledError:
+            self._remove_sse_connection(connection_id)
+            raise
+        except Exception as e:
+            logger.error(f"SSE event generation error: {e}")
+            yield {
+                "event": "error", 
+                "data": json.dumps({
+                    "error": str(e),
+                    "connection_id": connection_id
+                })
+            }
+        finally:
+            self._remove_sse_connection(connection_id)
+    
+    async def _stream_tool_execution(self, request: Request, connection_id: str, 
+                                   tool_name: str, tool_args: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream tool execution results generically."""
+        try:
+            # Send processing started event
+            yield {
+                "event": "tool_started",
+                "data": json.dumps({
+                    "tool": tool_name,
+                    "arguments": tool_args,
+                    "timestamp": time.time(),
+                    "connection_id": connection_id
+                })
+            }
+            
+            # Execute the tool directly - let the tool handle its own streaming logic
+            result = await self._execute_tool_direct(tool_name, tool_args)
+            
+            # Stream the result with optional batching for large datasets
+            async for chunk in self._stream_result(request, tool_name, result):
+                if await request.is_disconnected():
+                    break
+                yield chunk
+            
+            # Send completion event
+            yield {
+                "event": "tool_completed",
+                "data": json.dumps({
+                    "tool": tool_name,
+                    "timestamp": time.time(),
+                    "connection_id": connection_id
+                })
+            }
+            
+        except Exception as e:
+            yield {
+                "event": "tool_error",
+                "data": json.dumps({
+                    "tool": tool_name,
+                    "error": str(e),
+                    "timestamp": time.time(),
+                    "connection_id": connection_id
+                })
+            }
+    
+    async def _stream_result(self, request: Request, tool_name: str, result: Any) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream any result with intelligent batching."""
+        # Handle different result types generically
+        if isinstance(result, list) and len(result) > 10:
+            # Stream large lists in batches
+            batch_size = 10
+            total_items = len(result)
+            
+            for i in range(0, total_items, batch_size):
+                if await request.is_disconnected():
+                    break
+                    
+                batch = result[i:i + batch_size]
+                yield {
+                    "event": "partial_result",
+                    "data": json.dumps({
+                        "tool": tool_name,
+                        "batch": batch,
+                        "progress": {
+                            "current": i + len(batch),
+                            "total": total_items,
+                            "percentage": ((i + len(batch)) / total_items) * 100
+                        },
+                        "timestamp": time.time()
+                    })
+                }
+                await asyncio.sleep(0.1)  # Small delay for streaming effect
+                
+        elif isinstance(result, dict) and any(key in result for key in ["anomalies", "incidents", "deployments", "traces"]):
+            # Handle structured results with nested arrays
+            for key, data in result.items():
+                if isinstance(data, list) and len(data) > 5:
+                    # Stream nested arrays in smaller batches
+                    batch_size = 5
+                    total_items = len(data)
+                    
+                    for i in range(0, total_items, batch_size):
+                        if await request.is_disconnected():
+                            break
+                            
+                        batch = data[i:i + batch_size]
+                        yield {
+                            "event": "partial_result",
+                            "data": json.dumps({
+                                "tool": tool_name,
+                                "type": key,
+                                "batch": batch,
+                                "progress": {
+                                    "current": i + len(batch),
+                                    "total": total_items,
+                                    "percentage": ((i + len(batch)) / total_items) * 100
+                                },
+                                "timestamp": time.time()
+                            })
+                        }
+                        await asyncio.sleep(0.1)
+                else:
+                    # Small data or non-list data, send as complete result
+                    yield {
+                        "event": "tool_result",
+                        "data": json.dumps({
+                            "tool": tool_name,
+                            "type": key,
+                            "result": data,
+                            "timestamp": time.time()
+                        })
+                    }
+        else:
+            # Simple result, send as complete
+            yield {
+                "event": "tool_result",
+                "data": json.dumps({
+                    "tool": tool_name,
+                    "result": result,
+                    "timestamp": time.time()
+                })
+            }
+    
+    async def _execute_tool_direct(self, tool_name: str, tool_args: Dict[str, Any]) -> Any:
+        """Execute a tool directly and return results."""
+        # Access tools via the tool manager
+        tools_dict = None
+        if hasattr(mcp_server, '_tool_manager'):
+            tool_manager = mcp_server._tool_manager
+            if hasattr(tool_manager, '_tools'):
+                tools_dict = tool_manager._tools
+        
+        if not tools_dict or tool_name not in tools_dict:
+            raise ValueError(f"Tool not found: {tool_name}")
+        
+        # Call the tool
+        tool = tools_dict[tool_name]
+        tool_func = getattr(tool, 'fn', tool)
+        
+        if getattr(tool, 'is_async', False):
+            return await tool_func(**tool_args)
+        else:
+            return tool_func(**tool_args)
+    
+    async def _handle_streaming_mcp_request(self, request: Request, connection_id: str, 
+                                          mcp_request: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process MCP request and stream responses."""
+        try:
+            request_id = mcp_request.get("id")
+            method = mcp_request.get("method")
+            params = mcp_request.get("params", {})
+            
+            # Send initial acknowledgment
+            yield {
+                "event": "mcp_response",
+                "data": json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"status": "processing", "connection_id": connection_id}
+                })
+            }
+            
+            if method == "tools/call":
+                tool_name = params.get("name")
+                tool_args = params.get("arguments", {})
+                
+                if not tool_name:
+                    yield {
+                        "event": "mcp_error",
+                        "data": json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "error": {"code": -32602, "message": "Missing tool name"}
+                        })
+                    }
+                    return
+                
+                # Stream tool execution
+                async for chunk in self._stream_tool_execution(request, connection_id, tool_name, tool_args):
+                    if await request.is_disconnected():
+                        break
+                    
+                    # Wrap tool events in MCP response format
+                    if chunk.get("event") == "tool_result":
+                        yield {
+                            "event": "mcp_response",
+                            "data": json.dumps({
+                                "jsonrpc": "2.0",
+                                "id": request_id,
+                                "result": chunk["data"]
+                            })
+                        }
+                    else:
+                        yield chunk
+                        
+            elif method == "tools/list":
+                # Handle tools list request
+                tools_data = []
+                if hasattr(mcp_server, '_tool_manager'):
+                    tool_manager = mcp_server._tool_manager
+                    if hasattr(tool_manager, '_tools'):
+                        tools_dict = tool_manager._tools
+                        for name, tool in tools_dict.items():
+                            tools_data.append({
+                                "name": name,
+                                "description": getattr(tool, 'description', ''),
+                                "parameters": getattr(tool, 'parameters', {}),
+                                "is_async": getattr(tool, 'is_async', False)
+                            })
+                
+                yield {
+                    "event": "mcp_response",
+                    "data": json.dumps({
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {"tools": tools_data}
+                    })
+                }
+                
+            elif method == "initialize":
+                capabilities = await self.get_capabilities()
+                yield {
+                    "event": "mcp_response",
+                    "data": json.dumps({
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "protocolVersion": "2024-11-05",
+                            "capabilities": capabilities,
+                            "serverInfo": {
+                                "name": settings.SERVER_NAME,
+                                "version": settings.SERVER_VERSION
+                            }
+                        }
+                    })
+                }
+            else:
+                # Process other MCP methods through the standard handler
+                response = await self.process_mcp_request(mcp_request)
+                yield {
+                    "event": "mcp_response",
+                    "data": json.dumps(response)
+                }
+            
+            # Send completion event
+            yield {
+                "event": "mcp_complete",
+                "data": json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"status": "completed", "connection_id": connection_id}
+                })
+            }
+            
+        except Exception as e:
+            logger.error(f"Streaming MCP request error: {e}")
+            yield {
+                "event": "mcp_error",
+                "data": json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": mcp_request.get("id") if 'mcp_request' in locals() else None,
+                    "error": {
+                        "code": -32603,
+                        "message": f"Internal error: {str(e)}",
+                        "connection_id": connection_id
+                    }
+                })
+            }
+    
     async def process_mcp_request(self, rpc_request: dict) -> dict:
         """Process an MCP JSON-RPC request."""
         try:
@@ -414,10 +871,10 @@ class HTTPMCPServer:
             if hasattr(tool_manager, '_tools'):
                 tool_count = len(tool_manager._tools)
         
-        return {
+        capabilities = {
             "tools": {
                 "listChanged": True,
-                "supportsProgress": False
+                "supportsProgress": True  # Enable progress support for streaming
             },
             "logging": {},
             "prompts": {},
@@ -426,6 +883,26 @@ class HTTPMCPServer:
                 "toolCount": tool_count
             }
         }
+        
+        # Add streaming capabilities if SSE is enabled
+        if settings.SSE_ENABLED:
+            capabilities["streaming"] = {
+                "supported": True,
+                "transport": "sse",
+                "endpoints": {
+                    "events": "/mcp/events",
+                    "stream": "/mcp/stream", 
+                    "tool_stream": "/tools/{tool_name}/stream"
+                },
+                "features": {
+                    "heartbeat": settings.SSE_HEARTBEAT_ENABLED,
+                    "progress_tracking": True,
+                    "batch_streaming": True,
+                    "connection_tracking": True
+                }
+            }
+        
+        return capabilities
     
     def get_tool_schema(self, tool_func) -> dict:
         """Extract tool schema from function annotations."""
@@ -485,6 +962,17 @@ class HTTPMCPServer:
         print(f"Starting {settings.SERVER_NAME} v{settings.SERVER_VERSION}", file=sys.stderr)
         print(f"Server running on http://{settings.SERVER_HOST}:{settings.SERVER_PORT}", file=sys.stderr)
         print(f"MCP endpoint: http://{settings.SERVER_HOST}:{settings.SERVER_PORT}/mcp", file=sys.stderr)
+        
+        # Print SSE information
+        if settings.SSE_ENABLED:
+            print(f"SSE Streaming: ENABLED", file=sys.stderr)
+            print(f"SSE Events: http://{settings.SERVER_HOST}:{settings.SERVER_PORT}/mcp/events", file=sys.stderr)
+            print(f"SSE Streaming: http://{settings.SERVER_HOST}:{settings.SERVER_PORT}/mcp/stream", file=sys.stderr)
+            print(f"Max Connections: {settings.SSE_MAX_CONNECTIONS}", file=sys.stderr)
+            if settings.SSE_HEARTBEAT_ENABLED:
+                print(f"Heartbeat Interval: {settings.SSE_PING_INTERVAL}s", file=sys.stderr)
+        else:
+            print(f"SSE Streaming: DISABLED (set SSE_ENABLED=true to enable)", file=sys.stderr)
         
         # Print authentication status
         if settings.HTTP_AUTH_ENABLED:

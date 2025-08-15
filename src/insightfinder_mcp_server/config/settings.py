@@ -22,6 +22,11 @@ class Settings:
     SERVER_HOST: str = os.getenv("SERVER_HOST", "0.0.0.0")
     SERVER_PORT: int = int(os.getenv("SERVER_PORT", "8000"))
     
+    # Proxy Configuration
+    BEHIND_PROXY: bool = os.getenv("BEHIND_PROXY", "false").lower() == "true"
+    TRUST_PROXY_HEADERS: bool = os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true"
+    ALLOWED_HOSTS: str = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1")
+    
     # Transport Configuration
     TRANSPORT_TYPE: str = os.getenv("TRANSPORT_TYPE", "http")  # stdio, http
     
@@ -49,6 +54,13 @@ class Settings:
     
     # Rate Limiting Configuration
     HTTP_RATE_LIMIT_ENABLED: bool = os.getenv("HTTP_RATE_LIMIT_ENABLED", "true").lower() == "true"
+    
+    # SSE Configuration
+    SSE_ENABLED: bool = os.getenv("SSE_ENABLED", "true").lower() == "true"
+    SSE_PING_INTERVAL: int = int(os.getenv("SSE_PING_INTERVAL", "30"))
+    SSE_MAX_CONNECTIONS: int = int(os.getenv("SSE_MAX_CONNECTIONS", "100"))
+    SSE_CORS_HEADERS: str = os.getenv("SSE_CORS_HEADERS", "Cache-Control,Content-Type")
+    SSE_HEARTBEAT_ENABLED: bool = os.getenv("SSE_HEARTBEAT_ENABLED", "true").lower() == "true"
 
 # Create a singleton instance of the settings
 settings = Settings()

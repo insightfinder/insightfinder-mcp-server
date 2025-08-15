@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""InsightFinder MCP HTTP LangChain Chatbot
+"""InsightFinder MCP SSE Streaming LangChain Chatbot
 
-This version connects to the InsightFinder MCP Server via HTTP instead of stdio,
-allowing you to test the HTTP server in real-time with OpenAI LLM.
+This version connects to the InsightFinder MCP Server via Server-Sent Events (SSE),
+allowing real-time streaming of tool execution results with progress updates.
 """
 
 from __future__ import annotations
@@ -11,7 +11,9 @@ import asyncio
 import os
 import json
 import httpx
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict, List, Optional, AsyncGenerator
+from dataclasses import dataclass
 
 from opentelemetry import trace
 
@@ -24,25 +26,81 @@ from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
-# 0.  HTTP MCP Tool Implementation
+# 0. SSE Event Handling
 # ---------------------------------------------------------------------------
 
-class HTTPMCPTool(BaseTool):
-    """A LangChain tool that calls the MCP server via HTTP."""
+@dataclass
+class SSEEvent:
+    """Represents an SSE event"""
+    event: str
+    data: str
+    id: Optional[str] = None
+
+
+class SSEEventHandler:
+    """Handles SSE event processing"""
+    
+    def __init__(self):
+        self.on_connected: Optional[callable] = None
+        self.on_heartbeat: Optional[callable] = None
+        self.on_tool_started: Optional[callable] = None
+        self.on_partial_result: Optional[callable] = None
+        self.on_tool_result: Optional[callable] = None
+        self.on_tool_completed: Optional[callable] = None
+        self.on_error: Optional[callable] = None
+    
+    async def handle_event(self, event: str, data: str):
+        """Handle incoming SSE events"""
+        try:
+            if data:
+                event_data = json.loads(data)
+            else:
+                event_data = {}
+            
+            if event == 'connected' and self.on_connected:
+                await self.on_connected(event_data)
+            elif event == 'heartbeat' and self.on_heartbeat:
+                await self.on_heartbeat(event_data)
+            elif event == 'tool_started' and self.on_tool_started:
+                await self.on_tool_started(event_data)
+            elif event == 'partial_result' and self.on_partial_result:
+                await self.on_partial_result(event_data)
+            elif event == 'tool_result' and self.on_tool_result:
+                await self.on_tool_result(event_data)
+            elif event == 'tool_completed' and self.on_tool_completed:
+                await self.on_tool_completed(event_data)
+            elif event in ['error', 'tool_error'] and self.on_error:
+                await self.on_error(event_data)
+                
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse event data: {e}")
+        except Exception as e:
+            print(f"Error handling SSE event: {e}")
+
+
+# ---------------------------------------------------------------------------
+# 1. SSE MCP Tool Implementation
+# ---------------------------------------------------------------------------
+
+class SSEMCPTool(BaseTool):
+    """A LangChain tool that calls the MCP server via SSE streaming."""
     
     name: str
     description: str
     base_url: str = Field(description="Base URL for the MCP server")
     tool_name: str = Field(description="Name of the tool in MCP")
     tool_schema: Dict[str, Any] = Field(description="Schema for tool arguments")
+    enable_progress: bool = Field(default=False, description="Enable verbose progress updates")
     
-    def __init__(self, name: str, description: str, base_url: str, tool_name: str, tool_schema: Dict[str, Any], **kwargs):
+    def __init__(self, name: str, description: str, base_url: str, tool_name: str, 
+                 tool_schema: Dict[str, Any], enable_progress: bool = False, **kwargs):
         super().__init__(
             name=name,
             description=description,
             base_url=base_url,
             tool_name=tool_name,
             tool_schema=tool_schema,
+            enable_progress=enable_progress,
             **kwargs
         )
     
@@ -51,71 +109,160 @@ class HTTPMCPTool(BaseTool):
         """Get argument schema from tool schema."""
         return self.tool_schema.get("properties", {})
     
-    async def _arun(self, **kwargs) -> str:
-        """Execute the tool via HTTP request."""
+    async def _stream_tool_execution(self, **kwargs) -> AsyncGenerator[Dict[str, Any], None]:
+        """Stream tool execution via SSE."""
         config = get_server_config()
         headers = get_auth_headers(config)
+        headers["Accept"] = "text/event-stream"
+        
+        # Filter out None values
+        tool_args = {k: v for k, v in kwargs.items() if v is not None}
         
         async with create_http_client(config) as client:
-            request = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": self.tool_name,
-                    "arguments": {k: v for k, v in kwargs.items() if v is not None}
-                }
-            }
-            
             try:
-                response = await client.post(
-                    f"{self.base_url}/mcp",
-                    json=request,
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/tools/{self.tool_name}/stream",
+                    json=tool_args,
                     headers=headers,
-                    timeout=30.0
-                )
-                response.raise_for_status()
-                
-                result = response.json()
-                
-                if "error" in result:
-                    return f"Error: {result['error']['message']}"
-                
-                # Extract the content from the MCP response
-                content = result.get("result", {}).get("content", [])
-                if content and len(content) > 0:
-                    return content[0].get("text", str(result))
-                
-                return str(result)
-                
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 401:
-                    return f"Authentication failed: {e.response.text}"
-                elif e.response.status_code == 403:
-                    return f"Authorization failed: {e.response.text}"
-                elif e.response.status_code == 429:
-                    return f"Rate limit exceeded: {e.response.text}"
-                else:
-                    return f"HTTP error {e.response.status_code}: {e.response.text}"
+                    timeout=60.0
+                ) as response:
+                    response.raise_for_status()
+                    
+                    current_event = None
+                    async for line in response.aiter_lines():
+                        line = line.strip()
+                        
+                        if line.startswith('event:'):
+                            current_event = line[6:].strip()
+                        elif line.startswith('data:'):
+                            data = line[5:].strip()
+                            
+                            if current_event and data:
+                                try:
+                                    event_data = json.loads(data)
+                                    yield {"event": current_event, "data": event_data}
+                                except json.JSONDecodeError:
+                                    yield {"event": current_event, "data": {"raw": data}}
+                            
+                            current_event = None
+                        elif not line:
+                            # Empty line indicates end of event
+                            current_event = None
+                            
             except Exception as e:
-                return f"HTTP request failed: {str(e)}"
+                yield {"event": "error", "data": {"error": str(e)}}
+    
+    async def _arun(self, **kwargs) -> str:
+        """Execute the tool via SSE streaming."""
+        results = []
+        progress_info = None
+        tool_info = None
+        
+        # Only show initial message if progress is enabled
+        if self.enable_progress:
+            print(f"🔧 Streaming {self.tool_name}...")
+        
+        async for event_data in self._stream_tool_execution(**kwargs):
+            event = event_data.get("event")
+            data = event_data.get("data", {})
+            
+            if event == "tool_started":
+                tool_info = data
+                if self.enable_progress:
+                    print(f"  ▶️  Started: {data.get('tool', 'unknown')}")
+            
+            elif event == "partial_result":
+                batch = data.get("batch", [])
+                progress = data.get("progress", {})
+                results.extend(batch)
+                
+                if self.enable_progress and progress:
+                    current = progress.get("current", 0)
+                    total = progress.get("total", 0)
+                    percentage = progress.get("percentage", 0)
+                    print(f"  📊 Progress: {current}/{total} ({percentage:.1f}%)")
+                    progress_info = progress
+            
+            elif event == "tool_result":
+                result = data.get("result")
+                if isinstance(result, list):
+                    results.extend(result)
+                else:
+                    results.append(result)
+                    
+                if self.enable_progress:
+                    print(f"  ✅ Received result")
+            
+            elif event == "tool_completed":
+                if self.enable_progress:
+                    print(f"  🏁 Completed: {data.get('tool', 'unknown')}")
+                break
+                
+            elif event == "error" or event == "tool_error":
+                error_msg = data.get("error", "Unknown error")
+                print(f"  ❌ Error: {error_msg}")
+                return f"Tool execution failed: {error_msg}"
+        
+        # Format the final result
+        if results:
+            if len(results) == 1:
+                return json.dumps(results[0], indent=2, default=str)
+            else:
+                summary = f"Retrieved {len(results)} items"
+                if progress_info:
+                    summary += f" (streamed in batches)"
+                return f"{summary}\n\n" + json.dumps(results, indent=2, default=str)
+        else:
+            return "No results returned from tool execution"
     
     def _run(self, **kwargs) -> str:
         """Synchronous version (calls async version)."""
         return asyncio.run(self._arun(**kwargs))
 
 
-class HTTPMCPClient:
-    """HTTP client for MCP server that provides LangChain-compatible tools."""
+# ---------------------------------------------------------------------------
+# 2. SSE MCP Client
+# ---------------------------------------------------------------------------
+
+class SSEMCPClient:
+    """SSE-enabled MCP client that provides streaming LangChain tools."""
     
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip('/')
-        self.tools: List[HTTPMCPTool] = []
+        self.tools: List[SSEMCPTool] = []
+        self.connection_id: Optional[str] = None
+        self.event_handler = SSEEventHandler()
+    
+    async def check_sse_support(self) -> bool:
+        """Check if the server supports SSE streaming."""
+        config = get_server_config()
+        headers = get_auth_headers(config)
+        
+        async with create_http_client(config) as client:
+            try:
+                response = await client.get(f"{self.base_url}/", headers=headers, timeout=5.0)
+                response.raise_for_status()
+                
+                server_info = response.json()
+                capabilities = server_info.get("capabilities", {})
+                streaming = capabilities.get("streaming", {})
+                
+                return streaming.get("supported", False)
+                
+            except Exception:
+                return False
     
     async def initialize(self) -> bool:
         """Initialize the MCP session and load tools."""
         config = get_server_config()
         headers = get_auth_headers(config)
+        
+        # Check SSE support first
+        if not await self.check_sse_support():
+            print("⚠️  Server does not support SSE streaming, falling back to standard HTTP")
+        else:
+            print("✅ Server supports SSE streaming")
         
         async with create_http_client(config) as client:
             # Initialize the session
@@ -125,9 +272,9 @@ class HTTPMCPClient:
                 "method": "initialize",
                 "params": {
                     "protocolVersion": "2024-11-05",
-                    "capabilities": {},
+                    "capabilities": {"streaming": True},
                     "clientInfo": {
-                        "name": "LangChain HTTP MCP Client",
+                        "name": "LangChain SSE MCP Client",
                         "version": "1.0.0"
                     }
                 }
@@ -168,19 +315,22 @@ class HTTPMCPClient:
                     print(f"Failed to get tools: {tools_result['error']}")
                     return False
                 
-                # Create LangChain tools
+                # Create SSE-enabled LangChain tools
                 self.tools = []
+                enable_progress = os.getenv("SSE_SHOW_PROGRESS", "false").lower() == "true"
+                
                 for tool_info in tools_result["result"]["tools"]:
-                    tool = HTTPMCPTool(
+                    tool = SSEMCPTool(
                         name=tool_info["name"],
-                        description=tool_info["description"],
+                        description=tool_info["description"] + " (with SSE streaming)",
                         base_url=self.base_url,
                         tool_name=tool_info["name"],
-                        tool_schema=tool_info.get("inputSchema", {"type": "object", "properties": {}})
+                        tool_schema=tool_info.get("inputSchema", {"type": "object", "properties": {}}),
+                        enable_progress=enable_progress  # Control verbose progress output via SSE_SHOW_PROGRESS
                     )
                     self.tools.append(tool)
                 
-                print(f"✓ Loaded {len(self.tools)} tools from HTTP MCP server")
+                print(f"✓ Loaded {len(self.tools)} SSE-enabled tools")
                 return True
                 
             except httpx.HTTPStatusError as e:
@@ -197,19 +347,59 @@ class HTTPMCPClient:
                 print(f"Failed to connect to MCP server: {e}")
                 return False
     
-    def get_tools(self) -> List[HTTPMCPTool]:
+    async def test_sse_connection(self) -> bool:
+        """Test SSE connection."""
+        config = get_server_config()
+        headers = get_auth_headers(config)
+        headers["Accept"] = "text/event-stream"
+        
+        print("🔌 Testing SSE connection...")
+        
+        async with create_http_client(config) as client:
+            try:
+                async with client.stream(
+                    "GET",
+                    f"{self.base_url}/mcp/events",
+                    headers=headers,
+                    timeout=10.0
+                ) as response:
+                    response.raise_for_status()
+                    
+                    event_count = 0
+                    start_time = time.time()
+                    
+                    async for line in response.aiter_lines():
+                        line = line.strip()
+                        
+                        if line.startswith('data:'):
+                            event_count += 1
+                            if event_count >= 2:  # Connected + heartbeat
+                                break
+                        
+                        # Timeout after 5 seconds
+                        if time.time() - start_time > 5:
+                            break
+                    
+                    print(f"✅ SSE connection successful ({event_count} events received)")
+                    return True
+                    
+            except Exception as e:
+                print(f"❌ SSE connection failed: {e}")
+                return False
+    
+    def get_tools(self) -> List[SSEMCPTool]:
         """Get the loaded tools."""
         return self.tools
 
 
 # ---------------------------------------------------------------------------
-# 1.  Connection configuration
+# 3. Shared utilities (same as http_main.py)
 # ---------------------------------------------------------------------------
 
 def get_server_config() -> Dict[str, str]:
     """Get server configuration from environment variables."""
     return {
-        "base_url": os.getenv("MCP_SERVER_URL", "https://192.168.0.132"),
+        "base_url": os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8000"),
         "api_url": os.getenv("INSIGHTFINDER_API_URL", "https://stg.insightfinder.com"),
         "system_name": os.getenv("INSIGHTFINDER_SYSTEM_NAME", "system_name"),
         "user_name": os.getenv("INSIGHTFINDER_USER_NAME", "username"),
@@ -246,16 +436,36 @@ def get_auth_headers(config: Dict[str, str]) -> Dict[str, str]:
     return headers
 
 
+def create_http_client(config: Dict[str, str]) -> httpx.AsyncClient:
+    """Create HTTP client with SSL configuration."""
+    verify_ssl = config.get("verify_ssl", True)
+    ssl_cert_path = config.get("ssl_cert_path", "")
+    
+    if ssl_cert_path and os.path.exists(ssl_cert_path):
+        # Use custom certificate
+        return httpx.AsyncClient(verify=ssl_cert_path)
+    elif not verify_ssl:
+        # Disable SSL verification for self-signed certificates
+        return httpx.AsyncClient(verify=False)
+    else:
+        # Default SSL verification
+        return httpx.AsyncClient()
+
+
 # ---------------------------------------------------------------------------
-# 2.  Agent bootstrap
+# 4. Agent bootstrap
 # ---------------------------------------------------------------------------
 
 async def bootstrap_agent():
-    """Bootstrap the LangChain agent with HTTP MCP tools."""
+    """Bootstrap the LangChain agent with SSE MCP tools."""
     config = get_server_config()
     
-    # Create HTTP MCP client
-    client = HTTPMCPClient(config["base_url"])
+    # Create SSE MCP client
+    client = SSEMCPClient(config["base_url"])
+    
+    # Test SSE connection
+    if not await client.test_sse_connection():
+        print("⚠️  SSE connection test failed, but continuing...")
     
     # Initialize and get tools
     if not await client.initialize():
@@ -276,7 +486,7 @@ async def bootstrap_agent():
 
 
 # ---------------------------------------------------------------------------
-# 3.  CLI with conversation memory
+# 5. CLI with conversation memory
 # ---------------------------------------------------------------------------
 
 def trim_history(messages: List[BaseMessage]) -> List[BaseMessage]:
@@ -320,6 +530,18 @@ async def test_server_connection():
             info = info_response.json()
             print(f"✓ Server: {info.get('name', 'Unknown')} v{info.get('version', 'Unknown')}")
             
+            # Check SSE support
+            capabilities = info.get('capabilities', {})
+            streaming = capabilities.get('streaming', {})
+            if streaming.get('supported'):
+                print(f"✓ SSE Streaming: ENABLED")
+                print(f"  Transport: {streaming.get('transport', 'unknown')}")
+                endpoints = streaming.get('endpoints', {})
+                for name, path in endpoints.items():
+                    print(f"  {name}: {path}")
+            else:
+                print("⚠️  SSE Streaming: NOT SUPPORTED")
+            
             # Check authentication status
             auth_info = info.get('authentication', {})
             if auth_info.get('enabled'):
@@ -351,7 +573,7 @@ async def test_server_connection():
                 print("❌ Authentication failed: Check your credentials")
                 print("Set the appropriate environment variables:")
                 print("  HTTP_API_KEY=your_api_key (for API key auth)")
-                print("  HTTP_BEARER_TOKEN=your_token (for bearer auth)")
+                print("  HTTP_BEARER_TOKEN=your_token (for bearer auth)")  
                 print("  HTTP_BASIC_USERNAME and HTTP_BASIC_PASSWORD (for basic auth)")
             elif e.response.status_code == 403:
                 print("❌ Authorization failed: Access denied")
@@ -364,42 +586,45 @@ async def test_server_connection():
                 print("❌ SSL Certificate verification failed (self-signed certificate)")
                 print("💡 To connect to a server with self-signed certificate:")
                 print("   export VERIFY_SSL=false")
-                print("   python3 client/http_main.py")
+                print("   python3 client/sse_main.py")
                 print("")
                 print("   OR provide the certificate path:")
                 print("   export SSL_CERT_PATH=/path/to/server.crt")
             else:
                 print(f"❌ Server connection failed: {e}")
             print(f"Make sure the MCP server is running on {config['base_url']}")
-            print("Start it with: TRANSPORT_TYPE=http python -m insightfinder_mcp_server.main")
+            print("Start it with: TRANSPORT_TYPE=http SSE_ENABLED=true python -m insightfinder_mcp_server.main")
             return False
 
 
 async def chat_loop():
-    """Main chat loop with HTTP MCP integration."""
+    """Main chat loop with SSE MCP integration."""
     config = get_server_config()
     
-    print("🚀 InsightFinder MCP HTTP Chatbot")
+    print("🚀 InsightFinder MCP SSE Streaming Chatbot")
     print(f"Server: {config['base_url']}")
     print(f"System: {config['system_name']}")
-    print("=" * 50)
+    print("=" * 60)
     
     # Test server connection first
     if not await test_server_connection():
         return
     
     # Bootstrap agent
-    print("\n🔧 Initializing agent...")
+    print("\n🔧 Initializing SSE streaming agent...")
     try:
         agent = await bootstrap_agent()
-        print("✓ Agent ready!")
+        print("✓ SSE streaming agent ready!")
     except Exception as e:
         print(f"❌ Failed to bootstrap agent: {e}")
         return
     
     # Chat loop
     history: List[BaseMessage] = []
-    print("\n💬 Chat ready — type 'exit' to quit, 'tools' to list available tools.\n")
+    progress_enabled = os.getenv("SSE_SHOW_PROGRESS", "false").lower() == "true"
+    print(f"\n💬 SSE Chat ready — type 'exit' to quit, 'tools' to list available tools.")
+    print(f"📊 Progress updates: {'ENABLED' if progress_enabled else 'DISABLED'} (type 'progress' to toggle)")
+    print("📡 Real-time tool execution streaming is active!\n")
     
     while True:
         try:
@@ -412,10 +637,10 @@ async def chat_loop():
         
         if user_input.lower() == "tools":
             config = get_server_config()
-            client = HTTPMCPClient(config["base_url"])
+            client = SSEMCPClient(config["base_url"])
             if await client.initialize():
                 tools = client.get_tools()
-                print(f"\n📋 Available tools ({len(tools)}):")
+                print(f"\n📋 Available SSE-enabled tools ({len(tools)}):")
                 for tool in tools:
                     print(f"  • {tool.name}: {tool.description[:80]}...")
                 print()
@@ -425,13 +650,33 @@ async def chat_loop():
             history = []
             print("🗑️  Chat history cleared.\n")
             continue
+            
+        if user_input.lower() == "test-sse":
+            config = get_server_config()
+            client = SSEMCPClient(config["base_url"])
+            await client.test_sse_connection()
+            continue
+            
+        if user_input.lower() in ["progress", "toggle-progress"]:
+            # Toggle progress output
+            current_state = os.getenv("SSE_SHOW_PROGRESS", "false").lower() == "true"
+            new_state = not current_state
+            
+            # Update environment variable and re-initialize client
+            os.environ["SSE_SHOW_PROGRESS"] = "true" if new_state else "false"
+            try:
+                agent = await bootstrap_agent()  # Re-bootstrap with new settings
+                print(f"📊 Progress updates: {'ENABLED' if new_state else 'DISABLED'}")
+            except Exception as e:
+                print(f"❌ Failed to update progress settings: {e}")
+            continue
         
         # Add user message to history
         history.append(HumanMessage(content=user_input))
         
         try:
             # Call agent with full history
-            # print("🤔 Thinking...")
+            print("🤔 Processing with SSE streaming...")
             result = await agent.ainvoke({"messages": history})
             
             save_chat_data(user_input, result["messages"][-1].content)
@@ -452,10 +697,13 @@ def print_usage():
     """Print usage instructions."""
     config = get_server_config()
     print(f"""
-🔧 Setup Instructions:
+🔧 SSE Streaming Setup Instructions:
 
-1. Start the MCP HTTP server:
+1. Start the MCP HTTP server with SSE enabled:
    export TRANSPORT_TYPE=http
+   export SSE_ENABLED=true
+   export SSE_HEARTBEAT_ENABLED=true
+   export SSE_PING_INTERVAL=30
    export INSIGHTFINDER_LICENSE_KEY=your_license_key
    export INSIGHTFINDER_SYSTEM_NAME=your_system_name
    export INSIGHTFINDER_USER_NAME=your_username
@@ -474,15 +722,16 @@ def print_usage():
    export HTTP_AUTH_METHOD=api_key  # must match server
    export HTTP_API_KEY=same_as_server_key
 
-4. Run this client:
-   python client/http_main.py
+4. Run this SSE streaming client:
+   python client/sse_main.py
 
 Environment Variables:
-- MCP_SERVER_URL: MCP server URL (default: https://192.168.0.132)
+- MCP_SERVER_URL: MCP server URL (default: http://127.0.0.1:8000)
 - OPENAI_API_KEY: Your OpenAI API key (required)
 - TRIM_HISTORY: Max chat history length (default: 0 = unlimited)
 - VERIFY_SSL: Enable/disable SSL verification (default: true)
 - SSL_CERT_PATH: Path to custom SSL certificate (optional)
+- SSE_SHOW_PROGRESS: Show verbose progress updates (default: false)
 
 Authentication (must match server settings):
 - HTTP_AUTH_METHOD: api_key, bearer, or basic
@@ -490,9 +739,21 @@ Authentication (must match server settings):
 - HTTP_BEARER_TOKEN: Token for bearer method  
 - HTTP_BASIC_USERNAME/HTTP_BASIC_PASSWORD: Credentials for basic method
 
-SSL Configuration:
-- For self-signed certificates: export VERIFY_SSL=false
-- For custom CA certificate: export SSL_CERT_PATH=/path/to/certificate.crt
+SSE Features:
+- Real-time tool execution streaming (silent by default)
+- Streaming results for large datasets
+- Connection status monitoring
+- Automatic retry and reconnection
+
+To enable verbose progress updates:
+   export SSE_SHOW_PROGRESS=true
+
+Chat Commands:
+- 'tools' - List available SSE-enabled tools
+- 'test-sse' - Test SSE connection
+- 'progress' - Toggle verbose progress updates on/off
+- 'clear' - Clear chat history
+- 'exit' or 'quit' - Exit the chat
 
 Current config:
 - MCP Server: {config['base_url']}
@@ -500,22 +761,6 @@ Current config:
 - Auth Method: {config['auth_method']}
 - SSL Verification: {'enabled' if config.get('verify_ssl', True) else 'disabled'}
 """)
-
-
-def create_http_client(config: Dict[str, str]) -> httpx.AsyncClient:
-    """Create HTTP client with SSL configuration."""
-    verify_ssl = config.get("verify_ssl", True)
-    ssl_cert_path = config.get("ssl_cert_path", "")
-    
-    if ssl_cert_path and os.path.exists(ssl_cert_path):
-        # Use custom certificate
-        return httpx.AsyncClient(verify=ssl_cert_path)
-    elif not verify_ssl:
-        # Disable SSL verification for self-signed certificates
-        return httpx.AsyncClient(verify=False)
-    else:
-        # Default SSL verification
-        return httpx.AsyncClient()
 
 
 if __name__ == "__main__":
