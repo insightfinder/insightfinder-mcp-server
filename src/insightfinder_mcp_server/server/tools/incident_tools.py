@@ -5,7 +5,6 @@ from datetime import datetime, timezone, timedelta
 from ..server import mcp_server
 from ...api_client.insightfinder_client import api_client
 from ...config.settings import settings
-from ...security import rate_limiter, validator
 from .get_time import get_timezone_aware_timestamp_ms, get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, get_today_time_range_ms, format_timestamp_no_conversion, format_api_timestamp_corrected
 
 """
@@ -146,13 +145,9 @@ async def get_incidents_overview(
         - "This week" → start_time_ms=Monday_midnight_UTC, end_time_ms=current_time_UTC
     """
     # Simple security checks
-    if not rate_limiter.is_allowed():
-        return {"status": "error", "message": "Rate limit exceeded"}
-    
     if not system_name or len(system_name) > 100:
         return {"status": "error", "message": "Invalid system_name"}
     
-    system_name = validator.validate_string_length(system_name, 100)
     try:
         # print(f"[DEBUG] get_incidents_overview called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}", file=sys.stderr)
         # Set default time range if not provided (timezone-aware)
@@ -536,9 +531,6 @@ async def get_incident_raw_data(
         max_length (int): Maximum length of raw data to return (to prevent overwhelming the LLM).
     """
     # Security checks
-    if not rate_limiter.is_allowed():
-        return {"status": "error", "message": "Rate limit exceeded"}
-    
     if not system_name or len(system_name) > 100:
         return {"status": "error", "message": "Invalid system_name"}
     

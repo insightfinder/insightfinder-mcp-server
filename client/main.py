@@ -12,73 +12,44 @@ import asyncio
 import os
 from typing import Any, Dict, List
 
-from iftracer.sdk import Iftracer
-from iftracer.sdk.decorators import workflow
 from opentelemetry import trace
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.prebuilt import create_react_agent
 
-
-# ---------------------------------------------------------------------------
-# 0.  Observability (Traceloop)
-# ---------------------------------------------------------------------------
-
-def init_traceloop() -> None:
-    """
-    Initialise Traceloop instrumentation if the SDK is available
-    and the mandatory API key is present in the environment.
-    """
-
-    # You can tweak these values to match your own naming conventions.
-    # Traceloop.init(
-    #     app_name="github-mcp-chatbot",
-    #     api_endpoint="http://localhost:4318"
-    # )
-
-    # Traceloop.init(
-    #     api_key="tl_5350c1287de5471bbfc08187b1fbe5cb"
-    # )
-    # Optionally, uncomment for more verbose local debugging:
-    # Traceloop.enable_console_exporter()
-    # -----------------------------------------------------------------------
-    # From this point forward all LangChain / LLM activity is traced.
-    # -----------------------------------------------------------------------
-
-    Iftracer.init(
-        app_name="llm-agent-chatbot",
-        api_endpoint="http://52.90.56.233:4499",
-        iftracer_user="maoyuwang",
-        iftracer_license_key="595bf1a9253e982b0e3951a1d8ba634fdae19cb3",
-        iftracer_project="LLM-AI-Agent-0-0-1-LLM-Agent-Trace",
-    )
 
 # ---------------------------------------------------------------------------
 # 1.  Connection mapping
 # ---------------------------------------------------------------------------
 
 def make_connections() -> Dict[str, Any]:
-    token = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
-    if not token:
-        raise RuntimeError("Set GITHUB_PERSONAL_ACCESS_TOKEN in env.")
+    api_url = os.getenv("INSIGHTFINDER_API_URL", "https://stg.insightfinder.com")
+    system_name = os.getenv("INSIGHTFINDER_SYSTEM_NAME", "IF Prod System")
+    user_name = os.getenv("INSIGHTFINDER_USER_NAME", "mustafa")
+    license_key = os.getenv("INSIGHTFINDER_LICENSE_KEY", "47b73a737d8a806ef37e1c6d7245b0671261faea")
+    enable_debug = os.getenv("ENABLE_DEBUG_MESSAGES", "false")
 
     return {
-        "github": {
+        "insightfinder": {
             "command": "docker",
             "args": [
                 "run",
                 "-i",
                 "--rm",
-                "-e",
-                f"GITHUB_PERSONAL_ACCESS_TOKEN={token}",
-                "ghcr.io/github/github-mcp-server"
+                "-e", "INSIGHTFINDER_API_URL=" + api_url,
+                "-e", "INSIGHTFINDER_SYSTEM_NAME=" + system_name,
+                "-e", "INSIGHTFINDER_USER_NAME=" + user_name,
+                "-e", "INSIGHTFINDER_LICENSE_KEY=" + license_key,
+                "-e", "ENABLE_DEBUG_MESSAGES=" + enable_debug,
+                "-e", "TZ=America/New_York",
+                "docker.io/insightfinder/insightfinder-mcp-server:latest"
             ],
             "transport": "stdio",
         }
     }
-
 
 # ---------------------------------------------------------------------------
 # 2.  Agent bootstrap
@@ -88,6 +59,7 @@ async def bootstrap_agent():
     client = MultiServerMCPClient(make_connections())
     tools = await client.get_tools()
     llm = ChatOpenAI(model="gpt-4.1", temperature=0)
+    # llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
     return create_react_agent(llm, tools)
 
 
@@ -103,14 +75,14 @@ def trim_history(messages: List[BaseMessage]) -> List[BaseMessage]:
     return messages
 
 
-@workflow(name="ChatData")
+# @workflow(name="ChatData")
 def save_chat_data(prompt: str, response: str):
     span = trace.get_current_span()
     span.set_attribute("chat.prompt", prompt)
     span.set_attribute("chat.response", response)
 
 
-@workflow(name="github-mcp-chatbot")
+# @workflow(name="github-mcp-chatbot")
 async def chat_loop():
     agent = await bootstrap_agent()
     history: List[BaseMessage] = []
@@ -146,6 +118,5 @@ async def chat_loop():
 
 if __name__ == "__main__":
     # Initialise tracing before the rest of the app boots.
-    init_traceloop()
 
     asyncio.run(chat_loop())
