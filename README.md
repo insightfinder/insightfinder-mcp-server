@@ -4,12 +4,6 @@ This project provides a Model Context Protocol (MCP) server that allows Large La
 
 ## Features
 
-### Core Tools
-- **Incident Management**: List, fetch, and get statistics for incidents
-- **Anomaly Detection**: Retrieve log anomalies, metric anomalies, and traces
-- **Deployment Tracking**: Access deployment information and analysis
-- **System Monitoring**: Real-time system health and status monitoring
-
 ### Transport Options
 - **`stdio` Transport**: Standard I/O communication for MCP clients
 - **`http` Transport**: RESTful HTTP API with authentication and security
