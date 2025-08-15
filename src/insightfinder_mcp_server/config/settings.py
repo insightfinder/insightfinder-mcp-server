@@ -16,7 +16,7 @@ class Settings:
 
     # MCP Server Configuration
     SERVER_NAME: str = "InsightFinderMCPServer"
-    SERVER_VERSION: str = "1.1.0"
+    SERVER_VERSION: str = "1.2.0"
     
     # HTTP Server Configuration
     SERVER_HOST: str = os.getenv("SERVER_HOST", "0.0.0.0")
