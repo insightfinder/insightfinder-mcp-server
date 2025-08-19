@@ -12,6 +12,11 @@ import json
 import logging
 from ..config.settings import settings
 from ..security import security_manager, AuthenticationError, AuthorizationError, RateLimitError
+from ..api_client.client_factory import (
+    create_api_client_from_request, 
+    set_request_context, 
+    clear_request_context
+)
 from .server import mcp_server
 
 logger = logging.getLogger(__name__)
@@ -268,42 +273,54 @@ class HTTPMCPServer:
         async def call_tool_http(tool_name: str, request: Request):
             """HTTP endpoint to call a specific tool."""
             try:
-                # Get arguments from request body
-                body = await request.body()
-                if body:
-                    arguments = json.loads(body.decode('utf-8'))
-                else:
-                    arguments = {}
+                # Create API client from request headers
+                api_client = create_api_client_from_request(request)
                 
-                # Access tools via the tool manager
-                tools_dict = None
-                if hasattr(mcp_server, '_tool_manager'):
-                    tool_manager = mcp_server._tool_manager
-                    if hasattr(tool_manager, '_tools'):
-                        tools_dict = tool_manager._tools
+                # Set request context for tools to access
+                set_request_context(request, api_client)
                 
-                if not tools_dict or tool_name not in tools_dict:
+                try:
+                    # Get arguments from request body
+                    body = await request.body()
+                    if body:
+                        arguments = json.loads(body.decode('utf-8'))
+                    else:
+                        arguments = {}
+                    
+                    # Access tools via the tool manager
+                    tools_dict = None
+                    if hasattr(mcp_server, '_tool_manager'):
+                        tool_manager = mcp_server._tool_manager
+                        if hasattr(tool_manager, '_tools'):
+                            tools_dict = tool_manager._tools
+                    
+                    if not tools_dict or tool_name not in tools_dict:
+                        return {
+                            "error": f"Tool not found: {tool_name}",
+                            "available_tools": list(tools_dict.keys()) if tools_dict else []
+                        }
+                    
+                    # Call the tool
+                    tool = tools_dict[tool_name]
+                    tool_func = getattr(tool, 'fn', tool)
+                    
+                    if getattr(tool, 'is_async', False):
+                        result = await tool_func(**arguments)
+                    else:
+                        result = tool_func(**arguments)
+                    
                     return {
-                        "error": f"Tool not found: {tool_name}",
-                        "available_tools": list(tools_dict.keys()) if tools_dict else []
+                        "tool": tool_name,
+                        "arguments": arguments,
+                        "result": result
                     }
-                
-                # Call the tool
-                tool = tools_dict[tool_name]
-                tool_func = getattr(tool, 'fn', tool)
-                
-                if getattr(tool, 'is_async', False):
-                    result = await tool_func(**arguments)
-                else:
-                    result = tool_func(**arguments)
-                
-                return {
-                    "tool": tool_name,
-                    "arguments": arguments,
-                    "result": result
-                }
-                
+                    
+                finally:
+                    # Always clean up request context
+                    clear_request_context()
+                    
             except Exception as e:
+                clear_request_context()  # Cleanup on error too
                 return {"error": str(e)}
         
         @self.app.post("/mcp")
@@ -329,7 +346,7 @@ class HTTPMCPServer:
                     )
                 
                 # Process the MCP request
-                response = await self.process_mcp_request(rpc_request)
+                response = await self.process_mcp_request(rpc_request, request)
                 
                 return Response(
                     content=json.dumps(response, default=self.json_serializer),
@@ -361,7 +378,7 @@ class HTTPMCPServer:
                 
                 async def generate_response():
                     """Generate streaming response."""
-                    response = await self.process_mcp_request(rpc_request)
+                    response = await self.process_mcp_request(rpc_request, request)
                     yield f"data: {json.dumps(response, default=self.json_serializer)}\n\n"
                 
                 return StreamingResponse(
@@ -471,7 +488,7 @@ class HTTPMCPServer:
             }
             
             # Execute the tool directly - let the tool handle its own streaming logic
-            result = await self._execute_tool_direct(tool_name, tool_args)
+            result = await self._execute_tool_direct(tool_name, tool_args, request)
             
             # Stream the result with optional batching for large datasets
             async for chunk in self._stream_result(request, tool_name, result):
@@ -578,26 +595,39 @@ class HTTPMCPServer:
                 })
             }
     
-    async def _execute_tool_direct(self, tool_name: str, tool_args: Dict[str, Any]) -> Any:
+    async def _execute_tool_direct(self, tool_name: str, tool_args: Dict[str, Any], request: Request = None) -> Any:
         """Execute a tool directly and return results."""
-        # Access tools via the tool manager
-        tools_dict = None
-        if hasattr(mcp_server, '_tool_manager'):
-            tool_manager = mcp_server._tool_manager
-            if hasattr(tool_manager, '_tools'):
-                tools_dict = tool_manager._tools
+        api_client = None
         
-        if not tools_dict or tool_name not in tools_dict:
-            raise ValueError(f"Tool not found: {tool_name}")
-        
-        # Call the tool
-        tool = tools_dict[tool_name]
-        tool_func = getattr(tool, 'fn', tool)
-        
-        if getattr(tool, 'is_async', False):
-            return await tool_func(**tool_args)
-        else:
-            return tool_func(**tool_args)
+        try:
+            # Set up API client context if request is provided
+            if request:
+                api_client = create_api_client_from_request(request)
+                set_request_context(request, api_client)
+            
+            # Access tools via the tool manager
+            tools_dict = None
+            if hasattr(mcp_server, '_tool_manager'):
+                tool_manager = mcp_server._tool_manager
+                if hasattr(tool_manager, '_tools'):
+                    tools_dict = tool_manager._tools
+            
+            if not tools_dict or tool_name not in tools_dict:
+                raise ValueError(f"Tool not found: {tool_name}")
+            
+            # Call the tool
+            tool = tools_dict[tool_name]
+            tool_func = getattr(tool, 'fn', tool)
+            
+            if getattr(tool, 'is_async', False):
+                return await tool_func(**tool_args)
+            else:
+                return tool_func(**tool_args)
+                
+        finally:
+            # Always clean up request context if we set it up
+            if request and api_client:
+                clear_request_context()
     
     async def _handle_streaming_mcp_request(self, request: Request, connection_id: str, 
                                           mcp_request: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None]:
@@ -693,7 +723,7 @@ class HTTPMCPServer:
                 }
             else:
                 # Process other MCP methods through the standard handler
-                response = await self.process_mcp_request(mcp_request)
+                response = await self.process_mcp_request(mcp_request, request)
                 yield {
                     "event": "mcp_response",
                     "data": json.dumps(response)
@@ -724,7 +754,7 @@ class HTTPMCPServer:
                 })
             }
     
-    async def process_mcp_request(self, rpc_request: dict) -> dict:
+    async def process_mcp_request(self, rpc_request: dict, request: Request = None) -> dict:
         """Process an MCP JSON-RPC request."""
         try:
             method = rpc_request.get("method")
@@ -810,14 +840,25 @@ class HTTPMCPServer:
                     }
                 
                 try:
-                    tool = tools_dict[tool_name]
-                    tool_func = getattr(tool, 'fn', tool)  # Get the actual function from the Tool object
+                    # Set up API client context if request is provided  
+                    if request:
+                        api_client = create_api_client_from_request(request)
+                        set_request_context(request, api_client)
                     
-                    # Call the tool function
-                    if getattr(tool, 'is_async', False):
-                        result = await tool_func(**arguments)
-                    else:
-                        result = tool_func(**arguments)
+                    try:
+                        tool = tools_dict[tool_name]
+                        tool_func = getattr(tool, 'fn', tool)  # Get the actual function from the Tool object
+                        
+                        # Call the tool function
+                        if getattr(tool, 'is_async', False):
+                            result = await tool_func(**arguments)
+                        else:
+                            result = tool_func(**arguments)
+                            
+                    finally:
+                        # Always clean up request context if we set it up
+                        if request:
+                            clear_request_context()
                     
                     return {
                         "jsonrpc": "2.0",
@@ -995,6 +1036,13 @@ class HTTPMCPServer:
                 print(f"Rate Limit: {settings.MAX_REQUESTS_PER_MINUTE} requests/minute", file=sys.stderr)
         else:
             print(f"Authentication: DISABLED (set HTTP_AUTH_ENABLED=true to enable)", file=sys.stderr)
+
+        # Print InsightFinder credential information
+        print("", file=sys.stderr)  # Add blank line
+        print("InsightFinder Credentials:", file=sys.stderr)
+        print("  Provide via HTTP headers on each request:", file=sys.stderr)
+        print("  - X-IF-License-Key: your-license-key", file=sys.stderr)
+        print("  - X-IF-User-Name: your-username", file=sys.stderr)
 
         print("=" * 60, file=sys.stderr)
         

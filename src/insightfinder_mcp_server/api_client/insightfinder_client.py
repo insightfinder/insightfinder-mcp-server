@@ -190,10 +190,27 @@ class InsightFinderAPIClient:
         """
         return await self._fetch_timeline_data("deployment", system_name, start_time_ms, end_time_ms)
 
-# Singleton instance of the API client
-api_client = InsightFinderAPIClient(
-    system_name=settings.INSIGHTFINDER_SYSTEM_NAME,
-    user_name=settings.INSIGHTFINDER_USER_NAME,
-    license_key=settings.INSIGHTFINDER_LICENSE_KEY,
-    api_url=settings.INSIGHTFINDER_API_URL if hasattr(settings, 'INSIGHTFINDER_API_URL') and settings.INSIGHTFINDER_API_URL else "https://app.insightfinder.com"
-)
+# Factory function to create API client instances with provided credentials
+def create_api_client(license_key: str, user_name: str, system_name: Optional[str] = None, api_url: Optional[str] = None) -> InsightFinderAPIClient:
+    """
+    Create an InsightFinder API client instance with the provided credentials.
+    
+    Args:
+        license_key: The InsightFinder license key (from HTTP header)
+        user_name: The InsightFinder username (from HTTP header)  
+        system_name: Optional system name (from HTTP header, not required)
+        api_url: Optional API URL (defaults to settings.INSIGHTFINDER_API_URL)
+    
+    Returns:
+        InsightFinderAPIClient instance configured with the provided credentials
+    """
+    return InsightFinderAPIClient(
+        system_name=system_name or "",  # Not required for now
+        user_name=user_name,
+        license_key=license_key,
+        api_url=api_url or settings.INSIGHTFINDER_API_URL
+    )
+
+# Legacy singleton instance - deprecated, tools should use create_api_client instead
+# This is kept for backwards compatibility but will be removed
+api_client = None  # No longer creating a singleton instance

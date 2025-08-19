@@ -8,11 +8,11 @@ class Settings:
     """
     Application settings loaded from environment variables.
     """
-    # InsightFinder API Configuration
-    INSIGHTFINDER_API_URL: str = os.getenv("INSIGHTFINDER_API_URL", "https://app.insightfinder.com")
-    INSIGHTFINDER_LICENSE_KEY: str = os.getenv("INSIGHTFINDER_LICENSE_KEY")
-    INSIGHTFINDER_SYSTEM_NAME: str = os.getenv("INSIGHTFINDER_SYSTEM_NAME")
-    INSIGHTFINDER_USER_NAME: str = os.getenv("INSIGHTFINDER_USER_NAME")
+    # InsightFinder API Configuration (will be provided via HTTP headers)
+    INSIGHTFINDER_API_URL: str = "https://app.insightfinder.com"
+    # INSIGHTFINDER_LICENSE_KEY: str = os.getenv("INSIGHTFINDER_LICENSE_KEY")
+    # INSIGHTFINDER_SYSTEM_NAME: str = os.getenv("INSIGHTFINDER_SYSTEM_NAME")  # Not required for now
+    # INSIGHTFINDER_USER_NAME: str = os.getenv("INSIGHTFINDER_USER_NAME")
 
     # MCP Server Configuration
     SERVER_NAME: str = "InsightFinderMCPServer"
@@ -65,12 +65,5 @@ class Settings:
 # Create a singleton instance of the settings
 settings = Settings()
 
-# Validate that required settings are present
-if not settings.INSIGHTFINDER_LICENSE_KEY:
-    raise ValueError("Missing required environment variable: INSIGHTFINDER_LICENSE_KEY")
-
-if not settings.INSIGHTFINDER_SYSTEM_NAME:
-    raise ValueError("Missing required environment variable: INSIGHTFINDER_SYSTEM_NAME")
-
-if not settings.INSIGHTFINDER_USER_NAME:
-    raise ValueError("Missing required environment variable: INSIGHTFINDER_USER_NAME")
+# Note: InsightFinder credentials will be provided via HTTP headers
+# No validation needed for environment variables as they come from client requests

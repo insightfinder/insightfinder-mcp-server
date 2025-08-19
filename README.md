@@ -6,7 +6,14 @@ This project provides a Model Context Protocol (MCP) server that allows Large La
 
 ### Transport Options
 - **`stdio` Transport**: Standard I/O communication for MCP clients
-- **`http` Transport**: RESTful HTTP API with authentication and security
+- **`http**3. Test from other devices:**
+   ```bash
+   # Replace with your actual local IP
+   curl -k -H "X-API-Key: your-key" \
+        -H "X-IF-License-Key: your-license-key" \
+        -H "X-IF-User-Name: your-username" \
+        https://192.168.1.100/health
+   ```nsport**: RESTful HTTP API with authentication and security
 - **`https` Transport**: Secure HTTPS with nginx reverse proxy support
 
 ### Security Features
@@ -47,15 +54,9 @@ This project provides a Model Context Protocol (MCP) server that allows Large La
 
 ### Environment Variables
 
-Create a `.env` file in the project root with your configuration:
+Create a `.env` file in the project root with your server configuration:
 
 ```bash
-# Required InsightFinder API Configuration
-INSIGHTFINDER_API_URL=https://app.insightfinder.com
-INSIGHTFINDER_LICENSE_KEY=your_license_key_here
-INSIGHTFINDER_SYSTEM_NAME=your_system_name
-INSIGHTFINDER_USER_NAME=your_username
-
 # Transport Configuration
 TRANSPORT_TYPE=http  # Options: stdio, http
 
@@ -84,11 +85,30 @@ SSE_CORS_HEADERS=Cache-Control,Content-Type
 SSE_HEARTBEAT_ENABLED=true
 ```
 
+### InsightFinder Credentials
+
+**Important**: InsightFinder credentials are now provided via HTTP headers on each request, not via environment variables. This allows multiple clients to use different InsightFinder accounts through the same server instance.
+
+Required HTTP headers for all InsightFinder operations:
+- `X-IF-License-Key` - Your InsightFinder license key
+- `X-IF-User-Name` - Your InsightFinder username
+
+Optional header:
+- `X-IF-API-URL` - API endpoint (defaults to https://app.insightfinder.com)
+
+**Benefits of HTTP Header Authentication:**
+- **Multi-tenant support**: Multiple clients can use different InsightFinder accounts through the same server
+- **Enhanced security**: Credentials are not stored in server configuration or environment variables
+- **Flexibility**: Different requests can target different systems or use different credentials
+- **Better isolation**: Each request operates with its own credential context
+
 ### Configuration Examples
 
 Use the provided example file for different deployment scenarios:
-- `.env.example` - Comprehensive configuration template with examples for all deployment types
+- `.env.example` - Comprehensive server configuration template
 - Copy to `.env` and modify based on your needs
+
+**Note**: The `.env` file contains only server configuration. InsightFinder credentials are provided via HTTP headers on each request.
 
 ## Running the Server
 
@@ -109,15 +129,12 @@ python -m insightfinder_mcp_server.main
   "insightfinder": {
     "command": "python",
     "args": ["-m", "insightfinder_mcp_server.main"],
-    "cwd": "/path/to/insightfinder-mcp-server",
-    "env": {
-      "INSIGHTFINDER_LICENSE_KEY": "your_license_key",
-      "INSIGHTFINDER_SYSTEM_NAME": "your_system_name",
-      "INSIGHTFINDER_USER_NAME": "your_username"
-    }
+    "cwd": "/path/to/insightfinder-mcp-server"
   }
 }
 ```
+
+**Note**: When using stdio transport, InsightFinder credentials must be provided by the MCP client through the MCP protocol's initialization or via custom headers if your client supports them.
 
 ### Option 2: HTTP Transport with SSE Streaming
 
@@ -141,10 +158,12 @@ curl -H "X-API-Key: your-api-key" \
      -H "Accept: text/event-stream" \
      http://localhost:8000/mcp/events
 
-# Send streaming MCP request
+# Send streaming MCP request with InsightFinder credentials
 curl -X POST \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key" \
+  -H "X-IF-License-Key: your-license-key" \
+  -H "X-IF-User-Name: your-username" \
   -H "Accept: text/event-stream" \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"list_incidents","arguments":{"systemName":"test-system"}},"id":1}' \
   http://localhost:8000/mcp/stream
@@ -153,6 +172,8 @@ curl -X POST \
 curl -X POST \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key" \
+  -H "X-IF-License-Key: your-license-key" \
+  -H "X-IF-User-Name: your-username" \
   -H "Accept: text/event-stream" \
   -d '{"systemName":"test-system"}' \
   http://localhost:8000/tools/list_incidents/stream
@@ -180,12 +201,23 @@ curl -H "X-API-Key: your-api-key" http://localhost:8000/health
 # List available tools
 curl -H "X-API-Key: your-api-key" http://localhost:8000/tools
 
-# Execute MCP request
+# Execute MCP request with InsightFinder credentials
 curl -X POST \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key" \
+  -H "X-IF-License-Key: your-license-key" \
+  -H "X-IF-User-Name: your-username" \
   -d '{"jsonrpc":"2.0","method":"tools/list","id":1}' \
   http://localhost:8000/mcp
+
+# Execute a specific tool
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -H "X-IF-License-Key: your-license-key" \
+  -H "X-IF-User-Name: your-username" \
+  -d '{"systemName":"your-system-name"}' \
+  http://localhost:8000/tools/list_incidents
 ```
 
 ### Option 4: HTTPS with nginx (Production)
@@ -222,19 +254,18 @@ python -m insightfinder_mcp_server.main
 # Use the provided test script
 ./scripts/test-https.sh your-domain.com your-api-key
 
-# Or manual testing
-curl -H "X-API-Key: your-api-key" https://your-domain.com/health
+# Or manual testing with InsightFinder credentials
+curl -H "X-API-Key: your-api-key" \
+     -H "X-IF-License-Key: your-license-key" \
+     -H "X-IF-User-Name: your-username" \
+     https://your-domain.com/health
 ```
 
 ### Option 5: Docker Deployment
 
-**Basic Docker Run:**
+**Basic Docker Run (stdio transport):**
 ```bash
 docker run -i --rm \
-  -e INSIGHTFINDER_API_URL=https://app.insightfinder.com \
-  -e INSIGHTFINDER_LICENSE_KEY=your_license_key \
-  -e INSIGHTFINDER_SYSTEM_NAME=your_system_name \
-  -e INSIGHTFINDER_USER_NAME=your_user_name \
   -e TRANSPORT_TYPE=stdio \
   docker.io/insightfinder/insightfinder-mcp-server:latest
 ```
@@ -246,9 +277,6 @@ docker run -d \
   -e TRANSPORT_TYPE=http \
   -e HTTP_AUTH_ENABLED=true \
   -e HTTP_API_KEY=your-secure-api-key \
-  -e INSIGHTFINDER_LICENSE_KEY=your_license_key \
-  -e INSIGHTFINDER_SYSTEM_NAME=your_system_name \
-  -e INSIGHTFINDER_USER_NAME=your_user_name \
   docker.io/insightfinder/insightfinder-mcp-server:latest
 ```
 
@@ -259,15 +287,14 @@ docker run -d \
     "command": "docker",
     "args": [
       "run", "-i", "--rm",
-      "-e", "INSIGHTFINDER_LICENSE_KEY=your_license_key",
-      "-e", "INSIGHTFINDER_SYSTEM_NAME=your_system_name", 
-      "-e", "INSIGHTFINDER_USER_NAME=your_user_name",
       "docker.io/insightfinder/insightfinder-mcp-server:latest"
     ],
     "transport": "stdio"
   }
 }
 ```
+
+**Note**: With Docker deployment, InsightFinder credentials are provided via HTTP headers when using HTTP transport, or through the MCP protocol when using stdio transport.
 
 ## API Reference
 
@@ -288,6 +315,28 @@ When running in HTTP mode, the following endpoints are available:
 - `POST /mcp/stream` - Streaming MCP requests via Server-Sent Events  
 - `POST /tools/{tool_name}/stream` - Stream individual tool execution
 - `GET /sse/connections` - Get active SSE connections (debug endpoint)
+
+### InsightFinder HTTP Headers
+
+All InsightFinder tool operations require the following HTTP headers:
+
+**Required Headers:**
+- `X-IF-License-Key` - Your InsightFinder license key
+- `X-IF-User-Name` - Your InsightFinder username
+
+**Optional Headers:**
+- `X-IF-API-URL` - Custom API endpoint (defaults to https://app.insightfinder.com)
+
+**Example Request:**
+```bash
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-server-api-key" \
+  -H "X-IF-License-Key: your-insightfinder-license-key" \
+  -H "X-IF-User-Name: your-insightfinder-username" \
+  -d '{"timeRange":"1d","status":"open"}' \
+  http://localhost:8000/tools/list_incidents
+```
 
 ### Authentication Methods
 
@@ -367,20 +416,107 @@ For testing on your local network:
 - `./scripts/test-sse.sh` - Test SSE streaming functionality (curl-based)
 - `python tests/test_sse.py` - Comprehensive SSE testing (Python-based)
 
+### Helper Scripts for Testing
+
+**Create a test configuration script:**
+
+```bash
+#!/bin/bash
+# save as test-insightfinder.sh
+
+# Set your credentials
+export IF_LICENSE_KEY="your-license-key-here"
+export IF_USERNAME="your-username-here"
+export API_KEY="your-server-api-key-here"
+
+# Helper function for API calls
+call_tool() {
+    local tool_name=$1
+    local data=$2
+    
+    curl -X POST \
+        -H "Content-Type: application/json" \
+        -H "X-API-Key: $API_KEY" \
+        -H "X-IF-License-Key: $IF_LICENSE_KEY" \
+        -H "X-IF-User-Name: $IF_USERNAME" \
+        -d "$data" \
+        "http://localhost:8000/tools/$tool_name"
+}
+
+# Example usage:
+# call_tool "list_incidents" '{"timeRange":"7d"}'
+# call_tool "fetch_log_anomalies" '{"startTime":"2024-01-01","endTime":"2024-01-02"}'
+```
+
+**Python helper example:**
+```python
+import requests
+import json
+
+class InsightFinderClient:
+    def __init__(self, base_url="http://localhost:8000", api_key=None, 
+                 license_key=None, username=None):
+        self.base_url = base_url
+        self.headers = {
+            "Content-Type": "application/json",
+            "X-API-Key": api_key,
+            "X-IF-License-Key": license_key,
+            "X-IF-User-Name": username
+        }
+    
+    def call_tool(self, tool_name, **kwargs):
+        url = f"{self.base_url}/tools/{tool_name}"
+        response = requests.post(url, headers=self.headers, json=kwargs)
+        return response.json()
+    
+    def list_incidents(self, **kwargs):
+        return self.call_tool("list_incidents", **kwargs)
+    
+    def fetch_log_anomalies(self, **kwargs):
+        return self.call_tool("fetch_log_anomalies", **kwargs)
+
+# Usage
+client = InsightFinderClient(
+    api_key="your-server-api-key",
+    license_key="your-license-key", 
+    username="your-username"
+)
+
+incidents = client.list_incidents(timeRange="7d")
+```
 ## Troubleshooting
 
 ### Common Issues
 
-**1. Authentication Errors:**
+**1. InsightFinder Credential Errors:**
 ```bash
-# Verify your API key is set correctly
+# Missing required headers will return HTTP 400 with error details
+curl -X POST \
+  -H "X-API-Key: your-api-key" \
+  -d '{"systemName":"test"}' \
+  http://localhost:8000/tools/list_incidents
+
+# Response: {"error": "Missing required header: X-IF-License-Key"}
+
+# Verify all required headers are included
+curl -X POST \
+  -H "X-API-Key: your-api-key" \
+  -H "X-IF-License-Key: your-license-key" \
+  -H "X-IF-User-Name: your-username" \
+  -d '{"systemName":"test"}' \
+  http://localhost:8000/tools/list_incidents
+```
+
+**2. Authentication Errors:**
+```bash
+# Verify your server API key is set correctly
 echo $HTTP_API_KEY
 
 # Check server logs for authentication details
 ENABLE_DEBUG_MESSAGES=true python -m insightfinder_mcp_server.main
 ```
 
-**2. Proxy/HTTPS Issues:**
+**3. Proxy/HTTPS Issues:**
 ```bash
 # Ensure proxy settings are configured
 export BEHIND_PROXY=true
@@ -390,7 +526,7 @@ export TRUST_PROXY_HEADERS=true
 sudo tail -f /var/log/nginx/error.log
 ```
 
-**3. SSL Certificate Problems:**
+**4. SSL Certificate Problems:**
 ```bash
 # Test SSL certificate
 echo | openssl s_client -servername your-domain.com -connect your-domain.com:443
@@ -409,17 +545,16 @@ python -m insightfinder_mcp_server.main
 
 ## Environment Variables Reference
 
-### Required Variables
-- `INSIGHTFINDER_LICENSE_KEY` - Your InsightFinder license key
-- `INSIGHTFINDER_SYSTEM_NAME` - Target system name
-- `INSIGHTFINDER_USER_NAME` - Your InsightFinder username
-
-### Optional Variables
-- `INSIGHTFINDER_API_URL` - API endpoint (default: https://app.insightfinder.com)
+### Server Configuration Variables
 - `TRANSPORT_TYPE` - Transport method (default: stdio)
 - `SERVER_HOST` - HTTP server bind address (default: 0.0.0.0)
 - `SERVER_PORT` - HTTP server port (default: 8000)
 - `ENABLE_DEBUG_MESSAGES` - Enable debug logging (default: false)
+
+### InsightFinder API Configuration
+- `INSIGHTFINDER_API_URL` - Default API endpoint (default: https://app.insightfinder.com)
+
+**Note**: Individual InsightFinder credentials (license key, username, system name) are now provided via HTTP headers on each request, not environment variables.
 
 ### HTTP Transport Variables
 - `HTTP_AUTH_ENABLED` - Enable authentication (default: true)

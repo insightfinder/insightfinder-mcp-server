@@ -21,7 +21,26 @@ from datetime import datetime
 import re
 
 from ..server import mcp_server
-from ...api_client.insightfinder_client import api_client
+from ...api_client.client_factory import get_current_api_client
+
+def _get_api_client():
+    """
+    Get the API client for the current request context.
+    
+    Returns:
+        InsightFinderAPIClient: The API client configured for the current request
+        
+    Raises:
+        ValueError: If no API client is available (missing headers or not in HTTP context)
+    """
+    api_client = get_current_api_client()
+    if not api_client:
+        raise ValueError(
+            "InsightFinder API client not available. "
+            "This tool requires InsightFinder credentials in HTTP headers: "
+            "X-InsightFinder-License-Key and X-InsightFinder-User-Name"
+        )
+    return api_client
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +69,7 @@ async def get_traces_overview(
         Dict containing ultra-compact overview with status, summary stats, and key insights
     """
     try:
-        client = api_client
+        client = _get_api_client()
         
         # Fetch raw data
         raw_data = await client.get_traces(
@@ -223,7 +242,7 @@ async def get_traces_list(
         Dict containing compact list of traces with status and metadata
     """
     try:
-        client = api_client
+        client = _get_api_client()
         
         # Fetch raw data
         raw_data = await client.get_traces(
@@ -342,7 +361,7 @@ async def get_traces_summary(
         Dict containing detailed trace summaries with status and metadata
     """
     try:
-        client = api_client
+        client = _get_api_client()
         
         # Fetch raw data
         raw_data = await client.get_traces(
@@ -482,7 +501,7 @@ async def get_trace_details(
         Dict containing complete trace details with status and metadata
     """
     try:
-        client = api_client
+        client = _get_api_client()
         
         # Use a small time window around the timestamp to find the specific trace
         window_ms = 5 * 60 * 1000  # 5 minutes
@@ -613,7 +632,7 @@ async def get_trace_raw_data(
         Dict containing raw trace data with status and metadata
     """
     try:
-        client = api_client
+        client = _get_api_client()
         
         # Use a small time window around the timestamp to find the specific trace
         window_ms = 5 * 60 * 1000  # 5 minutes
@@ -725,7 +744,7 @@ async def get_traces_statistics(
         Dict containing comprehensive statistics with status and metadata
     """
     try:
-        client = api_client
+        client = _get_api_client()
         
         # Fetch raw data
         raw_data = await client.get_traces(
