@@ -683,7 +683,7 @@ async def interactive_chat():
         history.append(HumanMessage(content=user_input))
         
         try:
-            print("🤔 Processing...")
+            # print("🤔 Processing...")
             result = await agent.ainvoke({"messages": history})
             
             # Update history
