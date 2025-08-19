@@ -3,9 +3,28 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 
 from ..server import mcp_server
-from ...api_client.insightfinder_client import api_client
+from ...api_client.client_factory import get_current_api_client
 from ...config.settings import settings
 from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, format_api_timestamp_corrected
+
+def _get_api_client():
+    """
+    Get the API client for the current request context.
+    
+    Returns:
+        InsightFinderAPIClient: The API client configured for the current request
+        
+    Raises:
+        ValueError: If no API client is available (missing headers or not in HTTP context)
+    """
+    api_client = get_current_api_client()
+    if not api_client:
+        raise ValueError(
+            "InsightFinder API client not available. "
+            "This tool requires InsightFinder credentials in HTTP headers: "
+            "X-InsightFinder-License-Key and X-InsightFinder-User-Name"
+        )
+    return api_client
 
 # Layer 0: Ultra-compact log anomaly overview (just counts and basic info)
 @mcp_server.tool()
@@ -37,6 +56,7 @@ async def get_log_anomalies_overview(
                 start_time_ms = default_start_ms  # 24 hours ago
 
         # Call the InsightFinder API client
+        api_client = _get_api_client()
         result = await api_client.get_loganomaly(
             system_name=system_name,
             start_time_ms=start_time_ms,
@@ -145,6 +165,7 @@ async def get_log_anomalies_list(
                 start_time_ms = default_start_ms  # 24 hours ago
 
         # Call the InsightFinder API client
+        api_client = _get_api_client()
         result = await api_client.get_loganomaly(
             system_name=system_name,
             start_time_ms=start_time_ms,
@@ -244,6 +265,7 @@ async def get_log_anomalies_summary(
                 start_time_ms = default_start_ms  # 24 hours ago
 
         # Call the InsightFinder API client
+        api_client = _get_api_client()
         result = await api_client.get_loganomaly(
             system_name=system_name,
             start_time_ms=start_time_ms,
@@ -357,6 +379,7 @@ async def get_log_anomaly_details(
         start_time = anomaly_timestamp - (5 * 60 * 1000)  # 5 minutes before
         end_time = anomaly_timestamp + (5 * 60 * 1000)    # 5 minutes after
 
+        api_client = _get_api_client()
         result = await api_client.get_loganomaly(
             system_name=system_name,
             start_time_ms=start_time,
@@ -426,6 +449,7 @@ async def get_log_anomaly_raw_data(
         start_time = anomaly_timestamp - (5 * 60 * 1000)  # 5 minutes before
         end_time = anomaly_timestamp + (5 * 60 * 1000)    # 5 minutes after
 
+        api_client = _get_api_client()
         result = await api_client.get_loganomaly(
             system_name=system_name,
             start_time_ms=start_time,
@@ -500,6 +524,7 @@ async def get_log_anomalies_statistics(
             if start_time_ms is None:
                 start_time_ms = default_start_ms  # 24 hours ago
 
+        api_client = _get_api_client()
         result = await api_client.get_loganomaly(
             system_name=system_name,
             start_time_ms=start_time_ms,

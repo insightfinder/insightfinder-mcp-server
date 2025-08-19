@@ -21,7 +21,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 from ..server import mcp_server
-from ...api_client.insightfinder_client import api_client
+from ...api_client.client_factory import get_current_api_client
 from ...config.settings import settings
 from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, format_api_timestamp_corrected, get_today_time_range_ms
 
@@ -65,7 +65,7 @@ async def get_metric_anomalies_overview(
             print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
             print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
         
-        client = api_client
+        client = _get_api_client()
         
         # Fetch raw data
         raw_data = await client.get_metricanomaly(
@@ -235,7 +235,7 @@ async def get_metric_anomalies_list(
             print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
             print(f"[DEBUG] Filters: limit={limit}, min_severity={min_severity}, sort_by={sort_by}", file=sys.stderr)
         
-        client = api_client
+        client = _get_api_client()
         
         # Fetch raw data
         raw_data = await client.get_metricanomaly(
@@ -392,7 +392,7 @@ async def get_metric_anomalies_summary(
             print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
             print(f"[DEBUG] Filters: limit={limit}, min_severity={min_severity}, include_context={include_context}", file=sys.stderr)
         
-        client = api_client
+        client = _get_api_client()
         
         # Fetch raw data
         raw_data = await client.get_metricanomaly(
@@ -570,7 +570,7 @@ async def get_metric_anomaly_details(
         Dict containing complete anomaly details with status and metadata
     """
     try:
-        client = api_client
+        client = _get_api_client()
         
         # Use a small time window around the timestamp to find the specific anomaly
         window_ms = 5 * 60 * 1000  # 5 minutes
@@ -723,7 +723,7 @@ async def get_metric_anomaly_raw_data(
         Dict containing raw anomaly data with status and metadata
     """
     try:
-        client = api_client
+        client = _get_api_client()
         
         # Use a small time window around the timestamp to find the specific anomaly
         window_ms = 5 * 60 * 1000  # 5 minutes
@@ -842,7 +842,7 @@ async def get_metric_anomalies_statistics(
             print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
             print(f"[DEBUG] Include trends: {include_trends}", file=sys.stderr)
         
-        client = api_client
+        client = _get_api_client()
         
         # Fetch raw data
         raw_data = await client.get_metricanomaly(
@@ -1075,6 +1075,7 @@ async def fetch_metric_anomalies(
             print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
 
         # Call the InsightFinder API client with the timeline endpoint
+        api_client = _get_api_client()
         result = await api_client.get_metricanomaly(
             system_name=system_name,
             start_time_ms=start_time_ms,
@@ -1124,6 +1125,7 @@ async def get_today_metric_anomalies(
             print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
 
         # Call the InsightFinder API client
+        api_client = _get_api_client()
         result = await api_client.get_metricanomaly(
             system_name=system_name,
             start_time_ms=start_time_ms,
@@ -1477,3 +1479,22 @@ def _generate_insights(statistics: Dict[str, Any]) -> List[str]:
         insights.append(f"Significant portion of anomalies ({incident_pct}%) led to incidents")
     
     return insights
+
+def _get_api_client():
+    """
+    Get the API client for the current request context.
+    
+    Returns:
+        InsightFinderAPIClient: The API client configured for the current request
+        
+    Raises:
+        ValueError: If no API client is available (missing headers or not in HTTP context)
+    """
+    api_client = get_current_api_client()
+    if not api_client:
+        raise ValueError(
+            "InsightFinder API client not available. "
+            "This tool requires InsightFinder credentials in HTTP headers: "
+            "X-InsightFinder-License-Key and X-InsightFinder-User-Name"
+        )
+    return api_client

@@ -3,9 +3,8 @@ import os
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone, timedelta
 from ..server import mcp_server
-from ...api_client.insightfinder_client import api_client
+from ...api_client.client_factory import get_current_api_client
 from ...config.settings import settings
-from ...security import rate_limiter, validator
 from .get_time import get_timezone_aware_timestamp_ms, get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, get_today_time_range_ms, format_timestamp_no_conversion, format_api_timestamp_corrected
 
 """
@@ -146,13 +145,9 @@ async def get_incidents_overview(
         - "This week" → start_time_ms=Monday_midnight_UTC, end_time_ms=current_time_UTC
     """
     # Simple security checks
-    if not rate_limiter.is_allowed():
-        return {"status": "error", "message": "Rate limit exceeded"}
-    
     if not system_name or len(system_name) > 100:
         return {"status": "error", "message": "Invalid system_name"}
     
-    system_name = validator.validate_string_length(system_name, 100)
     try:
         # print(f"[DEBUG] get_incidents_overview called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}", file=sys.stderr)
         # Set default time range if not provided (timezone-aware)
@@ -164,6 +159,7 @@ async def get_incidents_overview(
                 start_time_ms = default_start_ms
         # print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
         # Call the InsightFinder API client
+        api_client = _get_api_client()
         result = await api_client.get_incidents(
             system_name=system_name,
             start_time_ms=start_time_ms,
@@ -280,6 +276,7 @@ async def get_incidents_list(
                 start_time_ms = default_start_ms
 
         # Call the InsightFinder API client
+        api_client = _get_api_client()
         result = await api_client.get_incidents(
             system_name=system_name,
             start_time_ms=start_time_ms,
@@ -366,6 +363,7 @@ async def get_incidents_summary(
                 start_time_ms = default_start_ms
 
         # Call the InsightFinder API client
+        api_client = _get_api_client()
         result = await api_client.get_incidents(
             system_name=system_name,
             start_time_ms=start_time_ms,
@@ -463,6 +461,7 @@ async def get_incident_details(
         start_time = incident_timestamp - (5 * 60 * 1000)  # 5 minutes before
         end_time = incident_timestamp + (5 * 60 * 1000)    # 5 minutes after
 
+        api_client = _get_api_client()
         result = await api_client.get_incidents(
             system_name=system_name,
             start_time_ms=start_time,
@@ -536,9 +535,6 @@ async def get_incident_raw_data(
         max_length (int): Maximum length of raw data to return (to prevent overwhelming the LLM).
     """
     # Security checks
-    if not rate_limiter.is_allowed():
-        return {"status": "error", "message": "Rate limit exceeded"}
-    
     if not system_name or len(system_name) > 100:
         return {"status": "error", "message": "Invalid system_name"}
     
@@ -550,6 +546,7 @@ async def get_incident_raw_data(
         start_time = incident_timestamp - (5 * 60 * 1000)  # 5 minutes before
         end_time = incident_timestamp + (5 * 60 * 1000)    # 5 minutes after
 
+        api_client = _get_api_client()
         result = await api_client.get_incidents(
             system_name=system_name,
             start_time_ms=start_time,
@@ -619,6 +616,7 @@ async def get_incidents_statistics(
             if start_time_ms is None:
                 start_time_ms = default_start_ms
 
+        api_client = _get_api_client()
         result = await api_client.get_incidents(
             system_name=system_name,
             start_time_ms=start_time_ms,
@@ -703,6 +701,7 @@ async def fetch_traces(
                 start_time_ms = default_start_ms
 
         # Call the InsightFinder API client with the timeline endpoint
+        api_client = _get_api_client()
         result = await api_client.get_traces(
             system_name=system_name,
             start_time_ms=start_time_ms,
@@ -744,6 +743,7 @@ async def fetch_log_anomalies(
                 start_time_ms = default_start_ms
 
         # Call the InsightFinder API client with the timeline endpoint
+        api_client = _get_api_client()
         result = await api_client.get_loganomaly(
             system_name=system_name,
             start_time_ms=start_time_ms,
@@ -785,6 +785,7 @@ async def fetch_deployments(
                 start_time_ms = default_start_ms
 
         # Call the InsightFinder API client with the timeline endpoint
+        api_client = _get_api_client()
         result = await api_client.get_deployment(
             system_name=system_name,
             start_time_ms=start_time_ms,
@@ -818,6 +819,7 @@ async def get_today_incidents(
         start_time_ms, end_time_ms = get_today_time_range_ms()
 
         # Call the InsightFinder API client
+        api_client = _get_api_client()
         result = await api_client.get_incidents(
             system_name=system_name,
             start_time_ms=start_time_ms,
@@ -1084,3 +1086,22 @@ async def parse_specific_time_range(
             "input": {"start_time": start_time, "end_time": end_time},
             "help": "Use format MM-DD-YYYY HH:MM for both start_time and end_time"
         }
+
+def _get_api_client():
+    """
+    Get the API client for the current request context.
+    
+    Returns:
+        InsightFinderAPIClient: The API client configured for the current request
+        
+    Raises:
+        ValueError: If no API client is available (missing headers or not in HTTP context)
+    """
+    api_client = get_current_api_client()
+    if not api_client:
+        raise ValueError(
+            "InsightFinder API client not available. "
+            "This tool requires InsightFinder credentials in HTTP headers: "
+            "X-InsightFinder-License-Key and X-InsightFinder-User-Name"
+        )
+    return api_client

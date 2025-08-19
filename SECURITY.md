@@ -1,23 +1,101 @@
 # Security Implementation
 
-This MCP Server now includes basic security measures to protect against common attacks:
+This MCP Server includes comprehensive security measures to protect against attacks and unauthorized access.
 
-## Features Implemented
+## HTTP Server Authentication & Authorization
 
-### 1. Rate Limiting
+### Authentication Methods
+
+#### 1. API Key Authentication (Recommended)
+```bash
+export HTTP_AUTH_ENABLED=true
+export HTTP_AUTH_METHOD=api_key
+export HTTP_API_KEY=your-secure-api-key-here
+```
+
+**Client Usage:**
+```bash
+curl -H "X-API-Key: your-secure-api-key-here" http://localhost:8000/mcp
+```
+
+#### 2. Bearer Token Authentication
+```bash
+export HTTP_AUTH_ENABLED=true
+export HTTP_AUTH_METHOD=bearer
+export HTTP_BEARER_TOKEN=your-secure-bearer-token-here
+```
+
+**Client Usage:**
+```bash
+curl -H "Authorization: Bearer your-secure-bearer-token-here" http://localhost:8000/mcp
+```
+
+#### 3. Basic Authentication
+```bash
+export HTTP_AUTH_ENABLED=true
+export HTTP_AUTH_METHOD=basic
+export HTTP_BASIC_USERNAME=admin
+export HTTP_BASIC_PASSWORD=your-secure-password
+```
+
+**Client Usage:**
+```bash
+curl -u "admin:your-secure-password" http://localhost:8000/mcp
+```
+
+### Additional Security Features
+
+#### IP Whitelisting
+Restrict access to specific IP addresses or networks:
+```bash
+export HTTP_IP_WHITELIST="192.168.1.0/24,10.0.0.100"
+```
+
+#### CORS Configuration
+For web browser access:
+```bash
+export HTTP_CORS_ENABLED=true
+export HTTP_CORS_ORIGINS="https://yourdomain.com,https://anotherdomain.com"
+```
+
+## Security Features Implemented
+
+## Security Features Implemented
+
+### 1. Authentication & Authorization
+- **HTTP Authentication**: API Key, Bearer Token, or Basic Auth
+- **IP Whitelisting**: Restrict access to specific networks/IPs
+- **Automatic Credential Generation**: Secure defaults if not provided
+- **Multiple Auth Methods**: Flexible authentication options
+
+### 2. Rate Limiting
 - **Protection**: Prevents DDoS attacks by limiting requests per minute
 - **Default**: 60 requests per minute per client
+- **Per-IP Tracking**: Separate limits for each client IP
 - **Configuration**: Set `MAX_REQUESTS_PER_MINUTE` environment variable
+- **Blocking**: Temporary blocks for rate limit violations
 
-### 2. Payload Size Validation  
+### 3. Request Validation & Size Limits  
 - **Protection**: Prevents payload bomb attacks
 - **Default**: 1MB maximum payload size
+- **HTTP Method Restrictions**: Only GET/POST allowed on protected endpoints
 - **Configuration**: Set `MAX_PAYLOAD_SIZE` environment variable
 
-### 3. API Client Security
+### 4. CORS & Security Headers
+- **CORS Control**: Configurable cross-origin access
+- **Security Headers**: Automatic security header management
+- **Content-Type Validation**: Strict content-type checking
+
+### 5. API Client Security
 - **Timeout Protection**: 30-second request timeout instead of 100 seconds
 - **Response Size Limits**: Maximum 10MB response size
 - **Input Validation**: System names limited to 100 characters
+- **Authentication Headers**: Automatic auth header management
+
+### 6. Monitoring & Logging
+- **Security Event Logging**: Authentication failures, rate limits, IP blocks
+- **Debug Mode**: Detailed security logging when enabled
+- **Error Handling**: Secure error responses without information disclosure
 - **Time Range Limits**: Maximum 1 year time range queries
 - **Result Limits**: Maximum 5000 items per response
 
