@@ -18,13 +18,13 @@ opentelemetry-sdk>=1.20.0
 langchain-openai>=0.1.0
 
 # Anthropic (Claude) - uncomment to use
-# langchain-anthropic>=0.1.0
+langchain-anthropic>=0.1.0
 
 # Google (Gemini) - uncomment to use  
-# langchain-google-genai>=1.0.0
+langchain-google-genai>=1.0.0
 
 # Ollama (Llama) - uncomment to use
-# langchain-ollama>=0.1.0
+langchain-ollama>=0.1.0
 
 # DeepSeek uses OpenAI-compatible API (already included with langchain-openai)
 
