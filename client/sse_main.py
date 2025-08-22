@@ -93,6 +93,44 @@ def get_available_llms() -> Dict[str, Any]:
         except:
             pass
     
+    # vLLM (OpenAI-compatible API)
+    vllm_url = os.getenv("VLLM_BASE_URL", "http://localhost:7000")
+    if vllm_url:
+        try:
+            # Test if vLLM is running
+            import requests
+            response = requests.get(f"{vllm_url}/v1/models", timeout=2)
+            if response.status_code == 200:
+                models_data = response.json()
+                available_models = []
+                
+                # Handle different response formats
+                if "data" in models_data:
+                    # Standard OpenAI format: {"data": [{"id": "model_name"}]}
+                    available_models = [model["id"] for model in models_data["data"]]
+                elif "models" in models_data:
+                    # Some vLLM versions: {"models": ["model_name"]}
+                    available_models = models_data["models"]
+                elif isinstance(models_data, list):
+                    # Direct list format: ["model_name"]
+                    available_models = models_data
+                
+                if available_models:
+                    print(f"🔍 vLLM detected models: {', '.join(available_models)}")
+                    from langchain_openai import ChatOpenAI  # vLLM uses OpenAI-compatible API
+                    llms["vllm"] = {
+                        "class": ChatOpenAI,
+                        "models": available_models,
+                        "default_model": available_models[0],
+                        "base_url": f"{vllm_url}/v1",
+                        # vLLM often runs without auth; provide a default API key for OpenAI-compatible client
+                        "api_key": os.getenv("VLLM_API_KEY", os.getenv("OPENAI_API_KEY", "EMPTY")),
+                        # Add model info for debugging
+                        "server_url": vllm_url
+                    }
+        except:
+            pass
+    
     # DeepSeek
     if os.getenv("DEEPSEEK_API_KEY"):
         from langchain_openai import ChatOpenAI  # DeepSeek uses OpenAI-compatible API
@@ -128,6 +166,13 @@ def create_llm(provider: str, model: Optional[str] = None, temperature: float = 
         return llm_config["class"](
             model=model, 
             temperature=temperature,
+            base_url=llm_config["base_url"]
+        )
+    elif provider == "vllm":
+        return llm_config["class"](
+            model=model,
+            temperature=temperature,
+            api_key=llm_config["api_key"],
             base_url=llm_config["base_url"]
         )
     elif provider == "deepseek":
@@ -716,6 +761,7 @@ def print_setup_help():
    - OPENAI_API_KEY=your_openai_key (for ChatGPT)
    - ANTHROPIC_API_KEY=your_anthropic_key (for Claude)
    - GOOGLE_API_KEY=your_google_key (for Gemini)
+   - VLLM_BASE_URL=http://localhost:8000 (for vLLM)
    - DEEPSEEK_API_KEY=your_deepseek_key (for DeepSeek)
 
 3. For Ollama (Llama), make sure Ollama is running:
@@ -725,13 +771,14 @@ def print_setup_help():
    TRANSPORT_TYPE=http SSE_ENABLED=true python -m insightfinder_mcp_server.main
 
 5. Run this client:
-   python client/sse_main_clean.py
+   python client/sse_main.py
 
 🎯 Supported LLM Providers:
 - OpenAI (ChatGPT): GPT-4o, GPT-4-turbo, GPT-3.5-turbo
 - Anthropic (Claude): Claude-3.5-Sonnet, Claude-3-Opus, Claude-3-Haiku
 - Google (Gemini): Gemini-2.0-Flash, Gemini-1.5-Pro, Gemini-1.5-Flash  
 - Ollama (Llama): Local Llama models
+- vLLM: OpenAI-compatible API for local models
 - DeepSeek: DeepSeek-Chat, DeepSeek-Coder
 """)
 
