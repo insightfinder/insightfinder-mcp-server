@@ -1,6 +1,7 @@
 import httpx
 import json
 import logging
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse
 
@@ -54,6 +55,13 @@ class InsightFinderAPIClient:
             "timelineEventType": timeline_event_type
         }
 
+        print(f"Fetching {timeline_event_type} data for {system_name} from {self.base_url} with params: {params}")
+        
+        # Debug: Display human-readable time range in UTC
+        start_time_readable = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        end_time_readable = datetime.fromtimestamp(end_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        print(f"DEBUG: Time range - Start: {start_time_readable}, End: {end_time_readable}")
+
         # Basic input validation
         if not system_name or len(system_name) > 100:
             return {"status": "error", "message": "Invalid system_name"}
@@ -71,7 +79,14 @@ class InsightFinderAPIClient:
                 if content_length and int(content_length) > 10 * 1024 * 1024:  # 10MB limit
                     return {"status": "error", "message": "Response too large"}
                 
-                raw_data = response.json()
+                # Parse JSON with error handling
+                try:
+                    raw_data = response.json()
+                except (json.JSONDecodeError, ValueError) as json_err:
+                    response_text = response.text[:200] if response.text else "Empty response"
+                    logger.error(f"JSON parse error for {timeline_event_type}: {json_err}. Response: {response_text}")
+                    return {"status": "error", "message": f"Invalid JSON response: {response_text}"}
+                    
                 timeline_list = raw_data.get("timelineList", [])
                 
                 # Limit number of items to prevent memory issues

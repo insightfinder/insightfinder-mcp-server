@@ -8,20 +8,26 @@ This module provides a progressive drill-down approach for exploring traces:
 - Layer 3: Full details (get_trace_details)
 - Layer 4: Raw data (get_trace_raw_data)
 - Layer 5: Statistics (get_traces_statistics)
+- Project-specific: Project-filtered traces (get_project_traces)
 
 Each layer provides increasingly detailed information while maintaining LLM-friendly,
-structured outputs optimized for analysis and reasoning.
+structured outputs optimized for analysis and reasoning. All tools support optional
+project_name filtering to focus on specific projects within a system.
 """
 
 import asyncio
 import json
 import logging
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import re
 
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
+
+def _format_timestamp_utc(timestamp_ms: int) -> str:
+    """Convert timestamp to UTC ISO format."""
+    return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
 
 def _get_api_client():
     """
@@ -52,7 +58,8 @@ logger = logging.getLogger(__name__)
 async def get_traces_overview(
     system_name: str,
     start_time_ms: int,
-    end_time_ms: int
+    end_time_ms: int,
+    project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Layer 0: Ultra-compact overview of traces.
@@ -64,9 +71,10 @@ async def get_traces_overview(
         system_name: Name of the system to query
         start_time_ms: Start timestamp in milliseconds
         end_time_ms: End timestamp in milliseconds
+        project_name: Optional project name to filter traces (client-side filtering)
         
     Returns:
-        Dict containing ultra-compact overview with status, summary stats, and key insights
+        Dict containing ultra-compact overview with status, summary stats, key insights, and projectName
     """
     try:
         client = _get_api_client()
@@ -82,11 +90,13 @@ async def get_traces_overview(
             return {
                 "status": "success",
                 "message": "No traces found in the specified time range",
+                "systemName": system_name,
+                "projectName": project_name,
                 "summary": {
                     "total_traces": 0,
                     "time_range": {
-                        "start": datetime.fromtimestamp(start_time_ms / 1000).isoformat(),
-                        "end": datetime.fromtimestamp(end_time_ms / 1000).isoformat(),
+                        "start": _format_timestamp_utc(start_time_ms),
+                        "end": _format_timestamp_utc(end_time_ms),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
@@ -94,21 +104,48 @@ async def get_traces_overview(
         
         traces = raw_data["timelineList"]
         
+        # Apply project_name filter if specified
+        if project_name:
+            traces = [t for t in traces if t.get("projectName") == project_name]
+        
+        # Check if no traces after filtering
+        if not traces:
+            filter_msg = f" (filtered by project: {project_name})" if project_name else ""
+            return {
+                "status": "success",
+                "message": f"No traces found in the specified time range{filter_msg}",
+                "systemName": system_name,
+                "projectName": project_name,
+                "summary": {
+                    "total_traces": 0,
+                    "time_range": {
+                        "start": _format_timestamp_utc(start_time_ms),
+                        "end": _format_timestamp_utc(end_time_ms),
+                        "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
+                    }
+                }
+            }
+        
         # Extract key metrics
         total_traces = len(traces)
         
-        # Parse trace data
+        # Parse trace data and collect projects
         operation_names = set()
         error_states = {"error": 0, "success": 0, "unknown": 0}
         components = set()
         instances = set()
         patterns = set()
+        projects = set()
         
         # Duration and performance analysis
         durations = []
         error_traces = 0
         
         for trace in traces:
+            # Collect project names
+            if trace.get("projectName"):
+                projects.add(trace["projectName"])
+            
             # Parse raw data
             trace_info = _parse_trace_raw_data(trace.get("rawData", ""))
             
@@ -167,6 +204,8 @@ async def get_traces_overview(
         
         return {
             "status": "success",
+            "systemName": system_name,
+            "projectName": project_name,
             "summary": {
                 "total_traces": total_traces,
                 "error_analysis": {
@@ -184,13 +223,14 @@ async def get_traces_overview(
                     "unique_components": len(components),
                     "unique_instances": len(instances),
                     "unique_operations": len(operation_names),
-                    "unique_patterns": len(patterns)
+                    "unique_patterns": len(patterns),
+                    "unique_projects": len(projects)
                 },
                 "top_operations": [{"operation": op, "count": cnt} for op, cnt in top_operations],
                 "time_analysis": {
                     "time_span_hours": time_span_hours,
-                    "start": datetime.fromtimestamp(start_time_ms / 1000).isoformat(),
-                    "end": datetime.fromtimestamp(end_time_ms / 1000).isoformat(),
+                    "start": _format_timestamp_utc(start_time_ms),
+                    "end": _format_timestamp_utc(end_time_ms),
                     "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                 }
             },
@@ -221,6 +261,7 @@ async def get_traces_list(
     limit: int = 20,
     has_error: Optional[bool] = None,
     operation_name: Optional[str] = None,
+    project_name: Optional[str] = None,
     sort_by: str = "timestamp"
 ) -> Dict[str, Any]:
     """
@@ -236,10 +277,11 @@ async def get_traces_list(
         limit: Maximum number of traces to return
         has_error: Filter by error status (True/False/None for all)
         operation_name: Filter by operation name
+        project_name: Optional project name to filter traces (client-side filtering)
         sort_by: Sort field ("timestamp", "duration", "error")
         
     Returns:
-        Dict containing compact list of traces with status and metadata
+        Dict containing compact list of traces with status, metadata, and projectName
     """
     try:
         client = _get_api_client()
@@ -255,6 +297,8 @@ async def get_traces_list(
             return {
                 "status": "success",
                 "message": "No traces found in the specified time range",
+                "systemName": system_name,
+                "projectName": project_name,
                 "total_found": 0,
                 "returned_count": 0,
                 "traces": []
@@ -265,6 +309,10 @@ async def get_traces_list(
         # Filter traces
         filtered_traces = []
         for trace in traces:
+            # Apply project_name filter first
+            if project_name and trace.get("projectName") != project_name:
+                continue
+            
             trace_info = _parse_trace_raw_data(trace.get("rawData", ""))
             
             # Apply filters
@@ -293,7 +341,8 @@ async def get_traces_list(
             
             compact_trace = {
                 "timestamp": trace.get("timestamp"),
-                "datetime": datetime.fromtimestamp(trace.get("timestamp", 0) / 1000).isoformat() if trace.get("timestamp") else None,
+                "datetime": _format_timestamp_utc(trace.get("timestamp", 0)) if trace.get("timestamp") else None,
+                "projectName": trace.get("projectName"),
                 "trace_id": trace_info.get("traceID"),
                 "span_id": trace_info.get("spanID"),
                 "operation_name": trace_info.get("operationName"),
@@ -312,11 +361,14 @@ async def get_traces_list(
         
         return {
             "status": "success",
+            "systemName": system_name,
+            "projectName": project_name,
             "total_found": len(filtered_traces),
             "returned_count": len(compact_traces),
             "filters": {
                 "has_error": has_error,
                 "operation_name": operation_name,
+                "project_name": project_name,
                 "sort_by": sort_by,
                 "limit": limit
             },
@@ -341,6 +393,7 @@ async def get_traces_summary(
     end_time_ms: int,
     limit: int = 10,
     has_error: Optional[bool] = None,
+    project_name: Optional[str] = None,
     include_context: bool = True
 ) -> Dict[str, Any]:
     """
@@ -355,10 +408,11 @@ async def get_traces_summary(
         end_time_ms: End timestamp in milliseconds
         limit: Maximum number of traces to return
         has_error: Filter by error status (True/False/None for all)
+        project_name: Optional project name to filter traces (client-side filtering)
         include_context: Whether to include contextual analysis
         
     Returns:
-        Dict containing detailed trace summaries with status and metadata
+        Dict containing detailed trace summaries with status, metadata, and projectName
     """
     try:
         client = _get_api_client()
@@ -374,6 +428,8 @@ async def get_traces_summary(
             return {
                 "status": "success",
                 "message": "No traces found in the specified time range",
+                "systemName": system_name,
+                "projectName": project_name,
                 "total_found": 0,
                 "returned_count": 0,
                 "traces": []
@@ -382,14 +438,19 @@ async def get_traces_summary(
         traces = raw_data["timelineList"]
         
         # Filter traces
-        if has_error is not None:
-            filtered_traces = []
-            for trace in traces:
+        filtered_traces = []
+        for trace in traces:
+            # Apply project_name filter first
+            if project_name and trace.get("projectName") != project_name:
+                continue
+                
+            # Apply error filter
+            if has_error is not None:
                 trace_info = _parse_trace_raw_data(trace.get("rawData", ""))
                 if trace_info.get("error", False) == has_error:
                     filtered_traces.append(trace)
-        else:
-            filtered_traces = traces
+            else:
+                filtered_traces.append(trace)
         
         # Sort by timestamp (most recent first)
         filtered_traces.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
@@ -405,7 +466,8 @@ async def get_traces_summary(
             
             detailed_trace = {
                 "timestamp": trace.get("timestamp"),
-                "datetime": datetime.fromtimestamp(trace.get("timestamp", 0) / 1000).isoformat() if trace.get("timestamp") else None,
+                "datetime": _format_timestamp_utc(trace.get("timestamp", 0)) if trace.get("timestamp") else None,
+                "projectName": trace.get("projectName"),
                 "active": trace.get("active", 0),
                 
                 # Trace identification
@@ -458,10 +520,13 @@ async def get_traces_summary(
         
         return {
             "status": "success",
+            "systemName": system_name,
+            "projectName": project_name,
             "total_found": len(filtered_traces),
             "returned_count": len(detailed_traces),
             "filters": {
                 "has_error": has_error,
+                "project_name": project_name,
                 "limit": limit,
                 "include_context": include_context
             },
@@ -540,10 +605,12 @@ async def get_trace_details(
         
         detailed_info = {
             "status": "success",
+            "systemName": system_name,
             "trace": {
                 # Basic identification
                 "timestamp": target_trace.get("timestamp"),
-                "datetime": datetime.fromtimestamp(target_trace.get("timestamp", 0) / 1000).isoformat() if target_trace.get("timestamp") else None,
+                "datetime": _format_timestamp_utc(target_trace.get("timestamp", 0)) if target_trace.get("timestamp") else None,
+                "projectName": target_trace.get("projectName"),
                 "active": target_trace.get("active", 0),
                 
                 # Trace identification and hierarchy
@@ -679,6 +746,8 @@ async def get_trace_raw_data(
         
         return {
             "status": "success",
+            "systemName": system_name,
+            "projectName": target_trace.get("projectName"),
             "trace_timestamp": trace_timestamp,
             "raw_data": raw_json,
             "raw_data_length": original_length,
@@ -726,6 +795,7 @@ async def get_traces_statistics(
     system_name: str,
     start_time_ms: int,
     end_time_ms: int,
+    project_name: Optional[str] = None,
     include_trends: bool = True
 ) -> Dict[str, Any]:
     """
@@ -738,10 +808,11 @@ async def get_traces_statistics(
         system_name: Name of the system to query
         start_time_ms: Start timestamp in milliseconds
         end_time_ms: End timestamp in milliseconds
+        project_name: Optional project name to filter traces (client-side filtering)
         include_trends: Whether to include trend analysis
         
     Returns:
-        Dict containing comprehensive statistics with status and metadata
+        Dict containing comprehensive statistics with status, metadata, and projectName
     """
     try:
         client = _get_api_client()
@@ -757,17 +828,23 @@ async def get_traces_statistics(
             return {
                 "status": "success",
                 "message": "No traces found in the specified time range",
+                "systemName": system_name,
+                "projectName": project_name,
                 "statistics": {
                     "total_traces": 0,
                     "time_range": {
-                        "start": datetime.fromtimestamp(start_time_ms / 1000).isoformat(),
-                        "end": datetime.fromtimestamp(end_time_ms / 1000).isoformat(),
+                        "start": _format_timestamp_utc(start_time_ms),
+                        "end": _format_timestamp_utc(end_time_ms),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
             }
         
         traces = raw_data["timelineList"]
+        
+        # Apply project_name filter if specified
+        if project_name:
+            traces = [t for t in traces if t.get("projectName") == project_name]
         
         # Basic statistics
         total_traces = len(traces)
@@ -777,6 +854,7 @@ async def get_traces_statistics(
         component_counts = {}
         instance_counts = {}
         pattern_counts = {}
+        project_counts = {}
         
         # Duration and error tracking
         durations = []
@@ -788,6 +866,10 @@ async def get_traces_statistics(
         incident_count = 0
         
         for trace in traces:
+            # Project tracking
+            project = trace.get("projectName", "Unknown")
+            project_counts[project] = project_counts.get(project, 0) + 1
+            
             trace_info = _parse_trace_raw_data(trace.get("rawData", ""))
             
             # Operation tracking
@@ -861,8 +943,8 @@ async def get_traces_statistics(
         statistics = {
             "total_traces": total_traces,
             "time_range": {
-                "start": datetime.fromtimestamp(start_time_ms / 1000).isoformat(),
-                "end": datetime.fromtimestamp(end_time_ms / 1000).isoformat(),
+                "start": _format_timestamp_utc(start_time_ms),
+                "end": _format_timestamp_utc(end_time_ms),
                 "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1),
                 "actual_span_hours": time_span_hours
             },
@@ -893,9 +975,11 @@ async def get_traces_statistics(
                 "unique_components": len(component_counts),
                 "unique_instances": len(instance_counts),
                 "unique_patterns": len(pattern_counts),
+                "unique_projects": len(project_counts),
                 "top_components": get_top_items(component_counts),
                 "top_instances": get_top_items(instance_counts),
-                "pattern_distribution": get_top_items(pattern_counts)
+                "pattern_distribution": get_top_items(pattern_counts),
+                "top_affected_projects": get_top_items(project_counts)
             },
             
             "anomaly_analysis": {
@@ -913,6 +997,8 @@ async def get_traces_statistics(
         
         return {
             "status": "success",
+            "systemName": system_name,
+            "projectName": project_name,
             "statistics": statistics,
             "insights": _generate_trace_insights(statistics)
         }
@@ -923,6 +1009,188 @@ async def get_traces_statistics(
             "status": "error",
             "message": f"Failed to get traces statistics: {str(e)}"
         }
+
+# ============================================================================
+# PROJECT-SPECIFIC FUNCTION
+# ============================================================================
+
+@mcp_server.tool()
+async def get_project_traces(
+    system_name: str,
+    project_name: str,
+    start_time_ms: int,
+    end_time_ms: int,
+    limit: int = 20
+) -> Dict[str, Any]:
+    """
+    Fetches traces specifically for a given project within a system.
+    Use this tool when the user specifies both a system name and project name.
+    
+    Example usage:
+    - "show me traces for project demo-kpi-metrics-2 in system Citizen Cane Demo System (STG)"
+    - "get traces before incident for project X in system Y"
+    - "what trace activity happened in project ABC"
+
+    Args:
+        system_name (str): The name of the system (e.g., "Citizen Cane Demo System (STG)")
+        project_name (str): The name of the project (e.g., "demo-kpi-metrics-2")
+        start_time_ms (int): Start time in UTC milliseconds
+        end_time_ms (int): End time in UTC milliseconds  
+        limit (int): Maximum number of traces to return (default: 20)
+    """
+    try:
+        client = _get_api_client()
+        
+        # Call the InsightFinder API client with ONLY the system name
+        result = await client.get_traces(
+            system_name=system_name,  # Use only the system name here
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+        )
+
+        if not result.get("timelineList"):
+            return {
+                "status": "success",
+                "message": "No traces found in the specified time range",
+                "summary": {
+                    "total_traces": 0,
+                    "project_name": project_name,
+                    "system_name": system_name,
+                    "time_range": {
+                        "start": _format_timestamp_utc(start_time_ms),
+                        "end": _format_timestamp_utc(end_time_ms),
+                        "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
+                    }
+                }
+            }
+
+        traces = result["timelineList"]
+        
+        # Filter by the specific project name
+        project_traces = [t for t in traces if t.get("projectName") == project_name]
+        
+        # Sort by timestamp (most recent first) and limit
+        project_traces = sorted(project_traces, key=lambda x: x.get("timestamp", 0), reverse=True)[:limit]
+
+        # Create detailed trace list for the project
+        trace_list = []
+        for i, trace in enumerate(project_traces):
+            trace_info = _parse_trace_raw_data(trace.get("rawData", ""))
+            result_info = trace.get("rootCauseResultInfo", {})
+            
+            trace_summary = {
+                "index": i + 1,
+                "timestamp": trace.get("timestamp"),
+                "datetime": _format_timestamp_utc(trace.get("timestamp", 0)) if trace.get("timestamp") else None,
+                "active": trace.get("active", 0),
+                
+                # Location information
+                "project_name": project_name,
+                "component_name": trace.get("componentName"),
+                "instance_name": trace.get("instanceName"),
+                
+                # Trace identification
+                "trace_id": trace_info.get("traceID"),
+                "span_id": trace_info.get("spanID"),
+                "parent_span_id": trace_info.get("parentSpanId"),
+                "operation_name": trace_info.get("operationName"),
+                
+                # Performance metrics
+                "duration_ms": trace_info.get("duration", 0),
+                "has_error": trace_info.get("error", False),
+                "pattern_name": trace.get("patternName"),
+                "anomaly_score": trace.get("anomalyScore", 0.0),
+                
+                # System status flags
+                "is_incident": trace.get("isIncident", False),
+                
+                # Context information
+                "has_preceding_event": result_info.get("hasPrecedingEvent", False),
+                "has_trailing_event": result_info.get("hasTrailingEvent", False),
+                "caused_by_change_event": result_info.get("causedByChangeEvent", False),
+                "lead_to_incident": result_info.get("leadToIncident", False),
+                
+                # Error analysis (if applicable)
+                "error_info": _extract_error_info(trace_info) if trace_info.get("error") else None,
+                
+                # Raw data info
+                "raw_data_length": len(trace.get("rawData", ""))
+            }
+            
+            trace_list.append(trace_summary)
+
+        # Summary statistics
+        total_traces = len(project_traces)
+        error_count = 0
+        durations = []
+        incident_count = 0
+        operation_counts = {}
+        
+        for trace in project_traces:
+            trace_info = _parse_trace_raw_data(trace.get("rawData", ""))
+            
+            # Error tracking
+            if trace_info.get("error", False):
+                error_count += 1
+            
+            # Duration tracking
+            duration = trace_info.get("duration", 0)
+            if duration and isinstance(duration, (int, float)):
+                durations.append(duration)
+            
+            # Operation tracking
+            operation = trace_info.get("operationName", "Unknown")
+            operation_counts[operation] = operation_counts.get(operation, 0) + 1
+                
+            # Incident count
+            if trace.get("isIncident"):
+                incident_count += 1
+
+        # Calculate performance statistics
+        if durations:
+            avg_duration = sum(durations) / len(durations)
+            max_duration = max(durations)
+            min_duration = min(durations)
+        else:
+            avg_duration = max_duration = min_duration = 0
+
+        # Calculate error rate
+        error_rate = (error_count / total_traces * 100) if total_traces > 0 else 0
+
+        return {
+            "status": "success",
+            "message": f"Found {total_traces} traces for project '{project_name}' in system '{system_name}'",
+            "summary": {
+                "total_traces": total_traces,
+                "error_analysis": {
+                    "error_count": error_count,
+                    "success_count": total_traces - error_count,
+                    "error_rate_percentage": round(error_rate, 1)
+                },
+                "performance_metrics": {
+                    "avg_duration_ms": round(avg_duration, 1) if avg_duration else 0,
+                    "max_duration_ms": max_duration,
+                    "min_duration_ms": min_duration,
+                    "traces_with_duration": len(durations)
+                },
+                "operation_distribution": operation_counts,
+                "traces_with_incidents": incident_count,
+                "incident_rate_percentage": round(incident_count / total_traces * 100, 1) if total_traces > 0 else 0,
+                "project_name": project_name,
+                "system_name": system_name,
+                "time_range": {
+                    "start": _format_timestamp_utc(start_time_ms),
+                    "end": _format_timestamp_utc(end_time_ms),
+                    "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
+                }
+            },
+            "traces": trace_list
+        }
+
+    except Exception as e:
+        error_message = f"Error in get_project_traces: {str(e)}"
+        logger.error(error_message)
+        return {"status": "error", "message": error_message}
 
 # ============================================================================
 # HELPER FUNCTIONS

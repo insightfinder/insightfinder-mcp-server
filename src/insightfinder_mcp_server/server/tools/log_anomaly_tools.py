@@ -1,4 +1,5 @@
 import sys
+import json
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 
@@ -32,6 +33,7 @@ async def get_log_anomalies_overview(
     system_name: str,
     start_time_ms: Optional[int] = None,
     end_time_ms: Optional[int] = None,
+    project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Fetches a very high-level overview of log anomalies - just counts and basic metrics.
@@ -44,6 +46,7 @@ async def get_log_anomalies_overview(
                          If not provided, defaults to 24 hours ago.
         end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
                        If not provided, defaults to the current time.
+        project_name (str): Optional. Filter results to only include anomalies from this specific project.
     """
     try:
         # Set default time range if not provided
@@ -68,6 +71,10 @@ async def get_log_anomalies_overview(
 
         log_anomalies = result["data"]
         
+        # Filter by project name if specified
+        if project_name:
+            log_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
+        
         # Basic counts and metrics
         total_anomalies = len(log_anomalies)
         
@@ -88,6 +95,7 @@ async def get_log_anomalies_overview(
         unique_components = len(set(anomaly.get("componentName", "Unknown") for anomaly in log_anomalies))
         unique_instances = len(set(anomaly.get("instanceName", "Unknown") for anomaly in log_anomalies))
         unique_patterns = len(set(anomaly.get("patternName", "Unknown") for anomaly in log_anomalies))
+        unique_projects = len(set(anomaly.get("projectName", "Unknown") for anomaly in log_anomalies))
         unique_zones = len(set(anomaly.get("zoneName", "Unknown") for anomaly in log_anomalies if anomaly.get("zoneName")))
 
         # Anomaly score statistics
@@ -116,6 +124,7 @@ async def get_log_anomalies_overview(
                 "unique_components": unique_components,
                 "unique_instances": unique_instances,
                 "unique_patterns": unique_patterns,
+                "unique_projects": unique_projects,
                 "unique_zones": unique_zones,
                 "score_statistics": {
                     "max_score": round(max_score, 2),
@@ -134,18 +143,22 @@ async def get_log_anomalies_overview(
             print(error_message, file=sys.stderr)
         return {"status": "error", "message": error_message}
 
-# Layer 1: Compact log anomaly list (basic info only, no raw data)
+# Layer 1: Enhanced log anomaly list with detailed information
 @mcp_server.tool()
 async def get_log_anomalies_list(
     system_name: str,
     start_time_ms: Optional[int] = None,
     end_time_ms: Optional[int] = None,
     limit: int = 10,
-    min_severity: str = "low"
+    min_severity: str = "low",
+    project_name: Optional[str] = None,
+    include_raw_data: bool = False
 ) -> Dict[str, Any]:
     """
-    Fetches a compact list of log anomalies with basic information only.
-    Use this after getting the overview to see individual anomalies without overwhelming detail.
+    Fetches a detailed list of log anomalies with comprehensive information.
+    This is the main tool for getting log anomaly details - combines basic info with parsed raw data.
+    
+    The response includes parsed raw data fields (e.g., _id, cdn, status_code, url, name, etc.) and formatted summaries.
 
     Args:
         system_name (str): The name of the system to query for log anomalies.
@@ -153,6 +166,8 @@ async def get_log_anomalies_list(
         end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
         limit (int): Maximum number of anomalies to return (default: 10).
         min_severity (str): Minimum severity level - "low" (>0), "medium" (>10), "high" (>100).
+        project_name (str): Optional. Filter results to only include anomalies from this specific project.
+        include_raw_data (bool): Whether to include raw log data (default: False for performance).
     """
     try:
         # Set default time range if not provided
@@ -177,6 +192,10 @@ async def get_log_anomalies_list(
 
         log_anomalies = result["data"]
         
+        # Filter by project name if specified
+        if project_name:
+            log_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
+        
         # Filter by severity
         severity_thresholds = {"low": 0, "medium": 10, "high": 100}
         min_score = severity_thresholds.get(min_severity, 0)
@@ -185,7 +204,7 @@ async def get_log_anomalies_list(
         # Sort by anomaly score (highest first) and limit
         log_anomalies = sorted(log_anomalies, key=lambda x: x.get("anomalyScore", 0), reverse=True)[:limit]
 
-        # Create compact anomaly list
+        # Create detailed anomaly list
         anomaly_list = []
         for i, anomaly in enumerate(log_anomalies):
             # Determine severity category
@@ -201,6 +220,7 @@ async def get_log_anomalies_list(
                 "id": i + 1,
                 "timestamp": anomaly["timestamp"],
                 "timestamp_human": format_api_timestamp_corrected(anomaly["timestamp"]),
+                "project": anomaly.get("projectName", "Unknown"),
                 "component": anomaly.get("componentName", "Unknown"),
                 "instance": anomaly.get("instanceName", "Unknown"),
                 "pattern": anomaly.get("patternName", "Unknown"),
@@ -210,6 +230,72 @@ async def get_log_anomalies_list(
                 "is_incident": anomaly.get("isIncident", False),
                 "active": anomaly.get("active", 0)
             }
+            
+            # Add raw data if requested and available
+            if "rawData" in anomaly and anomaly["rawData"]:
+                raw_data = anomaly["rawData"]
+                
+                # Parse and format raw data for better display
+                parsed_data = None
+                raw_data_fields = {}
+                
+                # Try to parse JSON if it's a string
+                if isinstance(raw_data, str):
+                    try:
+                        parsed_data = json.loads(raw_data)
+                        raw_data_fields = parsed_data if isinstance(parsed_data, dict) else {}
+                        anomaly_info["raw_data_type"] = "json_string"
+                    except json.JSONDecodeError:
+                        # Not JSON, treat as plain text
+                        raw_data_fields = {"content": raw_data}
+                        anomaly_info["raw_data_type"] = "plain_text"
+                elif isinstance(raw_data, dict):
+                    # Already a dictionary
+                    raw_data_fields = raw_data
+                    parsed_data = raw_data
+                    anomaly_info["raw_data_type"] = "dictionary"
+                else:
+                    # Other data types
+                    raw_data_fields = {"content": str(raw_data)}
+                    anomaly_info["raw_data_type"] = "other"
+                
+                # Add parsed fields for easy access
+                if raw_data_fields:
+                    anomaly_info["raw_data_fields"] = raw_data_fields
+                    
+                    # Extract common fields if they exist
+                    common_fields = ["_id", "cdn", "id", "status_code", "status_text", "url", "name", "product", "location", "time", "execution_uid"]
+                    extracted_fields = {}
+                    for field in common_fields:
+                        if field in raw_data_fields:
+                            print(f"Extracting field '{field}' from raw data: {raw_data_fields[field]}")
+                            extracted_fields[field] = raw_data_fields[field]
+                    
+                    if extracted_fields:
+                        anomaly_info["key_fields"] = extracted_fields
+                
+                # Include full raw data if requested
+                if include_raw_data:
+                    anomaly_info["raw_data"] = raw_data
+                
+                # Always provide a readable summary
+                if parsed_data and isinstance(parsed_data, dict):
+                    # Create a nice formatted summary
+                    summary_parts = []
+                    for key, value in list(parsed_data.items())[:8]:  # Limit to first 8 fields for list view
+                        summary_parts.append(f"{key}: {value}")
+                    anomaly_info["raw_data_summary"] = " | ".join(summary_parts)
+                    if len(parsed_data) > 8:
+                        anomaly_info["raw_data_summary"] += f" | ... ({len(parsed_data) - 8} more fields)"
+                else:
+                    # Fallback to string representation
+                    raw_data_str = str(raw_data)
+                    anomaly_info["raw_data_summary"] = raw_data_str[:200] + "..." if len(raw_data_str) > 200 else raw_data_str
+                    
+                anomaly_info["has_raw_data"] = True
+            else:
+                anomaly_info["has_raw_data"] = False
+            
             anomaly_list.append(anomaly_info)
 
         return {
@@ -217,7 +303,9 @@ async def get_log_anomalies_list(
             "system_name": system_name,
             "filters": {
                 "min_severity": min_severity,
-                "limit": limit
+                "limit": limit,
+                "project_name": project_name,
+                "include_raw_data": include_raw_data
             },
             "time_range": {
                 "start_human": format_timestamp_in_user_timezone(start_time_ms),
@@ -234,276 +322,13 @@ async def get_log_anomalies_list(
             print(error_message, file=sys.stderr)
         return {"status": "error", "message": error_message}
 
-# Layer 2: Detailed log anomaly summary (includes root cause info but manageable)
-@mcp_server.tool()
-async def get_log_anomalies_summary(
-    system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
-    limit: int = 5,
-    min_severity: str = "medium"
-) -> Dict[str, Any]:
-    """
-    Fetches a detailed summary of log anomalies including root cause information.
-    Use this when you need more detail about specific anomalies after reviewing the compact list.
-
-    Args:
-        system_name (str): The name of the system to query for log anomalies.
-        start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
-        end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
-        limit (int): Maximum number of anomalies to return (default: 5).
-        min_severity (str): Minimum severity level - "low" (>0), "medium" (>10), "high" (>100).
-    """
-    try:
-        # Set default time range if not provided
-        # Set default time range if not provided (timezone-aware)
-        if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
-            if end_time_ms is None:
-                end_time_ms = default_end_ms
-            if start_time_ms is None:
-                start_time_ms = default_start_ms  # 24 hours ago
-
-        # Call the InsightFinder API client
-        api_client = _get_api_client()
-        result = await api_client.get_loganomaly(
-            system_name=system_name,
-            start_time_ms=start_time_ms,
-            end_time_ms=end_time_ms,
-        )
-
-        if result["status"] != "success":
-            return result
-
-        log_anomalies = result["data"]
-        
-        # Filter by severity
-        severity_thresholds = {"low": 0, "medium": 10, "high": 100}
-        min_score = severity_thresholds.get(min_severity, 10)
-        log_anomalies = [la for la in log_anomalies if la.get("anomalyScore", 0) >= min_score]
-        
-        # Sort by anomaly score (highest first) and limit
-        log_anomalies = sorted(log_anomalies, key=lambda x: x.get("anomalyScore", 0), reverse=True)[:limit]
-
-        # Extract detailed summary information
-        anomalies_summary = []
-        for anomaly in log_anomalies:
-            # Convert timestamp to human readable
-            timestamp_str = format_api_timestamp_corrected(anomaly["timestamp"])
-            
-            # Determine severity category
-            score = anomaly.get("anomalyScore", 0)
-            if score > 100:
-                severity = "high"
-            elif score >= 10:
-                severity = "medium"
-            else:
-                severity = "low"
-            
-            summary = {
-                "anomaly_id": len(anomalies_summary) + 1,  # Simple ID for reference
-                "timestamp": anomaly["timestamp"],
-                "timestamp_human": timestamp_str,
-                "instanceName": anomaly.get("instanceName", "Unknown"),
-                "componentName": anomaly.get("componentName", "Unknown"),
-                "patternName": anomaly.get("patternName", "Unknown"),
-                "zoneName": anomaly.get("zoneName", "Unknown"),
-                "anomalyScore": anomaly.get("anomalyScore", 0),
-                "severity": severity,
-                "isIncident": anomaly.get("isIncident", False),
-                "active": anomaly.get("active", 0),
-                "has_raw_data": "rawData" in anomaly and anomaly["rawData"] is not None,
-                "has_root_cause": "rootCauseResultInfo" in anomaly and anomaly["rootCauseResultInfo"] is not None,
-            }
-            
-            # Add root cause summary if available
-            if "rootCauseResultInfo" in anomaly and anomaly["rootCauseResultInfo"]:
-                root_cause = anomaly["rootCauseResultInfo"]
-                summary["root_cause_summary"] = {
-                    "hasPrecedingEvent": root_cause.get("hasPrecedingEvent", False),
-                    "hasTrailingEvent": root_cause.get("hasTrailingEvent", False),
-                    "causedByChangeEvent": root_cause.get("causedByChangeEvent", False),
-                    "leadToIncident": root_cause.get("leadToIncident", False)
-                }
-            
-            # Add a preview of raw data if available (first 200 chars)
-            if "rawData" in anomaly and anomaly["rawData"]:
-                raw_data = str(anomaly["rawData"])
-                summary["raw_data_preview"] = raw_data[:200] + "..." if len(raw_data) > 200 else raw_data
-                summary["raw_data_length"] = len(raw_data)
-            
-            anomalies_summary.append(summary)
-
-        return {
-            "status": "success",
-            "system_name": system_name,
-            "filters": {
-                "min_severity": min_severity,
-                "limit": limit
-            },
-            "time_range": {
-                "start": start_time_ms,
-                "end": end_time_ms,
-                "start_human": format_timestamp_in_user_timezone(start_time_ms),
-                "end_human": format_timestamp_in_user_timezone(end_time_ms)
-            },
-            "total_found": len(result["data"]),
-            "returned_count": len(anomalies_summary),
-            "anomalies": anomalies_summary
-        }
-        
-    except Exception as e:
-        error_message = f"Error in get_log_anomalies_summary: {str(e)}"
-        if settings.ENABLE_DEBUG_MESSAGES:
-            print(error_message, file=sys.stderr)
-        return {"status": "error", "message": error_message}
-
-# Layer 3: Full log anomaly details (without raw data)
-@mcp_server.tool()
-async def get_log_anomaly_details(
-    system_name: str,
-    anomaly_timestamp: int,
-    include_root_cause: bool = True
-) -> Dict[str, Any]:
-    """
-    Fetches complete information about a specific log anomaly, excluding raw data to keep response manageable.
-    Use this after identifying a specific anomaly from the list or summary layers.
-
-    Args:
-        system_name (str): The name of the system to query.
-        anomaly_timestamp (int): The timestamp of the specific anomaly to get details for.
-        include_root_cause (bool): Whether to include detailed root cause information.
-    """
-    try:
-        # Get log anomalies for a small time window around the specific timestamp
-        start_time = anomaly_timestamp - (5 * 60 * 1000)  # 5 minutes before
-        end_time = anomaly_timestamp + (5 * 60 * 1000)    # 5 minutes after
-
-        api_client = _get_api_client()
-        result = await api_client.get_loganomaly(
-            system_name=system_name,
-            start_time_ms=start_time,
-            end_time_ms=end_time,
-        )
-
-        if result["status"] != "success":
-            return result
-
-        # Find the specific anomaly
-        target_anomaly = None
-        for anomaly in result["data"]:
-            if anomaly["timestamp"] == anomaly_timestamp:
-                target_anomaly = anomaly
-                break
-
-        if not target_anomaly:
-            return {"status": "error", "message": f"Log anomaly with timestamp {anomaly_timestamp} not found"}
-
-        # Build detailed response without raw data
-        anomaly_details = {
-            "timestamp": target_anomaly["timestamp"],
-            "timestamp_human": format_api_timestamp_corrected(target_anomaly["timestamp"]),
-            "instanceName": target_anomaly.get("instanceName"),
-            "componentName": target_anomaly.get("componentName"),
-            "patternName": target_anomaly.get("patternName"),
-            "zoneName": target_anomaly.get("zoneName"),
-            "anomalyScore": target_anomaly.get("anomalyScore"),
-            "isIncident": target_anomaly.get("isIncident"),
-            "active": target_anomaly.get("active"),
-        }
-
-        # Add root cause details if requested and available
-        if include_root_cause and "rootCauseResultInfo" in target_anomaly and target_anomaly["rootCauseResultInfo"]:
-            anomaly_details["rootCauseResultInfo"] = target_anomaly["rootCauseResultInfo"]
-
-        return {
-            "status": "success",
-            "anomaly_details": anomaly_details,
-            "has_raw_data": "rawData" in target_anomaly and target_anomaly["rawData"] is not None
-        }
-        
-    except Exception as e:
-        error_message = f"Error in get_log_anomaly_details: {str(e)}"
-        if settings.ENABLE_DEBUG_MESSAGES:
-            print(error_message, file=sys.stderr)
-        return {"status": "error", "message": error_message}
-
-# Layer 4: Raw data extraction (for deep investigation)
-@mcp_server.tool()
-async def get_log_anomaly_raw_data(
-    system_name: str,
-    anomaly_timestamp: int,
-    max_length: int = 5000
-) -> Dict[str, Any]:
-    """
-    Fetches the raw log data for a specific log anomaly.
-    Use this only when you need to examine the actual log content.
-
-    Args:
-        system_name (str): The name of the system to query.
-        anomaly_timestamp (int): The timestamp of the specific anomaly.
-        max_length (int): Maximum length of raw data to return (to prevent overwhelming the LLM).
-    """
-    try:
-        # Get log anomalies for a small time window around the specific timestamp
-        start_time = anomaly_timestamp - (5 * 60 * 1000)  # 5 minutes before
-        end_time = anomaly_timestamp + (5 * 60 * 1000)    # 5 minutes after
-
-        api_client = _get_api_client()
-        result = await api_client.get_loganomaly(
-            system_name=system_name,
-            start_time_ms=start_time,
-            end_time_ms=end_time,
-        )
-
-        if result["status"] != "success":
-            return result
-
-        # Find the specific anomaly
-        target_anomaly = None
-        for anomaly in result["data"]:
-            if anomaly["timestamp"] == anomaly_timestamp:
-                target_anomaly = anomaly
-                break
-
-        if not target_anomaly:
-            return {"status": "error", "message": f"Log anomaly with timestamp {anomaly_timestamp} not found"}
-
-        raw_data = target_anomaly.get("rawData", "")
-        if not raw_data:
-            return {"status": "error", "message": "No raw data available for this log anomaly"}
-
-        # Convert to string if it's not already
-        raw_data = str(raw_data)
-
-        # Truncate if too long
-        if len(raw_data) > max_length:
-            raw_data = raw_data[:max_length] + f"\n... [TRUNCATED - Full length: {len(target_anomaly['rawData'])} characters]"
-
-        return {
-            "status": "success",
-            "anomaly_timestamp": anomaly_timestamp,
-            "timestamp_human": format_api_timestamp_corrected(anomaly_timestamp),
-            "instanceName": target_anomaly.get("instanceName"),
-            "componentName": target_anomaly.get("componentName"),
-            "patternName": target_anomaly.get("patternName"),
-            "raw_data": raw_data,
-            "raw_data_length": len(str(target_anomaly.get("rawData", ""))),
-            "truncated": len(str(target_anomaly.get("rawData", ""))) > max_length
-        }
-        
-    except Exception as e:
-        error_message = f"Error in get_log_anomaly_raw_data: {str(e)}"
-        if settings.ENABLE_DEBUG_MESSAGES:
-            print(error_message, file=sys.stderr)
-        return {"status": "error", "message": error_message}
-
-# Layer 5: Statistics and analysis tools
+# Layer 2: Statistics and analysis tools
 @mcp_server.tool()
 async def get_log_anomalies_statistics(
     system_name: str,
     start_time_ms: Optional[int] = None,
     end_time_ms: Optional[int] = None,
+    project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Provides statistical analysis of log anomalies for a system over a time period.
@@ -513,6 +338,7 @@ async def get_log_anomalies_statistics(
         system_name (str): The name of the system to analyze.
         start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
         end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
+        project_name (str): Optional. Filter results to only include anomalies from this specific project.
     """
     try:
         # Set default time range if not provided
@@ -536,6 +362,10 @@ async def get_log_anomalies_statistics(
 
         log_anomalies = result["data"]
         
+        # Filter by project name if specified
+        if project_name:
+            log_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
+        
         # Calculate statistics
         total_anomalies = len(log_anomalies)
         
@@ -544,11 +374,12 @@ async def get_log_anomalies_statistics(
         medium_severity = len([la for la in log_anomalies if 10 <= la.get("anomalyScore", 0) <= 100])
         low_severity = len([la for la in log_anomalies if la.get("anomalyScore", 0) < 10])
         
-        # Group by component, instance, pattern, and zone
+        # Group by component, instance, pattern, zone, and project
         components = {}
         instances = {}
         patterns = {}
         zones = {}
+        projects = {}
         
         for anomaly in log_anomalies:
             # Component analysis
@@ -567,6 +398,10 @@ async def get_log_anomalies_statistics(
             zone = anomaly.get("zoneName", "Unknown")
             if zone != "Unknown":
                 zones[zone] = zones.get(zone, 0) + 1
+                
+            # Project analysis
+            project = anomaly.get("projectName", "Unknown")
+            projects[project] = projects.get(project, 0) + 1
 
         # Score statistics
         if log_anomalies:
@@ -599,12 +434,192 @@ async def get_log_anomalies_statistics(
                 "top_affected_components": dict(sorted(components.items(), key=lambda x: x[1], reverse=True)[:10]),
                 "top_affected_instances": dict(sorted(instances.items(), key=lambda x: x[1], reverse=True)[:10]),
                 "top_patterns": dict(sorted(patterns.items(), key=lambda x: x[1], reverse=True)[:10]),
+                "top_affected_projects": dict(sorted(projects.items(), key=lambda x: x[1], reverse=True)[:10]),
                 "top_zones": dict(sorted(zones.items(), key=lambda x: x[1], reverse=True)[:10]) if zones else {}
             }
         }
         
     except Exception as e:
         error_message = f"Error in get_log_anomalies_statistics: {str(e)}"
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(error_message, file=sys.stderr)
+        return {"status": "error", "message": error_message}
+
+# Project-specific query tool
+@mcp_server.tool()
+async def get_project_log_anomalies(
+    system_name: str,
+    project_name: str,
+    start_time_ms: Optional[int] = None,
+    end_time_ms: Optional[int] = None,
+    limit: int = 20,
+    include_raw_data: bool = True
+) -> Dict[str, Any]:
+    """
+    Fetches log anomalies specifically for a given project within a system.
+    This function includes detailed raw data and comprehensive information for each anomaly.
+    Use this tool when the user specifies both a system name and project name.
+    
+    The response includes full anomaly details with:
+    - Basic anomaly information (timestamp, component, instance, pattern, zone, score, severity)
+    - Parsed raw data fields (e.g., _id, cdn, status_code, url, name, etc.)
+    - Key fields extraction for common data elements (including 'cdn' if available)
+    - Formatted summaries for better readability
+    - JSON parsing for structured data display
+    
+    Note for LLM: When presenting anomaly details, always list the 'cdn' field if it is present in the data.
+    
+    Example usage:
+    - "show me log anomalies for project demo-kpi-metrics-2 in system Citizen Cane Demo System (STG)"
+    - "get log anomalies before incident for project X in system Y"
+
+    Args:
+        system_name (str): The name of the system (e.g., "Citizen Cane Demo System (STG)")
+        project_name (str): The name of the project (e.g., "demo-kpi-metrics-2")
+        start_time_ms (int): Start time in UTC milliseconds
+        end_time_ms (int): End time in UTC milliseconds  
+        limit (int): Maximum number of anomalies to return (default: 20)
+        include_raw_data (bool): Whether to include full raw data details (default: True)
+    """
+    try:
+        # Set default time range if not provided (timezone-aware)
+        if end_time_ms is None or start_time_ms is None:
+            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            if end_time_ms is None:
+                end_time_ms = default_end_ms
+            if start_time_ms is None:
+                start_time_ms = default_start_ms
+
+        # Call the InsightFinder API client with ONLY the system name
+        api_client = _get_api_client()
+        result = await api_client.get_loganomaly(
+            system_name=system_name,  # Use only the system name here
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+        )
+
+        if result["status"] != "success":
+            return result
+
+        log_anomalies = result["data"]
+        
+        # Filter by the specific project name
+        project_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
+        
+        # Sort by timestamp (most recent first) and limit
+        project_anomalies = sorted(project_anomalies, key=lambda x: x.get("timestamp", 0), reverse=True)[:limit]
+
+        # Create detailed anomaly list for the project
+        anomaly_list = []
+        for i, anomaly in enumerate(project_anomalies):
+            # Determine severity category
+            score = anomaly.get("anomalyScore", 0)
+            if score > 100:
+                severity = "high"
+            elif score >= 10:
+                severity = "medium"
+            else:
+                severity = "low"
+                
+            anomaly_info = {
+                "id": i + 1,
+                "timestamp": anomaly["timestamp"],
+                "timestamp_human": format_api_timestamp_corrected(anomaly["timestamp"]),
+                "project": anomaly.get("projectName", "Unknown"),
+                "component": anomaly.get("componentName", "Unknown"),
+                "instance": anomaly.get("instanceName", "Unknown"),
+                "pattern": anomaly.get("patternName", "Unknown"),
+                "zone": anomaly.get("zoneName", "Unknown"),
+                "anomaly_score": round(anomaly.get("anomalyScore", 0), 2),
+                "severity": severity,
+                "is_incident": anomaly.get("isIncident", False),
+                "active": anomaly.get("active", 0)
+            }
+            
+            # Add raw data details if available
+            if "rawData" in anomaly and anomaly["rawData"]:
+                raw_data = anomaly["rawData"]
+                
+                # Parse and format raw data for better display
+                parsed_data = None
+                raw_data_fields = {}
+                
+                # Try to parse JSON if it's a string
+                if isinstance(raw_data, str):
+                    try:
+                        parsed_data = json.loads(raw_data)
+                        raw_data_fields = parsed_data if isinstance(parsed_data, dict) else {}
+                        anomaly_info["raw_data_type"] = "json_string"
+                    except json.JSONDecodeError:
+                        # Not JSON, treat as plain text
+                        raw_data_fields = {"content": raw_data}
+                        anomaly_info["raw_data_type"] = "plain_text"
+                elif isinstance(raw_data, dict):
+                    # Already a dictionary
+                    raw_data_fields = raw_data
+                    parsed_data = raw_data
+                    anomaly_info["raw_data_type"] = "dictionary"
+                else:
+                    # Other data types
+                    raw_data_fields = {"content": str(raw_data)}
+                    anomaly_info["raw_data_type"] = "other"
+                
+                # Add parsed fields for easy access
+                if raw_data_fields:
+                    anomaly_info["raw_data_fields"] = raw_data_fields
+                    
+                    # Extract common fields if they exist
+                    common_fields = ["_id", "cdn", "id", "status_code", "status_text", "url", "name", "product", "location", "time", "execution_uid"]
+                    extracted_fields = {}
+                    for field in common_fields:
+                        if field in raw_data_fields:
+                            extracted_fields[field] = raw_data_fields[field]
+                    
+                    if extracted_fields:
+                        anomaly_info["key_fields"] = extracted_fields
+                
+                # Include full raw data if requested
+                if include_raw_data:
+                    anomaly_info["raw_data"] = raw_data
+                
+                # Always provide a readable summary
+                if parsed_data and isinstance(parsed_data, dict):
+                    # Create a nice formatted summary
+                    summary_parts = []
+                    for key, value in list(parsed_data.items())[:10]:  # Limit to first 10 fields
+                        summary_parts.append(f"{key}: {value}")
+                    anomaly_info["raw_data_summary"] = " | ".join(summary_parts)
+                    if len(parsed_data) > 10:
+                        anomaly_info["raw_data_summary"] += f" | ... ({len(parsed_data) - 10} more fields)"
+                else:
+                    # Fallback to string representation
+                    raw_data_str = str(raw_data)
+                    anomaly_info["raw_data_summary"] = raw_data_str[:300] + "..." if len(raw_data_str) > 300 else raw_data_str
+                    
+                anomaly_info["has_raw_data"] = True
+            else:
+                anomaly_info["has_raw_data"] = False
+            
+            anomaly_list.append(anomaly_info)
+
+        return {
+            "status": "success",
+            "query_type": "project_specific_log_anomalies",
+            "system_name": system_name,
+            "project_name": project_name,
+            "include_raw_data": include_raw_data,
+            "time_range": {
+                "start_human": format_timestamp_in_user_timezone(start_time_ms),
+                "end_human": format_timestamp_in_user_timezone(end_time_ms)
+            },
+            "total_system_anomalies": len(log_anomalies),
+            "project_anomalies_found": len(project_anomalies),
+            "returned_count": len(anomaly_list),
+            "anomalies": anomaly_list
+        }
+        
+    except Exception as e:
+        error_message = f"Error in get_project_log_anomalies: {str(e)}"
         if settings.ENABLE_DEBUG_MESSAGES:
             print(error_message, file=sys.stderr)
         return {"status": "error", "message": error_message}

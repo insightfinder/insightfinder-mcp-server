@@ -123,6 +123,7 @@ async def get_incidents_overview(
     system_name: str,
     start_time_ms: Optional[int] = None,
     end_time_ms: Optional[int] = None,
+    project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Fetches a very high-level overview of incidents - just counts and basic metrics.
@@ -137,6 +138,7 @@ async def get_incidents_overview(
         end_time_ms (int): Optional. The end of the time window in UTC milliseconds.
                        If not provided, defaults to the current time.
                        Example: For Aug 7, 2025 23:59 UTC = 1723161540000
+        project_name (str): Optional. Filter results to only include incidents from this specific project.
 
     Time Conversion Examples:
         - "Today's incidents" → use get_today_incidents() instead
@@ -181,6 +183,10 @@ async def get_incidents_overview(
 
         incidents = result["data"]
         
+        # Filter by project name if specified
+        if project_name:
+            incidents = [i for i in incidents if i.get("projectName") == project_name]
+        
         if settings.ENABLE_DEBUG_MESSAGES and incidents:
             print(f"[DEBUG] Found {len(incidents)} incidents", file=sys.stderr)
             print(f"[DEBUG] Raw API response sample: {incidents[0] if incidents else 'No incidents'}", file=sys.stderr)
@@ -193,7 +199,6 @@ async def get_incidents_overview(
                 print(f"  Raw timestamp: {raw_timestamp}", file=sys.stderr)
                 print(f"  With UTC->Local conversion: {timestamp_with_conversion}", file=sys.stderr)
                 print(f"  No conversion (treat as local): {timestamp_no_conversion}", file=sys.stderr)
-                print(f"  Corrected (+4h): {timestamp_corrected}", file=sys.stderr)
                 print(f"  Component: {incident.get('componentName', 'N/A')}", file=sys.stderr)
         
         # Basic counts and metrics
@@ -212,6 +217,7 @@ async def get_incidents_overview(
         unique_components = len(set(incident.get("componentName", "Unknown") for incident in incidents))
         unique_instances = len(set(incident.get("instanceName", "Unknown") for incident in incidents))
         unique_patterns = len(set(incident.get("patternName", "Unknown") for incident in incidents))
+        unique_projects = len(set(incident.get("projectName", "Unknown") for incident in incidents))
 
         return {
             "status": "success",
@@ -227,6 +233,7 @@ async def get_incidents_overview(
                 "unique_components": unique_components,
                 "unique_instances": unique_instances,
                 "unique_patterns": unique_patterns,
+                "unique_projects": unique_projects,
                 "first_event": format_api_timestamp_corrected(first_incident) if first_incident else None,
                 "last_event": format_api_timestamp_corrected(last_incident) if last_incident else None,
                 "has_incidents": true_incidents > 0
@@ -302,6 +309,7 @@ async def get_incidents_list(
                 "id": i + 1,
                 "timestamp": incident["timestamp"],
                 "timestamp_human": format_api_timestamp_corrected(incident["timestamp"]),
+                "project": incident.get("projectName", "Unknown"),
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
                 "pattern": incident.get("patternName", "Unknown"),
@@ -392,6 +400,7 @@ async def get_incidents_summary(
                 "incident_id": len(incidents_summary) + 1,  # Simple ID for reference
                 "timestamp": incident["timestamp"],
                 "timestamp_human": timestamp_str,
+                "projectName": incident.get("projectName", "Unknown"),
                 "instanceName": incident.get("instanceName", "Unknown"),
                 "componentName": incident.get("componentName", "Unknown"),
                 "patternName": incident.get("patternName", "Unknown"),
@@ -485,6 +494,7 @@ async def get_incident_details(
         incident_details = {
             "timestamp": target_incident["timestamp"],
             "timestamp_human": format_api_timestamp_corrected(target_incident["timestamp"]),
+            "projectName": target_incident.get("projectName"),
             "instanceName": target_incident.get("instanceName"),
             "componentName": target_incident.get("componentName"),
             "patternName": target_incident.get("patternName"),
@@ -578,6 +588,7 @@ async def get_incident_raw_data(
             "status": "success",
             "incident_timestamp": incident_timestamp,
             "timestamp_human": format_api_timestamp_corrected(incident_timestamp),
+            "projectName": target_incident.get("projectName"),
             "instanceName": target_incident.get("instanceName"),
             "componentName": target_incident.get("componentName"),
             "raw_data": raw_data,
@@ -636,6 +647,7 @@ async def get_incidents_statistics(
         components = {}
         instances = {}
         patterns = {}
+        projects = {}
         
         for incident in incidents:
             # Component analysis
@@ -649,6 +661,10 @@ async def get_incidents_statistics(
             # Pattern analysis
             pattern = incident.get("patternName", "Unknown")
             patterns[pattern] = patterns.get(pattern, 0) + 1
+            
+            # Project analysis
+            project = incident.get("projectName", "Unknown")
+            projects[project] = projects.get(project, 0) + 1
 
         return {
             "status": "success",
@@ -663,7 +679,8 @@ async def get_incidents_statistics(
                 "non_incident_events": total_incidents - true_incidents,
                 "top_affected_components": dict(sorted(components.items(), key=lambda x: x[1], reverse=True)[:10]),
                 "top_affected_instances": dict(sorted(instances.items(), key=lambda x: x[1], reverse=True)[:10]),
-                "top_patterns": dict(sorted(patterns.items(), key=lambda x: x[1], reverse=True)[:10])
+                "top_patterns": dict(sorted(patterns.items(), key=lambda x: x[1], reverse=True)[:10]),
+                "top_affected_projects": dict(sorted(projects.items(), key=lambda x: x[1], reverse=True)[:10])
             }
         }
         
@@ -800,28 +817,45 @@ async def fetch_deployments(
             print(error_message, file=sys.stderr)
         return {"status": "error", "message": error_message}
 
-# Add today-specific incident tool
+# Project-specific incident query tool
 @mcp_server.tool()
-async def get_today_incidents(
+async def get_project_incidents(
     system_name: str,
-    only_true_incidents: bool = True
+    project_name: str,
+    start_time_ms: Optional[int] = None,
+    end_time_ms: Optional[int] = None,
+    only_true_incidents: bool = True,
+    limit: int = 20
 ) -> Dict[str, Any]:
     """
-    Fetches incidents for today in the user's timezone.
-    Use this tool when a user asks for "today's incidents", "incidents today", etc.
+    Fetches incidents specifically for a given project within a system.
+    Use this tool when the user specifies both a system name and project name.
+    
+    Example usage:
+    - "show me incidents for project demo-kpi-metrics-2 in system Citizen Cane Demo System (STG)"
+    - "get incidents after timestamp for project X in system Y"
 
     Args:
-        system_name (str): The name of the system to query for incidents.
-        only_true_incidents (bool): If True, only return events marked as true incidents (default: True).
+        system_name (str): The name of the system (e.g., "Citizen Cane Demo System (STG)")
+        project_name (str): The name of the project (e.g., "demo-kpi-metrics-2")
+        start_time_ms (int): Start time in UTC milliseconds
+        end_time_ms (int): End time in UTC milliseconds  
+        only_true_incidents (bool): If True, only return events marked as true incidents
+        limit (int): Maximum number of incidents to return (default: 20)
     """
     try:
-        # Get today's time range in user's timezone
-        start_time_ms, end_time_ms = get_today_time_range_ms()
+        # Set default time range if not provided (timezone-aware)
+        if end_time_ms is None or start_time_ms is None:
+            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            if end_time_ms is None:
+                end_time_ms = default_end_ms
+            if start_time_ms is None:
+                start_time_ms = default_start_ms
 
-        # Call the InsightFinder API client
+        # Call the InsightFinder API client with ONLY the system name
         api_client = _get_api_client()
         result = await api_client.get_incidents(
-            system_name=system_name,
+            system_name=system_name,  # Use only the system name here
             start_time_ms=start_time_ms,
             end_time_ms=end_time_ms,
         )
@@ -831,262 +865,144 @@ async def get_today_incidents(
 
         incidents = result["data"]
         
+        # Filter by the specific project name
+        project_incidents = [i for i in incidents if i.get("projectName") == project_name]
+        
         # Filter for true incidents if requested
         if only_true_incidents:
-            incidents = [i for i in incidents if i.get("isIncident", False)]
+            project_incidents = [i for i in project_incidents if i.get("isIncident", False)]
         
-        # Sort by timestamp (most recent first)
-        incidents = sorted(incidents, key=lambda x: x["timestamp"], reverse=True)
+        # Sort by timestamp (most recent first) and limit
+        project_incidents = sorted(project_incidents, key=lambda x: x.get("timestamp", 0), reverse=True)[:limit]
 
-        # Create incident list with timezone-aware timestamps
+        # Create detailed incident list for the project
         incident_list = []
-        for i, incident in enumerate(incidents):
+        for i, incident in enumerate(project_incidents):
             incident_info = {
                 "id": i + 1,
                 "timestamp": incident["timestamp"],
                 "timestamp_human": format_api_timestamp_corrected(incident["timestamp"]),
+                "project": incident.get("projectName", "Unknown"),
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
                 "pattern": incident.get("patternName", "Unknown"),
                 "anomaly_score": round(incident.get("anomalyScore", 0), 2),
                 "is_incident": incident.get("isIncident", False),
-                "status": incident.get("status", "unknown")
+                "status": incident.get("status", "unknown"),
+                "active": incident.get("active", False)
             }
+            
+            # Add root cause summary if available
+            if "rootCause" in incident and incident["rootCause"]:
+                root_cause = incident["rootCause"]
+                incident_info["root_cause"] = {
+                    "metricName": root_cause.get("metricName", "Unknown"),
+                    "metricType": root_cause.get("metricType", "Unknown"),
+                    "anomalyValue": root_cause.get("anomalyValue", 0),
+                    "percentage": root_cause.get("percentage", 0),
+                    "sign": root_cause.get("sign", "unknown")
+                }
+            
             incident_list.append(incident_info)
 
         return {
             "status": "success",
+            "query_type": "project_specific_incidents",
             "system_name": system_name,
-            "query_type": "today_incidents",
+            "project_name": project_name,
             "time_range": {
                 "start_human": format_timestamp_in_user_timezone(start_time_ms),
-                "end_human": format_timestamp_in_user_timezone(end_time_ms),
-                "description": "Today in user's timezone"
+                "end_human": format_timestamp_in_user_timezone(end_time_ms)
             },
-            "total_found": len(result["data"]),
-            "true_incidents_found": len(incident_list),
+            "filters": {
+                "only_true_incidents": only_true_incidents,
+                "limit": limit
+            },
+            "total_system_incidents": len(incidents),
+            "project_incidents_found": len([i for i in incidents if i.get("projectName") == project_name]),
+            "returned_count": len(incident_list),
             "incidents": incident_list
         }
         
     except Exception as e:
-        error_message = f"Error in get_today_incidents: {str(e)}"
+        error_message = f"Error in get_project_incidents: {str(e)}"
         if settings.ENABLE_DEBUG_MESSAGES:
             print(error_message, file=sys.stderr)
         return {"status": "error", "message": error_message}
 
-# Helper tool for LLMs to convert time ranges to proper UTC milliseconds
-@mcp_server.tool()
-async def get_utc_time_range_for_query(
-    starttime: str,
-    endtime: Optional[str] = None
-) -> Dict[str, Any]:
-    """
-    Converts specific start time and optional end time to UTC milliseconds for incident queries.
-    Accepts only these formats: "MM-DD-YYYY", "MM-DD-YYYY HH:MM", "MM-DD".
-    
-    Args:
-        starttime (str): Start time in format "MM-DD-YYYY", "MM-DD-YYYY HH:MM", or "MM-DD"
-        endtime (str, optional): End time in same formats. If not provided, defaults to current time.
-    
-    Supported formats:
-        - "MM-DD-YYYY" (e.g., "08-07-2025") - defaults to 00:00 for start, 23:59 for end
-        - "MM-DD-YYYY HH:MM" (e.g., "08-07-2025 14:30")
-        - "MM-DD" (e.g., "08-07") - assumes current year
-    """
-    try:
-        import re
-        
-        # Get current time in UTC for defaults
-        now_utc = datetime.now(timezone.utc)
-        current_year = now_utc.year
-        current_ms = int(now_utc.timestamp() * 1000)
-        
-        def parse_time_string(time_str: str, is_end_time: bool = False) -> int:
-            """Parse time string into UTC milliseconds"""
-            time_str = time_str.strip()
-            
-            # Pattern 1: MM-DD-YYYY HH:MM
-            if re.match(r'^\d{1,2}-\d{1,2}-\d{4}\s+\d{1,2}:\d{2}$', time_str):
-                dt = datetime.strptime(time_str, "%m-%d-%Y %H:%M")
-                return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
-            
-            # Pattern 2: MM-DD-YYYY
-            elif re.match(r'^\d{1,2}-\d{1,2}-\d{4}$', time_str):
-                dt = datetime.strptime(time_str, "%m-%d-%Y")
-                if is_end_time:
-                    # For end time, set to 23:59:59
-                    dt = dt.replace(hour=23, minute=59, second=59)
-                return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
-            
-            # Pattern 3: MM-DD (assume current year)
-            elif re.match(r'^\d{1,2}-\d{1,2}$', time_str):
-                time_str_with_year = f"{time_str}-{current_year}"
-                dt = datetime.strptime(time_str_with_year, "%m-%d-%Y")
-                if is_end_time:
-                    # For end time, set to 23:59:59
-                    dt = dt.replace(hour=23, minute=59, second=59)
-                return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
-            
-            else:
-                raise ValueError(f"Invalid time format: '{time_str}'")
-        
-        # Parse start time
-        try:
-            start_ms = parse_time_string(starttime, is_end_time=False)
-        except ValueError as e:
-            return {
-                "status": "error",
-                "message": f"Invalid starttime format: '{starttime}'",
-                "supported_formats": ["MM-DD-YYYY", "MM-DD-YYYY HH:MM", "MM-DD"],
-                "examples": ["08-07-2025", "08-07-2025 14:30", "08-07"],
-                "error": str(e)
-            }
-        
-        # Parse end time or use current time
-        if endtime is not None:
-            try:
-                end_ms = parse_time_string(endtime, is_end_time=True)
-            except ValueError as e:
-                return {
-                    "status": "error",
-                    "message": f"Invalid endtime format: '{endtime}'",
-                    "supported_formats": ["MM-DD-YYYY", "MM-DD-YYYY HH:MM", "MM-DD"],
-                    "examples": ["08-07-2025", "08-07-2025 17:00", "08-07"],
-                    "error": str(e)
-                }
-        else:
-            end_ms = current_ms
-            endtime = "current time"
-        
-        # Validate time range
-        if end_ms <= start_ms:
-            return {
-                "status": "error",
-                "message": "End time must be after start time",
-                "starttime": starttime,
-                "endtime": endtime
-            }
-        
-        # Calculate duration
-        duration_hours = (end_ms - start_ms) / (1000 * 60 * 60)
-        
-        return {
-            "status": "success",
-            "input": {
-                "starttime": starttime,
-                "endtime": endtime
-            },
-            "query_parameters": {
-                "start_time_ms": start_ms,
-                "end_time_ms": end_ms
-            },
-            "human_readable": {
-                "start_time": format_timestamp_in_user_timezone(start_ms),
-                "end_time": format_timestamp_in_user_timezone(end_ms),
-                "duration_hours": round(duration_hours, 1),
-                "description": f"Time range: {starttime} to {endtime}"
-            },
-            "usage_example": f"get_incidents_overview(system_name='your-system', start_time_ms={start_ms}, end_time_ms={end_ms})"
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Error parsing time range: {str(e)}",
-            "input": {"starttime": starttime, "endtime": endtime},
-            "help": "Use formats: MM-DD-YYYY, MM-DD-YYYY HH:MM, or MM-DD"
-        }
+# # Enhanced time conversion tool with project guidance
+# @mcp_server.tool()
+# async def get_time_range_before_incident(
+#     incident_timestamp_str: str,
+#     hours_before: int
+# ) -> Dict[str, Any]:
+#     """
+#     Converts a human-readable incident timestamp to a time range that ends just before the incident.
+#     Useful for finding log anomalies that occurred before an incident.
 
-# Helper tool for LLMs to convert specific start/end times to UTC milliseconds
-@mcp_server.tool()
-async def parse_specific_time_range(
-    start_time: str,
-    end_time: str,
-    timezone_hint: str = "user's local timezone"
-) -> Dict[str, Any]:
-    """
-    Converts specific start_time and end_time strings to UTC milliseconds for incident queries.
-    Use this tool when you have explicit start and end times in MM-DD-YYYY HH:MM format.
-    
-    Args:
-        start_time (str): Start time in format MM-DD-YYYY HH:MM (e.g., "08-07-2025 09:00")
-        end_time (str): End time in format MM-DD-YYYY HH:MM (e.g., "08-07-2025 17:00") 
-        timezone_hint (str): Optional timezone context (for documentation purposes)
-    
-    Returns:
-        Dictionary with start_time_ms and end_time_ms in UTC milliseconds, plus validation info.
-    
-    Examples:
-        - start_time="08-07-2025 09:00", end_time="08-07-2025 17:00" → Work day on Aug 7
-        - start_time="08-06-2025 00:00", end_time="08-06-2025 23:59" → Full day Aug 6
-    """
-    try:
-        # Parse start time
-        try:
-            start_dt = datetime.strptime(start_time, "%m-%d-%Y %H:%M")
-            # Assume user's local timezone, but treat as UTC for API purposes
-            start_ms = int(start_dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
-        except ValueError:
-            return {
-                "status": "error",
-                "message": f"Invalid start_time format: '{start_time}'",
-                "expected_format": "MM-DD-YYYY HH:MM",
-                "example": "08-07-2025 09:00"
-            }
+#     Args:
+#         incident_timestamp_str (str): Human-readable timestamp like "2025-08-20 02:15:00"
+#         hours_before (int): How many hours before the incident to start the search
         
-        # Parse end time
-        try:
-            end_dt = datetime.strptime(end_time, "%m-%d-%Y %H:%M")
-            # Assume user's local timezone, but treat as UTC for API purposes
-            end_ms = int(end_dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
-        except ValueError:
-            return {
-                "status": "error",
-                "message": f"Invalid end_time format: '{end_time}'",
-                "expected_format": "MM-DD-YYYY HH:MM",
-                "example": "08-07-2025 17:00"
-            }
+#     Returns:
+#         Dictionary with start_time_ms and end_time_ms for querying tools
         
-        # Validate time range
-        if end_ms <= start_ms:
-            return {
-                "status": "error",
-                "message": "End time must be after start time",
-                "start_time": start_time,
-                "end_time": end_time
-            }
+#     Example:
+#         Input: incident_timestamp_str="2025-08-20 02:15:00", hours_before=12
+#         Output: start_time_ms for "2025-08-20 00:15:00", end_time_ms for "2025-08-20 02:14:59"
+#     """
+#     try:
+#         from datetime import datetime, timezone
+#         import re
         
-        # Calculate duration
-        duration_hours = (end_ms - start_ms) / (1000 * 60 * 60)
+#         # Parse the incident timestamp
+#         if re.match(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$', incident_timestamp_str):
+#             # Format: YYYY-MM-DD HH:MM:SS
+#             incident_dt = datetime.strptime(incident_timestamp_str, "%Y-%m-%d %H:%M:%S")
+#         elif re.match(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$', incident_timestamp_str):
+#             # Format: YYYY-MM-DD HH:MM
+#             incident_dt = datetime.strptime(incident_timestamp_str, "%Y-%m-%d %H:%M")
+#         else:
+#             return {
+#                 "status": "error",
+#                 "message": f"Invalid timestamp format: '{incident_timestamp_str}'. Use YYYY-MM-DD HH:MM:SS or YYYY-MM-DD HH:MM"
+#             }
         
-        return {
-            "status": "success",
-            "input": {
-                "start_time": start_time,
-                "end_time": end_time,
-                "timezone_hint": timezone_hint
-            },
-            "query_parameters": {
-                "start_time_ms": start_ms,
-                "end_time_ms": end_ms
-            },
-            "human_readable": {
-                "start_time": format_timestamp_in_user_timezone(start_ms),
-                "end_time": format_timestamp_in_user_timezone(end_ms),
-                "duration_hours": round(duration_hours, 1),
-                "description": f"Custom time range: {start_time} to {end_time}"
-            },
-            "usage_example": f"get_incidents_overview(system_name='your-system', start_time_ms={start_ms}, end_time_ms={end_ms})"
-        }
+#         # Assume UTC timezone for API compatibility - NO CONVERSION
+#         incident_dt = incident_dt.replace(tzinfo=timezone.utc)
+#         incident_ms = int(incident_dt.timestamp() * 1000)
         
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Error parsing time range: {str(e)}",
-            "input": {"start_time": start_time, "end_time": end_time},
-            "help": "Use format MM-DD-YYYY HH:MM for both start_time and end_time"
-        }
-
+#         # Calculate start time (hours before incident)
+#         start_dt = incident_dt - timedelta(hours=hours_before)
+#         start_ms = int(start_dt.timestamp() * 1000)
+        
+#         # End time is 1 minute before the incident to avoid including the incident itself
+#         end_dt = incident_dt - timedelta(minutes=1)
+#         end_ms = int(end_dt.timestamp() * 1000)
+        
+#         return {
+#             "status": "success",
+#             "incident_timestamp": incident_timestamp_str,
+#             "incident_timestamp_ms": incident_ms,
+#             "search_window": {
+#                 "start_time_ms": start_ms,
+#                 "end_time_ms": end_ms,
+#                 "start_human": format_timestamp_in_user_timezone(start_ms),
+#                 "end_human": format_timestamp_in_user_timezone(end_ms),
+#                 "hours_before_incident": hours_before
+#             },
+#             "usage_examples": {
+#                 "log_anomalies": f"get_project_log_anomalies(system_name='Your System', project_name='Your Project', start_time_ms={start_ms}, end_time_ms={end_ms})",
+#                 "incidents": f"get_project_incidents(system_name='Your System', project_name='Your Project', start_time_ms={start_ms}, end_time_ms={end_ms})"
+#             }
+#         }
+        
+#     except Exception as e:
+#         return {
+#             "status": "error",
+#             "message": f"Error parsing timestamp: {str(e)}",
+#             "help": "Use format: YYYY-MM-DD HH:MM:SS or YYYY-MM-DD HH:MM"
+#         }
 def _get_api_client():
     """
     Get the API client for the current request context.
