@@ -185,7 +185,8 @@ async def get_incidents_overview(
         
         # Filter by project name if specified
         if project_name:
-            incidents = [i for i in incidents if i.get("projectName") == project_name]
+            # incidents = [i for i in incidents if i.get("projectName") == project_name]
+            incidents = [i for i in incidents if i.get("projectName", "").lower() == project_name.lower() or i.get("projectDisplayName", "").lower() == project_name.lower()]
         
         if settings.ENABLE_DEBUG_MESSAGES and incidents:
             print(f"[DEBUG] Found {len(incidents)} incidents", file=sys.stderr)
@@ -866,7 +867,8 @@ async def get_project_incidents(
         incidents = result["data"]
         
         # Filter by the specific project name
-        project_incidents = [i for i in incidents if i.get("projectName") == project_name]
+        # project_incidents = [i for i in incidents if i.get("projectName") == project_name]
+        project_incidents = [i for i in incidents if i.get("projectName", "").lower() == project_name.lower() or i.get("projectDisplayName", "").lower() == project_name.lower()]
         
         # Filter for true incidents if requested
         if only_true_incidents:

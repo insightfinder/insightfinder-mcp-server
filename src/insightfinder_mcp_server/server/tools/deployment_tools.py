@@ -115,7 +115,8 @@ async def get_deployments_overview(
         
         # Apply project_name filter if specified
         if project_name:
-            deployments = [d for d in deployments if d.get("projectName") == project_name]
+            # deployments = [d for d in deployments if d.get("projectName") == project_name]
+            deployments = [d for d in deployments if d.get("projectName", "").lower() == project_name.lower() or d.get("projectDisplayName", "").lower() == project_name.lower()]
         
         # Check if no deployments after filtering
         if not deployments:
@@ -295,7 +296,7 @@ async def get_deployments_list(
         filtered_deployments = []
         for deployment in deployments:
             # Apply project_name filter first
-            if project_name and deployment.get("projectName") != project_name:
+            if project_name and deployment.get("projectName") != project_name and deployment.get("projectDisplayName") != project_name:
                 continue
                 
             raw_data_str = deployment.get("rawData", "")
@@ -474,7 +475,8 @@ async def get_deployments_statistics(
         
         # Apply project_name filter if specified
         if project_name:
-            deployments = [d for d in deployments if d.get("projectName") == project_name]
+            # deployments = [d for d in deployments if d.get("projectName") == project_name]
+            deployments = [d for d in deployments if d.get("projectName", "").lower() == project_name.lower() or d.get("projectDisplayName", "").lower() == project_name.lower()]
         
         # Basic statistics
         total_deployments = len(deployments)
@@ -676,7 +678,8 @@ async def get_project_deployments(
         deployments = deployments_data
         
         # Filter by the specific project name
-        project_deployments = [d for d in deployments if d.get("projectName") == project_name]
+        # project_deployments = [d for d in deployments if d.get("projectName") == project_name]
+        project_deployments = [d for d in deployments if d.get("projectName", "").lower() == project_name.lower() or d.get("projectDisplayName", "").lower() == project_name.lower()]
         
         # Sort by timestamp (most recent first) and limit
         project_deployments = sorted(project_deployments, key=lambda x: x.get("timestamp", 0), reverse=True)[:limit]

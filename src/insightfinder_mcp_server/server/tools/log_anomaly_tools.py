@@ -73,7 +73,8 @@ async def get_log_anomalies_overview(
         
         # Filter by project name if specified
         if project_name:
-            log_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
+            # log_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
+            log_anomalies = [la for la in log_anomalies if la.get("projectName", "").lower() == project_name.lower() or la.get("projectDisplayName", "").lower() == project_name.lower()]
         
         # Basic counts and metrics
         total_anomalies = len(log_anomalies)
@@ -194,7 +195,8 @@ async def get_log_anomalies_list(
         
         # Filter by project name if specified
         if project_name:
-            log_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
+            # log_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
+            log_anomalies = [la for la in log_anomalies if la.get("projectName", "").lower() == project_name.lower() or la.get("projectDisplayName", "").lower() == project_name.lower()]
         
         # Filter by severity
         severity_thresholds = {"low": 0, "medium": 10, "high": 100}
@@ -504,8 +506,9 @@ async def get_project_log_anomalies(
         log_anomalies = result["data"]
         
         # Filter by the specific project name
-        project_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
-        
+        # project_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
+        project_anomalies = [la for la in log_anomalies if la.get("projectName", "").lower() == project_name.lower() or la.get("projectDisplayName", "").lower() == project_name.lower()]
+
         # Sort by timestamp (most recent first) and limit
         project_anomalies = sorted(project_anomalies, key=lambda x: x.get("timestamp", 0), reverse=True)[:limit]
 

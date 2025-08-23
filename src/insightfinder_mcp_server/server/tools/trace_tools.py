@@ -106,7 +106,8 @@ async def get_traces_overview(
         
         # Apply project_name filter if specified
         if project_name:
-            traces = [t for t in traces if t.get("projectName") == project_name]
+            # traces = [t for t in traces if t.get("projectName") == project_name]
+            traces = [t for t in traces if t.get("projectName", "").lower() == project_name.lower() or t.get("projectDisplayName", "").lower() == project_name.lower()]
         
         # Check if no traces after filtering
         if not traces:
@@ -310,7 +311,7 @@ async def get_traces_list(
         filtered_traces = []
         for trace in traces:
             # Apply project_name filter first
-            if project_name and trace.get("projectName") != project_name:
+            if project_name and trace.get("projectName") != project_name and trace.get("projectDisplayName") != project_name:
                 continue
             
             trace_info = _parse_trace_raw_data(trace.get("rawData", ""))
@@ -441,7 +442,7 @@ async def get_traces_summary(
         filtered_traces = []
         for trace in traces:
             # Apply project_name filter first
-            if project_name and trace.get("projectName") != project_name:
+            if project_name and trace.get("projectName") != project_name and trace.get("projectDisplayName") != project_name:
                 continue
                 
             # Apply error filter
@@ -844,7 +845,8 @@ async def get_traces_statistics(
         
         # Apply project_name filter if specified
         if project_name:
-            traces = [t for t in traces if t.get("projectName") == project_name]
+            # traces = [t for t in traces if t.get("projectName") == project_name]
+            traces = [t for t in traces if t.get("projectName", "").lower() == project_name.lower() or t.get("projectDisplayName", "").lower() == project_name.lower()]
         
         # Basic statistics
         total_traces = len(traces)
@@ -1067,7 +1069,8 @@ async def get_project_traces(
         traces = result["timelineList"]
         
         # Filter by the specific project name
-        project_traces = [t for t in traces if t.get("projectName") == project_name]
+        # project_traces = [t for t in traces if t.get("projectName") == project_name]
+        project_traces = [t for t in traces if t.get("projectName", "").lower() == project_name.lower() or t.get("projectDisplayName", "").lower() == project_name.lower()]
         
         # Sort by timestamp (most recent first) and limit
         project_traces = sorted(project_traces, key=lambda x: x.get("timestamp", 0), reverse=True)[:limit]

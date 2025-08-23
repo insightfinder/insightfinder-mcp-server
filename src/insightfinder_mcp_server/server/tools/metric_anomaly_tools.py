@@ -91,7 +91,8 @@ async def get_metric_anomalies_overview(
         
         # Filter by project name if specified
         if project_name:
-            anomalies = [anomaly for anomaly in anomalies if anomaly.get("projectName") == project_name]
+            # anomalies = [anomaly for anomaly in anomalies if anomaly.get("projectName") == project_name]
+            anomalies = [anomaly for anomaly in anomalies if anomaly.get("projectName", "").lower() == project_name.lower() or anomaly.get("projectDisplayName", "").lower() == project_name.lower()]
         
         if not anomalies:
             return {
@@ -281,7 +282,8 @@ async def get_metric_anomalies_list(
         
         # Filter by project name if specified
         if project_name:
-            anomalies = [anomaly for anomaly in anomalies if anomaly.get("projectName") == project_name]
+            # anomalies = [anomaly for anomaly in anomalies if anomaly.get("projectName") == project_name]
+            anomalies = [anomaly for anomaly in anomalies if anomaly.get("projectName", "").lower() == project_name.lower() or anomaly.get("projectDisplayName", "").lower() == project_name.lower()]
         
         # Convert severity level to score threshold
         severity_thresholds = {
@@ -492,7 +494,8 @@ async def get_metric_anomalies_statistics(
         
         # Filter by project name if specified
         if project_name:
-            anomalies = [anomaly for anomaly in anomalies if anomaly.get("projectName") == project_name]
+            # anomalies = [anomaly for anomaly in anomalies if anomaly.get("projectName") == project_name]
+            anomalies = [anomaly for anomaly in anomalies if anomaly.get("projectName", "").lower() == project_name.lower() or anomaly.get("projectDisplayName", "").lower() == project_name.lower()]
         
         # Basic statistics
         total_anomalies = len(anomalies)
@@ -718,7 +721,8 @@ async def fetch_metric_anomalies(
             if result.get("data"):
                 # Filter by project name if specified
                 if project_name:
-                    filtered_data = [anomaly for anomaly in result["data"] if anomaly.get("projectName") == project_name]
+                    # filtered_data = [anomaly for anomaly in result["data"] if anomaly.get("projectName") == project_name]
+                    filtered_data = [anomaly for anomaly in result["data"] if anomaly.get("projectName", "").lower() == project_name.lower() or anomaly.get("projectDisplayName", "").lower() == project_name.lower()]
                     result["data"] = filtered_data
                 # Data found, return as-is
                 pass
@@ -783,7 +787,8 @@ async def get_project_metric_anomalies(
         metric_anomalies = result["data"]
         
         # Filter by the specific project name
-        project_anomalies = [ma for ma in metric_anomalies if ma.get("projectName") == project_name]
+        # project_anomalies = [ma for ma in metric_anomalies if ma.get("projectName") == project_name]
+        project_anomalies = [ma for ma in metric_anomalies if ma.get("projectName", "").lower() == project_name.lower() or ma.get("projectDisplayName", "").lower() == project_name.lower()]
         
         # Sort by timestamp (most recent first) and limit
         project_anomalies = sorted(project_anomalies, key=lambda x: x.get("timestamp", 0), reverse=True)[:limit]
