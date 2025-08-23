@@ -16,20 +16,64 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
+import requests
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.prebuilt import create_react_agent
+from langgraph.graph import StateGraph, MessagesState
+from langgraph.prebuilt import ToolNode
 
 # Load environment variables from .env file
 load_dotenv()
+
+
+def parse_vllm_tool_calls(content: str) -> List[Dict[str, Any]]:
+    """Parse vLLM tool calls from response content."""
+    if not content:
+        return []
+    
+    tool_calls = []
+    
+    # Try to parse as direct JSON tool call
+    try:
+        data = json.loads(content.strip())
+        if isinstance(data, dict) and "name" in data and "parameters" in data:
+            tool_calls.append({
+                "name": data["name"],
+                "args": data["parameters"],
+                "id": f"call_{len(tool_calls)}"
+            })
+            return tool_calls
+    except:
+        pass
+    
+    # Try to find JSON tool calls in the text
+    json_pattern = r'\{"name":\s*"[^"]+",\s*"parameters":\s*\{[^}]*\}\}'
+    matches = re.findall(json_pattern, content)
+    
+    for match in matches:
+        try:
+            data = json.loads(match)
+            if "name" in data and "parameters" in data:
+                tool_calls.append({
+                    "name": data["name"],
+                    "args": data["parameters"],
+                    "id": f"call_{len(tool_calls)}"
+                })
+        except:
+            continue
+    
+    return tool_calls
+
 
 # =============================================================================
 # LLM Providers
@@ -77,7 +121,6 @@ def get_available_llms() -> Dict[str, Any]:
     if ollama_url:
         try:
             # Test if Ollama is running
-            import requests
             response = requests.get(f"{ollama_url}/api/tags", timeout=2)
             if response.status_code == 200:
                 try:
@@ -90,6 +133,43 @@ def get_available_llms() -> Dict[str, Any]:
                     }
                 except ImportError:
                     print("⚠️  langchain-ollama not installed. Install with: pip install langchain-ollama")
+        except:
+            pass
+    
+    # vLLM (OpenAI-compatible API)
+    vllm_url = os.getenv("VLLM_BASE_URL", "http://localhost:7000")
+    if vllm_url:
+        try:
+            # Test if vLLM is running
+            response = requests.get(f"{vllm_url}/v1/models", timeout=2)
+            if response.status_code == 200:
+                models_data = response.json()
+                available_models = []
+                
+                # Handle different response formats
+                if "data" in models_data:
+                    # Standard OpenAI format: {"data": [{"id": "model_name"}]}
+                    available_models = [model["id"] for model in models_data["data"]]
+                elif "models" in models_data:
+                    # Some vLLM versions: {"models": ["model_name"]}
+                    available_models = models_data["models"]
+                elif isinstance(models_data, list):
+                    # Direct list format: ["model_name"]
+                    available_models = models_data
+                
+                if available_models:
+                    print(f"🔍 vLLM detected models: {', '.join(available_models)}")
+                    from langchain_openai import ChatOpenAI  # vLLM uses OpenAI-compatible API
+                    llms["vllm"] = {
+                        "class": ChatOpenAI,
+                        "models": available_models,
+                        "default_model": available_models[0],
+                        "base_url": f"{vllm_url}/v1",
+                        # vLLM often runs without auth; provide a default API key for OpenAI-compatible client
+                        "api_key": os.getenv("VLLM_API_KEY", os.getenv("OPENAI_API_KEY", "EMPTY")),
+                        # Add model info for debugging
+                        "server_url": vllm_url
+                    }
         except:
             pass
     
@@ -129,6 +209,19 @@ def create_llm(provider: str, model: Optional[str] = None, temperature: float = 
             model=model, 
             temperature=temperature,
             base_url=llm_config["base_url"]
+        )
+    elif provider == "vllm":
+        # Configure vLLM for function calling support
+        return llm_config["class"](
+            model=model,
+            temperature=temperature,
+            api_key=llm_config["api_key"],
+            base_url=llm_config["base_url"],
+            # Enable function calling for vLLM
+            model_kwargs={
+                "tools": None,  # Will be set when binding tools
+                "tool_choice": "auto"  # Let the model decide when to use tools
+            }
         )
     elif provider == "deepseek":
         return llm_config["class"](
@@ -517,6 +610,72 @@ def trim_history(messages: List[BaseMessage]) -> List[BaseMessage]:
 # Agent Bootstrap
 # =============================================================================
 
+def create_function_calling_agent(llm, tools):
+    """Create a function calling agent for vLLM models that support tool calls."""
+    
+    # Bind tools to the LLM
+    llm_with_tools = llm.bind_tools(tools)
+    
+    # Define the agent workflow
+    def call_model(state: MessagesState):
+        """Call the LLM with tools bound."""
+        messages = state["messages"]
+        response = llm_with_tools.invoke(messages)
+        
+        # Parse vLLM tool calls from content if no tool_calls detected
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            # Native tool calls already present
+            pass
+        else:
+            # Try to parse tool calls from content for vLLM
+            parsed_tool_calls = parse_vllm_tool_calls(response.content)
+            if parsed_tool_calls:
+                # Create a new AIMessage with proper tool_calls
+                response = AIMessage(
+                    content="",  # Clear content since it's now a tool call
+                    tool_calls=parsed_tool_calls
+                )
+        
+        return {"messages": [response]}
+    
+    def should_continue(state: MessagesState) -> str:
+        """Determine if the agent should continue or finish."""
+        messages = state["messages"]
+        last_message = messages[-1]
+        
+        # If the last message has tool calls, continue to execute tools
+        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+            return "tools"
+        # Otherwise, we're done
+        return "end"
+    
+    # Create the graph
+    workflow = StateGraph(MessagesState)
+    
+    # Add nodes
+    workflow.add_node("agent", call_model)
+    workflow.add_node("tools", ToolNode(tools))
+    
+    # Set entry point
+    workflow.set_entry_point("agent")
+    
+    # Add conditional edges
+    workflow.add_conditional_edges(
+        "agent",
+        should_continue,
+        {
+            "tools": "tools", 
+            "end": "__end__"
+        }
+    )
+    
+    # Tools should always go back to the agent
+    workflow.add_edge("tools", "agent")
+    
+    # Compile the graph
+    return workflow.compile()
+
+
 async def bootstrap_agent(llm_provider: str, model: Optional[str] = None):
     """Bootstrap the LangChain agent with MCP tools."""
     config = get_server_config()
@@ -540,8 +699,17 @@ async def bootstrap_agent(llm_provider: str, model: Optional[str] = None):
     # Create LLM
     llm = create_llm(llm_provider, model)
     
-    # Create ReAct agent
-    return create_react_agent(llm, tools), client
+    # Create agent based on provider
+    if llm_provider == "vllm":
+        # Use function calling agent for vLLM
+        print("🔧 Creating function calling agent for vLLM...")
+        agent = create_function_calling_agent(llm, tools)
+    else:
+        # Use ReAct agent for other providers
+        print(f"🔧 Creating ReAct agent for {llm_provider}...")
+        agent = create_react_agent(llm, tools)
+    
+    return agent, client
 
 
 # =============================================================================
@@ -627,6 +795,10 @@ async def interactive_chat():
     print(f"\n💬 Chat ready! Type 'help' for commands, 'exit' to quit.")
     print(f"🔧 Tools: {len(client.get_tools())} available")
     print(f"📊 Progress updates: {'ON' if progress_enabled else 'OFF'}")
+    if llm_provider == "vllm":
+        print(f"⚡ Using function calling agent for vLLM")
+    else:
+        print(f"🤖 Using ReAct agent for {llm_provider}")
     print()
     
     while True:
@@ -683,16 +855,28 @@ async def interactive_chat():
         history.append(HumanMessage(content=user_input))
         
         try:
-            # print("🤔 Processing...")
             result = await agent.ainvoke({"messages": history})
             
             # Update history
             history = list(result["messages"])
             history = trim_history(history)
             
-            # Get assistant's response
-            ai_msg = next(msg for msg in reversed(history) if isinstance(msg, AIMessage))
-            print(f"Bot > {ai_msg.content}\n")
+            # Get assistant's final response (the last AIMessage that doesn't have tool calls)
+            ai_msg = None
+            for msg in reversed(history):
+                if isinstance(msg, AIMessage):
+                    # For function calling agents, get the final response after tool execution
+                    if llm_provider == "vllm":
+                        # Skip messages that only contain tool calls
+                        if hasattr(msg, 'tool_calls') and msg.tool_calls and not msg.content:
+                            continue
+                    ai_msg = msg
+                    break
+            
+            if ai_msg and ai_msg.content:
+                print(f"Bot > {ai_msg.content}\n")
+            else:
+                print("Bot > [No response generated]\n")
             
         except Exception as err:
             print(f"❌ Error: {err}\n")
@@ -716,6 +900,7 @@ def print_setup_help():
    - OPENAI_API_KEY=your_openai_key (for ChatGPT)
    - ANTHROPIC_API_KEY=your_anthropic_key (for Claude)
    - GOOGLE_API_KEY=your_google_key (for Gemini)
+   - VLLM_BASE_URL=http://localhost:8000 (for vLLM)
    - DEEPSEEK_API_KEY=your_deepseek_key (for DeepSeek)
 
 3. For Ollama (Llama), make sure Ollama is running:
@@ -725,14 +910,19 @@ def print_setup_help():
    TRANSPORT_TYPE=http SSE_ENABLED=true python -m insightfinder_mcp_server.main
 
 5. Run this client:
-   python client/sse_main_clean.py
+   python client/sse_main.py
 
 🎯 Supported LLM Providers:
-- OpenAI (ChatGPT): GPT-4o, GPT-4-turbo, GPT-3.5-turbo
-- Anthropic (Claude): Claude-3.5-Sonnet, Claude-3-Opus, Claude-3-Haiku
-- Google (Gemini): Gemini-2.0-Flash, Gemini-1.5-Pro, Gemini-1.5-Flash  
-- Ollama (Llama): Local Llama models
-- DeepSeek: DeepSeek-Chat, DeepSeek-Coder
+- OpenAI (ChatGPT): GPT-4o, GPT-4-turbo, GPT-3.5-turbo (ReAct agent)
+- Anthropic (Claude): Claude-3.5-Sonnet, Claude-3-Opus, Claude-3-Haiku (ReAct agent)
+- Google (Gemini): Gemini-2.0-Flash, Gemini-1.5-Pro, Gemini-1.5-Flash (ReAct agent)
+- Ollama (Llama): Local Llama models (ReAct agent)
+- vLLM: OpenAI-compatible API for local models (Function calling agent)
+- DeepSeek: DeepSeek-Chat, DeepSeek-Coder (ReAct agent)
+
+🔧 Agent Types:
+- ReAct Agent: Uses text-based reasoning and action format
+- Function Calling Agent: Uses native function calls (vLLM only)
 """)
 
 
