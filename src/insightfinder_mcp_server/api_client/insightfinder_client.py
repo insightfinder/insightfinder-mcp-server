@@ -26,6 +26,43 @@ class InsightFinderAPIClient:
             "X-License-Key": self.license_key
         }
 
+    async def fetch_root_cause_analysis(
+        self,
+        root_cause_info_key: Dict[str, Any],
+        customer_name: str
+    ) -> Dict[str, Any]:
+        """
+        Fetch root cause analysis data for a specific incident.
+        
+        Args:
+            root_cause_info_key: The rootCauseInfoKey object from the incident response
+            customer_name: The customer/user name
+            
+        Returns:
+            A dictionary containing the RCA chain data
+        """
+        api_path = "/api/v2/timeline-detail"
+        url = f"{self.base_url}{api_path}"
+        
+        params = {
+            "operation": "RCA",
+            "customerName": customer_name,
+            "queryString": json.dumps(root_cause_info_key)
+        }
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=self.headers
+                )
+                response.raise_for_status()
+                return response.json()
+        except Exception as e:
+            logger.error(f"Error fetching root cause analysis: {str(e)}")
+            raise
+
     async def _fetch_timeline_data(
         self,
         timeline_event_type: str,

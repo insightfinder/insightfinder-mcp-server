@@ -349,7 +349,8 @@ async def get_incidents_summary(
     start_time_ms: Optional[int] = None,
     end_time_ms: Optional[int] = None,
     limit: int = 5,
-    only_true_incidents: bool = True
+    only_true_incidents: bool = True,
+    include_root_cause_info: bool = True
 ) -> Dict[str, Any]:
     """
     Fetches a detailed summary of incidents including root cause information.
@@ -361,6 +362,7 @@ async def get_incidents_summary(
         end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
         limit (int): Maximum number of incidents to return (default: 5).
         only_true_incidents (bool): If True, only return events marked as true incidents (default: True).
+        include_root_cause_info (bool): If True, include information about root cause availability (default: True).
     """
     try:
         # Set default time range if not provided (timezone-aware)
@@ -409,20 +411,44 @@ async def get_incidents_summary(
                 "status": incident.get("status", "unknown"),
                 "isIncident": incident.get("isIncident", False),
                 "has_raw_data": "rawData" in incident and incident["rawData"] is not None,
-                "has_root_cause": "rootCause" in incident and incident["rootCause"] is not None,
+                "has_root_cause": incident.get('rootCauseResultInfo', {}).get('hasPrecedingEvent', False) or ("rootCause" in incident and incident["rootCause"] is not None),
             }
             
-            # Add root cause summary if available
-            if "rootCause" in incident and incident["rootCause"]:
-                root_cause = incident["rootCause"]
-                summary["root_cause_summary"] = {
-                    "metricName": root_cause.get("metricName", "Unknown"),
-                    "metricType": root_cause.get("metricType", "Unknown"),
-                    "anomalyValue": root_cause.get("anomalyValue", 0),
-                    "percentage": root_cause.get("percentage", 0),
-                    "sign": root_cause.get("sign", "unknown"),
-                    "isAlert": root_cause.get("isAlert", False)
-                }
+            # Add root cause information if available
+            if include_root_cause_info:
+                root_cause_info = {}
+                
+                # Basic root cause info from the incident
+                if "rootCause" in incident and incident["rootCause"]:
+                    root_cause = incident["rootCause"]
+                    root_cause_info["summary"] = {
+                        "metricName": root_cause.get("metricName", "Unknown"),
+                        "metricType": root_cause.get("metricType", "Unknown"),
+                        "anomalyValue": root_cause.get("anomalyValue", 0),
+                        "percentage": root_cause.get("percentage", 0),
+                        "sign": root_cause.get("sign", "unknown"),
+                        "isAlert": root_cause.get("isAlert", False)
+                    }
+                
+                # Add root cause result info if available
+                if "rootCauseResultInfo" in incident and incident["rootCauseResultInfo"]:
+                    root_cause_info["result_info"] = {
+                        "hasPrecedingEvent": incident["rootCauseResultInfo"].get("hasPrecedingEvent", False),
+                        "hasTrailingEvent": incident["rootCauseResultInfo"].get("hasTrailingEvent", False),
+                        "causedByChangeEvent": incident["rootCauseResultInfo"].get("causedByChangeEvent", False),
+                        "leadToIncident": incident["rootCauseResultInfo"].get("leadToIncident", False)
+                    }
+                
+                # Add root cause info key if available (used for fetching full RCA chain)
+                if "rootCauseInfoKey" in incident and incident["rootCauseInfoKey"]:
+                    root_cause_info["info_key"] = {
+                        "projectName": incident["rootCauseInfoKey"].get("projectName"),
+                        "instanceName": incident["rootCauseInfoKey"].get("instanceName"),
+                        "incidentTimestamp": incident["rootCauseInfoKey"].get("incidentTimestamp")
+                    }
+                
+                if root_cause_info:
+                    summary["root_cause_info"] = root_cause_info
             
             incidents_summary.append(summary)
 
@@ -455,7 +481,8 @@ async def get_incidents_summary(
 async def get_incident_details(
     system_name: str,
     incident_timestamp: int,
-    include_root_cause: bool = True
+    include_root_cause: bool = True,
+    fetch_rca_chain: bool = False
 ) -> Dict[str, Any]:
     """
     Fetches complete information about a specific incident, excluding raw data to keep response manageable.
@@ -465,64 +492,64 @@ async def get_incident_details(
         system_name (str): The name of the system to query.
         incident_timestamp (int): The timestamp of the specific incident to get details for.
         include_root_cause (bool): Whether to include detailed root cause information.
+        fetch_rca_chain (bool): Whether to fetch the full root cause analysis chain (may be slow).
     """
     try:
-        # Get incidents for a small time window around the specific timestamp
-        start_time = incident_timestamp - (5 * 60 * 1000)  # 5 minutes before
-        end_time = incident_timestamp + (5 * 60 * 1000)    # 5 minutes after
-
-        api_client = _get_api_client()
-        result = await api_client.get_incidents(
-            system_name=system_name,
-            start_time_ms=start_time,
-            end_time_ms=end_time,
+        # Use a 5-minute window around the incident timestamp
+        window_ms = 5 * 60 * 1000  # 5 minutes in milliseconds
+        start_time = incident_timestamp - window_ms
+        end_time = incident_timestamp + window_ms
+        
+        client = _get_api_client()
+        incidents_response = await client._fetch_timeline_data(
+            "incident",
+            system_name,
+            start_time,
+            end_time
         )
 
-        if result["status"] != "success":
-            return result
-
-        # Find the specific incident
-        target_incident = None
-        for incident in result["data"]:
-            if incident["timestamp"] == incident_timestamp:
-                target_incident = incident
+        # Find the specific incident in the response
+        incidents = incidents_response.get('data', [])
+        incident_data = None
+        for inc in incidents:
+            if inc.get('timestamp') == incident_timestamp:
+                incident_data = inc
                 break
-
-        if not target_incident:
-            return {"status": "error", "message": f"Incident with timestamp {incident_timestamp} not found"}
-
-        # Build detailed response without raw data
-        incident_details = {
-            "timestamp": target_incident["timestamp"],
-            "timestamp_human": format_api_timestamp_corrected(target_incident["timestamp"]),
-            "projectName": target_incident.get("projectName"),
-            "instanceName": target_incident.get("instanceName"),
-            "componentName": target_incident.get("componentName"),
-            "patternName": target_incident.get("patternName"),
-            "anomalyScore": target_incident.get("anomalyScore"),
-            "status": target_incident.get("status"),
-            "isIncident": target_incident.get("isIncident"),
-            "active": target_incident.get("active"),
+                
+        if not incident_data:
+            return {"status": "error", "message": "No incident found with the specified timestamp"}
+        result = {
+            "incident": incident_data,
+            "raw_data_available": True,  # Indicate that raw data can be fetched separately
+            "root_cause_available": False,
+            "root_cause_chain": None,
+            "anomalyScore": incident_data.get("anomalyScore"),
+            "status": incident_data.get("status"),
+            "isIncident": incident_data.get("isIncident"),
+            "active": incident_data.get("active")
         }
 
-        # Add root cause details if requested and available
-        if include_root_cause and "rootCause" in target_incident and target_incident["rootCause"]:
-            incident_details["rootCause"] = target_incident["rootCause"]
-
-        # Add root cause info key if available
-        if "rootCauseInfoKey" in target_incident:
-            incident_details["rootCauseInfoKey"] = target_incident["rootCauseInfoKey"]
-
-        # Add root cause result info if available
-        if "rootCauseResultInfo" in target_incident:
-            incident_details["rootCauseResultInfo"] = target_incident["rootCauseResultInfo"]
-
-        return {
-            "status": "success",
-            "incident_details": incident_details,
-            "has_raw_data": "rawData" in target_incident and target_incident["rawData"] is not None
-        }
+        # Check if root cause analysis is available and requested
+        root_cause_info = incident_data.get('rootCauseInfoKey')
+        if include_root_cause and root_cause_info and fetch_rca_chain:
+            try:
+                rca_data = await client.fetch_root_cause_analysis(
+                    root_cause_info_key=root_cause_info,
+                    customer_name=incident_data.get('userName', '')
+                )
+                result['root_cause_available'] = True
+                result['root_cause_chain'] = rca_data.get('rcaChainList', [])
+            except Exception as e:
+                logger.warning(f"Failed to fetch root cause analysis: {str(e)}")
         
+        # Check if root cause info is available in the incident data
+        if include_root_cause and incident_data.get('rootCauseResultInfo', {}).get('hasPrecedingEvent', False):
+            result['root_cause_available'] = True
+            if not result.get('root_cause_chain'):
+                result['root_cause_chain'] = []
+
+        return result
+
     except Exception as e:
         error_message = f"Error in get_incident_details: {str(e)}"
         if settings.ENABLE_DEBUG_MESSAGES:
@@ -932,79 +959,6 @@ async def get_project_incidents(
             print(error_message, file=sys.stderr)
         return {"status": "error", "message": error_message}
 
-# # Enhanced time conversion tool with project guidance
-# @mcp_server.tool()
-# async def get_time_range_before_incident(
-#     incident_timestamp_str: str,
-#     hours_before: int
-# ) -> Dict[str, Any]:
-#     """
-#     Converts a human-readable incident timestamp to a time range that ends just before the incident.
-#     Useful for finding log anomalies that occurred before an incident.
-
-#     Args:
-#         incident_timestamp_str (str): Human-readable timestamp like "2025-08-20 02:15:00"
-#         hours_before (int): How many hours before the incident to start the search
-        
-#     Returns:
-#         Dictionary with start_time_ms and end_time_ms for querying tools
-        
-#     Example:
-#         Input: incident_timestamp_str="2025-08-20 02:15:00", hours_before=12
-#         Output: start_time_ms for "2025-08-20 00:15:00", end_time_ms for "2025-08-20 02:14:59"
-#     """
-#     try:
-#         from datetime import datetime, timezone
-#         import re
-        
-#         # Parse the incident timestamp
-#         if re.match(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$', incident_timestamp_str):
-#             # Format: YYYY-MM-DD HH:MM:SS
-#             incident_dt = datetime.strptime(incident_timestamp_str, "%Y-%m-%d %H:%M:%S")
-#         elif re.match(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$', incident_timestamp_str):
-#             # Format: YYYY-MM-DD HH:MM
-#             incident_dt = datetime.strptime(incident_timestamp_str, "%Y-%m-%d %H:%M")
-#         else:
-#             return {
-#                 "status": "error",
-#                 "message": f"Invalid timestamp format: '{incident_timestamp_str}'. Use YYYY-MM-DD HH:MM:SS or YYYY-MM-DD HH:MM"
-#             }
-        
-#         # Assume UTC timezone for API compatibility - NO CONVERSION
-#         incident_dt = incident_dt.replace(tzinfo=timezone.utc)
-#         incident_ms = int(incident_dt.timestamp() * 1000)
-        
-#         # Calculate start time (hours before incident)
-#         start_dt = incident_dt - timedelta(hours=hours_before)
-#         start_ms = int(start_dt.timestamp() * 1000)
-        
-#         # End time is 1 minute before the incident to avoid including the incident itself
-#         end_dt = incident_dt - timedelta(minutes=1)
-#         end_ms = int(end_dt.timestamp() * 1000)
-        
-#         return {
-#             "status": "success",
-#             "incident_timestamp": incident_timestamp_str,
-#             "incident_timestamp_ms": incident_ms,
-#             "search_window": {
-#                 "start_time_ms": start_ms,
-#                 "end_time_ms": end_ms,
-#                 "start_human": format_timestamp_in_user_timezone(start_ms),
-#                 "end_human": format_timestamp_in_user_timezone(end_ms),
-#                 "hours_before_incident": hours_before
-#             },
-#             "usage_examples": {
-#                 "log_anomalies": f"get_project_log_anomalies(system_name='Your System', project_name='Your Project', start_time_ms={start_ms}, end_time_ms={end_ms})",
-#                 "incidents": f"get_project_incidents(system_name='Your System', project_name='Your Project', start_time_ms={start_ms}, end_time_ms={end_ms})"
-#             }
-#         }
-        
-#     except Exception as e:
-#         return {
-#             "status": "error",
-#             "message": f"Error parsing timestamp: {str(e)}",
-#             "help": "Use format: YYYY-MM-DD HH:MM:SS or YYYY-MM-DD HH:MM"
-#         }
 def _get_api_client():
     """
     Get the API client for the current request context.
