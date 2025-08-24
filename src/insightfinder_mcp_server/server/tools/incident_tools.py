@@ -422,16 +422,16 @@ async def get_incidents_summary(
                 root_cause_info = {}
                 
                 # Basic root cause info from the incident
-                if "rootCause" in incident and incident["rootCause"]:
-                    root_cause = incident["rootCause"]
-                    root_cause_info["summary"] = {
-                        "metricName": root_cause.get("metricName", "Unknown"),
-                        "metricType": root_cause.get("metricType", "Unknown"),
-                        "anomalyValue": root_cause.get("anomalyValue", 0),
-                        "percentage": root_cause.get("percentage", 0),
-                        "sign": root_cause.get("sign", "unknown"),
-                        "isAlert": root_cause.get("isAlert", False)
-                    }
+                # if "rootCause" in incident and incident["rootCause"]:
+                #     root_cause = incident["rootCause"]
+                #     root_cause_info["summary"] = {
+                #         "metricName": root_cause.get("metricName", "Unknown"),
+                #         "metricType": root_cause.get("metricType", "Unknown"),
+                #         "anomalyValue": root_cause.get("anomalyValue", 0),
+                #         "percentage": root_cause.get("percentage", 0),
+                #         "sign": root_cause.get("sign", "unknown"),
+                #         "isAlert": root_cause.get("isAlert", False)
+                #     }
                 
                 # Add root cause result info if available
                 if "rootCauseResultInfo" in incident and incident["rootCauseResultInfo"]:
