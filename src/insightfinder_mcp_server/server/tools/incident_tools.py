@@ -257,7 +257,7 @@ async def get_incidents_list(
     start_time_ms: Optional[int] = None,
     end_time_ms: Optional[int] = None,
     limit: int = 10,
-    only_true_incidents: bool = False
+    only_true_incidents: bool = True
 ) -> Dict[str, Any]:
     """
     Fetches a compact list of incidents with basic information only.
@@ -494,7 +494,7 @@ async def get_incident_details(
 
     Root Cause/Causal Chain Policy:
     - When a user asks for root cause or causal chain, always fetch the full root cause analysis (RCA) chain.
-    - Always display the full RCA chain at once, including all available timestamps, project names, and details (with cdn if available) for each event in the chain.
+    - Always display the full RCA chain at once, including all available timestamps, project names (always display from projectDisplayName), and details (with cdn if available) for each event in the chain.
     - The response should include the entire causal chain, not just a summary or a single root cause event.
     - This ensures users get a complete, timestamped view of the incident's causal sequence.
 
