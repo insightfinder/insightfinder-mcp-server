@@ -63,6 +63,53 @@ class InsightFinderAPIClient:
             logger.error(f"Error fetching root cause analysis: {str(e)}")
             raise
 
+    async def fetch_recommendation(
+        self,
+        incident_llm_key: Dict[str, Any],
+        customer_name: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch recommendations for a specific incident.
+        
+        Args:
+            incident_llm_key: The incidentLLMKey object from the incident response
+            customer_name: The customer/user name
+            
+        Returns:
+            A dictionary containing the recommendation data or None if not available
+        """
+        api_path = "/api/v2/timeline-detail"
+        url = f"{self.base_url}{api_path}"
+        
+        params = {
+            "operation": "Recommendation",
+            "customerName": customer_name,
+            "queryString": json.dumps(incident_llm_key)
+        }
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=self.headers
+                )
+                response.raise_for_status()
+                # Defensive: check if response is empty or not JSON
+                if not response.text or not response.text.strip():
+                    logger.warning(f"Empty response when fetching recommendations for incidentLLMKey: {incident_llm_key}")
+                    return None
+                try:
+                    data = response.json()
+                except Exception as json_err:
+                    logger.warning(f"Non-JSON response when fetching recommendations: {response.text[:200]}")
+                    return None
+                # print(f"[DEBUG] Recommendations fetched: {data.get('recommendation', {}).get('response')}")
+                return data.get("recommendation", {}).get("response")
+        except Exception as e:
+            logger.warning(f"Error fetching recommendations: {str(e)}")
+            return None
+
     async def _fetch_timeline_data(
         self,
         timeline_event_type: str,
