@@ -141,8 +141,8 @@ async def get_metric_anomalies_overview(
                 instances.add(anomaly["instanceName"])
             if anomaly.get("patternName"):
                 patterns.add(anomaly["patternName"])
-            if anomaly.get("projectName"):
-                projects.add(anomaly["projectName"])
+            if anomaly.get("projectDisplayName"):
+                projects.add(anomaly["projectDisplayName"])
             
             # Extract from root cause
             root_cause = anomaly.get("rootCause", {})
@@ -341,7 +341,7 @@ async def get_metric_anomalies_list(
                 
                 # Location information
                 "location": {
-                    "project": anomaly.get("projectName"),
+                    "project": anomaly.get("projectDisplayName"),
                     "component": anomaly.get("componentName"),
                     "instance": anomaly.get("instanceName"),
                     "zone": anomaly.get("zoneName")
@@ -549,7 +549,7 @@ async def get_metric_anomalies_statistics(
             pattern = anomaly.get("patternName", "Unknown")
             pattern_counts[pattern] = pattern_counts.get(pattern, 0) + 1
             
-            project = anomaly.get("projectName", "Unknown")
+            project = anomaly.get("projectDisplayName", "Unknown")
             project_counts[project] = project_counts.get(project, 0) + 1
             
             zone = anomaly.get("zoneName", "Unknown")

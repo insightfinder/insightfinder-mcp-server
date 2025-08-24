@@ -144,8 +144,8 @@ async def get_traces_overview(
         
         for trace in traces:
             # Collect project names
-            if trace.get("projectName"):
-                projects.add(trace["projectName"])
+            if trace.get("projectDisplayName"):
+                projects.add(trace["projectDisplayName"])
             
             # Parse raw data
             trace_info = _parse_trace_raw_data(trace.get("rawData", ""))
@@ -343,7 +343,7 @@ async def get_traces_list(
             compact_trace = {
                 "timestamp": trace.get("timestamp"),
                 "datetime": _format_timestamp_utc(trace.get("timestamp", 0)) if trace.get("timestamp") else None,
-                "projectName": trace.get("projectName"),
+                "projectName": trace.get("projectDisplayName"),
                 "trace_id": trace_info.get("traceID"),
                 "span_id": trace_info.get("spanID"),
                 "operation_name": trace_info.get("operationName"),
@@ -468,7 +468,7 @@ async def get_traces_summary(
             detailed_trace = {
                 "timestamp": trace.get("timestamp"),
                 "datetime": _format_timestamp_utc(trace.get("timestamp", 0)) if trace.get("timestamp") else None,
-                "projectName": trace.get("projectName"),
+                "projectName": trace.get("projectDisplayName"),
                 "active": trace.get("active", 0),
                 
                 # Trace identification
@@ -611,7 +611,7 @@ async def get_trace_details(
                 # Basic identification
                 "timestamp": target_trace.get("timestamp"),
                 "datetime": _format_timestamp_utc(target_trace.get("timestamp", 0)) if target_trace.get("timestamp") else None,
-                "projectName": target_trace.get("projectName"),
+                "projectName": target_trace.get("projectDisplayName"),
                 "active": target_trace.get("active", 0),
                 
                 # Trace identification and hierarchy
@@ -748,7 +748,7 @@ async def get_trace_raw_data(
         return {
             "status": "success",
             "systemName": system_name,
-            "projectName": target_trace.get("projectName"),
+            "projectName": target_trace.get("projectDisplayName"),
             "trace_timestamp": trace_timestamp,
             "raw_data": raw_json,
             "raw_data_length": original_length,
@@ -869,7 +869,7 @@ async def get_traces_statistics(
         
         for trace in traces:
             # Project tracking
-            project = trace.get("projectName", "Unknown")
+            project = trace.get("projectDisplayName", "Unknown")
             project_counts[project] = project_counts.get(project, 0) + 1
             
             trace_info = _parse_trace_raw_data(trace.get("rawData", ""))

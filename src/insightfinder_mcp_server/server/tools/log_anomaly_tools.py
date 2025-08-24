@@ -96,7 +96,7 @@ async def get_log_anomalies_overview(
         unique_components = len(set(anomaly.get("componentName", "Unknown") for anomaly in log_anomalies))
         unique_instances = len(set(anomaly.get("instanceName", "Unknown") for anomaly in log_anomalies))
         unique_patterns = len(set(anomaly.get("patternName", "Unknown") for anomaly in log_anomalies))
-        unique_projects = len(set(anomaly.get("projectName", "Unknown") for anomaly in log_anomalies))
+        unique_projects = len(set(anomaly.get("projectDisplayName", "Unknown") for anomaly in log_anomalies))
         unique_zones = len(set(anomaly.get("zoneName", "Unknown") for anomaly in log_anomalies if anomaly.get("zoneName")))
 
         # Anomaly score statistics
@@ -222,7 +222,7 @@ async def get_log_anomalies_list(
                 "id": i + 1,
                 "timestamp": anomaly["timestamp"],
                 "timestamp_human": format_api_timestamp_corrected(anomaly["timestamp"]),
-                "project": anomaly.get("projectName", "Unknown"),
+                "project": anomaly.get("projectDisplayName", "Unknown"),
                 "component": anomaly.get("componentName", "Unknown"),
                 "instance": anomaly.get("instanceName", "Unknown"),
                 "pattern": anomaly.get("patternName", "Unknown"),
@@ -366,8 +366,8 @@ async def get_log_anomalies_statistics(
         
         # Filter by project name if specified
         if project_name:
-            log_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
-        
+            log_anomalies = [la for la in log_anomalies if la.get("projectName", "").lower() == project_name.lower() or la.get("projectDisplayName", "").lower() == project_name.lower()]
+
         # Calculate statistics
         total_anomalies = len(log_anomalies)
         
@@ -402,7 +402,7 @@ async def get_log_anomalies_statistics(
                 zones[zone] = zones.get(zone, 0) + 1
                 
             # Project analysis
-            project = anomaly.get("projectName", "Unknown")
+            project = anomaly.get("projectDisplayName", "Unknown")
             projects[project] = projects.get(project, 0) + 1
 
         # Score statistics
@@ -528,7 +528,7 @@ async def get_project_log_anomalies(
                 "id": i + 1,
                 "timestamp": anomaly["timestamp"],
                 "timestamp_human": format_api_timestamp_corrected(anomaly["timestamp"]),
-                "project": anomaly.get("projectName", "Unknown"),
+                "project": anomaly.get("projectDisplayName", "Unknown"),
                 "component": anomaly.get("componentName", "Unknown"),
                 "instance": anomaly.get("instanceName", "Unknown"),
                 "pattern": anomaly.get("patternName", "Unknown"),

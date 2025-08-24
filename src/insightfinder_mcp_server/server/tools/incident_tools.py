@@ -218,7 +218,7 @@ async def get_incidents_overview(
         unique_components = len(set(incident.get("componentName", "Unknown") for incident in incidents))
         unique_instances = len(set(incident.get("instanceName", "Unknown") for incident in incidents))
         unique_patterns = len(set(incident.get("patternName", "Unknown") for incident in incidents))
-        unique_projects = len(set(incident.get("projectName", "Unknown") for incident in incidents))
+        unique_projects = len(set(incident.get("projectDisplayName", "Unknown") for incident in incidents))
 
         return {
             "status": "success",
@@ -310,7 +310,7 @@ async def get_incidents_list(
                 "id": i + 1,
                 "timestamp": incident["timestamp"],
                 "timestamp_human": format_api_timestamp_corrected(incident["timestamp"]),
-                "project": incident.get("projectName", "Unknown"),
+                "project": incident.get("projectDisplayName", "Unknown"),
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
                 "pattern": incident.get("patternName", "Unknown"),
@@ -403,7 +403,7 @@ async def get_incidents_summary(
                 "incident_id": len(incidents_summary) + 1,  # Simple ID for reference
                 "timestamp": incident["timestamp"],
                 "timestamp_human": timestamp_str,
-                "projectName": incident.get("projectName", "Unknown"),
+                "projectName": incident.get("projectDisplayName", "Unknown"),
                 "instanceName": incident.get("instanceName", "Unknown"),
                 "componentName": incident.get("componentName", "Unknown"),
                 "patternName": incident.get("patternName", "Unknown"),
@@ -616,7 +616,7 @@ async def get_incident_raw_data(
             "status": "success",
             "incident_timestamp": incident_timestamp,
             "timestamp_human": format_api_timestamp_corrected(incident_timestamp),
-            "projectName": target_incident.get("projectName"),
+            "projectName": target_incident.get("projectDisplayName"),
             "instanceName": target_incident.get("instanceName"),
             "componentName": target_incident.get("componentName"),
             "raw_data": raw_data,
@@ -691,7 +691,7 @@ async def get_incidents_statistics(
             patterns[pattern] = patterns.get(pattern, 0) + 1
             
             # Project analysis
-            project = incident.get("projectName", "Unknown")
+            project = incident.get("projectDisplayName", "Unknown")
             projects[project] = projects.get(project, 0) + 1
 
         return {
@@ -911,7 +911,7 @@ async def get_project_incidents(
                 "id": i + 1,
                 "timestamp": incident["timestamp"],
                 "timestamp_human": format_api_timestamp_corrected(incident["timestamp"]),
-                "project": incident.get("projectName", "Unknown"),
+                "project": incident.get("projectDisplayName", "Unknown"),
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
                 "pattern": incident.get("patternName", "Unknown"),
@@ -948,7 +948,7 @@ async def get_project_incidents(
                 "limit": limit
             },
             "total_system_incidents": len(incidents),
-            "project_incidents_found": len([i for i in incidents if i.get("projectName") == project_name]),
+            "project_incidents_found": len([i for i in incidents if i.get("projectDisplayName") == project_name or i.get("projectName") == project_name]),
             "returned_count": len(incident_list),
             "incidents": incident_list
         }

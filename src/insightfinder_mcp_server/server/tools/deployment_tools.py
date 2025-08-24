@@ -149,8 +149,8 @@ async def get_deployments_overview(
         
         for deployment in deployments:
             # Collect project names
-            if deployment.get("projectName"):
-                projects.add(deployment["projectName"])
+            if deployment.get("projectDisplayName"):
+                projects.add(deployment["projectDisplayName"])
             
             # Parse raw data
             raw_data_str = deployment.get("rawData", "")
@@ -335,7 +335,7 @@ async def get_deployments_list(
                 
                 # Location information
                 "location": {
-                    "project_name": deployment.get("projectName"),
+                    "project_name": deployment.get("projectDisplayName"),
                     "component": deployment.get("componentName"),
                     "instance": deployment.get("instanceName")
                 },
@@ -495,7 +495,7 @@ async def get_deployments_statistics(
         
         for deployment in deployments:
             # Project tracking
-            project = deployment.get("projectName", "Unknown")
+            project = deployment.get("projectDisplayName", "Unknown")
             project_counts[project] = project_counts.get(project, 0) + 1
             
             raw_data_str = deployment.get("rawData", "")
