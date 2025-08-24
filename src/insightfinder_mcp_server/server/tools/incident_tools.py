@@ -270,7 +270,7 @@ async def get_incidents_list(
         end_time_ms (int): Optional. The end of the time window in UTC milliseconds.
                         Example: For end of Aug 7, 2025 UTC = 1723161599000
         limit (int): Maximum number of incidents to return (default: 10).
-        only_true_incidents (bool): If True, only return events marked as true incidents.
+        only_true_incidents (bool): If True, only return events marked as true incidents. default is True.
     
     UTC Conversion Notes:
         - Always provide timestamps in UTC milliseconds format
