@@ -288,6 +288,82 @@ class InsightFinderAPIClient:
             A dictionary containing deployment timeline data
         """
         return await self._fetch_timeline_data("deployment", system_name, start_time_ms, end_time_ms)
+    
+    async def predict_incidents(
+        self,
+        system_name: str,
+        start_time_ms: int,
+        end_time_ms: int
+    ) -> dict:
+        """
+        Predict future incidents for a system in a given time window using the InsightFinder prediction API.
+        Args:
+            system_name (str): The name of the system to predict incidents for.
+            start_time_ms (int): Start of the prediction window (UTC ms).
+            end_time_ms (int): End of the prediction window (UTC ms).
+        Returns:
+            dict: API response containing predicted incidents (timelineList).
+        """
+        import httpx
+        url = f"{self.base_url}/api/v2/timeline"
+        params = {
+            "systemName": system_name,
+            "startTime": start_time_ms,
+            "endTime": end_time_ms,
+            "timelineEventType": "incident",
+            "predict": "true"
+        }
+        
+        start_time_readable = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        end_time_readable = datetime.fromtimestamp(end_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        print(f"DEBUG: Time range - Start: {start_time_readable}, End: {end_time_readable}")
+
+        # Basic input validation
+        if not system_name or len(system_name) > 100:
+            return {"status": "error", "message": "Invalid system_name"}
+        
+        if end_time_ms - start_time_ms > 365 * 24 * 60 * 60 * 1000:  # Max 1 year
+            return {"status": "error", "message": "Time range too large (max 1 year)"}
+
+        async with httpx.AsyncClient(timeout=30.0) as client:  # Shorter timeout
+            try:
+                response = await client.get(url, params=params, headers=self.headers)
+                response.raise_for_status()
+                
+                # Check response size (prevent large payloads)
+                content_length = response.headers.get('content-length')
+                if content_length and int(content_length) > 10 * 1024 * 1024:  # 10MB limit
+                    return {"status": "error", "message": "Response too large"}
+                
+                # Parse JSON with error handling
+                try:
+                    raw_data = response.json()
+                except (json.JSONDecodeError, ValueError) as json_err:
+                    response_text = response.text[:200] if response.text else "Empty response"
+                    logger.error(f"JSON parse error for prediction api: {json_err}. Response: {response_text}")
+                    return {"status": "error", "message": f"Invalid JSON response: {response_text}"}
+                    
+                timeline_list = raw_data.get("timelineList", [])
+                
+                # Limit number of items to prevent memory issues
+                if len(timeline_list) > 5000:
+                    timeline_list = timeline_list[:5000]
+                
+                return {
+                    "status": "success", 
+                    "data": timeline_list,
+                    "total_count": len(timeline_list),
+                    "event_type": "prediction"
+                }
+            except httpx.HTTPStatusError as e:
+                logger.error(f"API error {e.response.status_code} for prediction api")
+                return {"status": "error", "message": "API request failed"}
+            except httpx.RequestError as e:
+                logger.error(f"Network error for prediction api: {str(e)}")
+                return {"status": "error", "message": "Network error"}
+            except Exception as e:
+                logger.error(f"Unexpected error: {str(e)}")
+                return {"status": "error", "message": "Internal error"}
 
 # Factory function to create API client instances with provided credentials
 def create_api_client(license_key: str, user_name: str, system_name: Optional[str] = None, api_url: Optional[str] = None) -> InsightFinderAPIClient:

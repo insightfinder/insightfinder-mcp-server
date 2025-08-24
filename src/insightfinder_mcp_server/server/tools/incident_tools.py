@@ -1023,6 +1023,90 @@ async def get_project_incidents(
             print(error_message, file=sys.stderr)
         return {"status": "error", "message": error_message}
 
+@mcp_server.tool()
+async def predict_incidents(
+    system_name: str,
+    start_time_ms: int,
+    end_time_ms: int,
+) -> Dict[str, Any]:
+    """
+    Predicts future incidents for a system in a given time window.
+    Uses the InsightFinder prediction API to fetch predicted incidents.
+    This will include recommendations for each predicted incident if available.
+
+    Args:
+        system_name (str): The name of the system to predict incidents for.
+        start_time_ms (int): Start of the prediction window (UTC ms).
+        end_time_ms (int): End of the prediction window (UTC ms).
+
+    Returns:
+        Dict[str, Any]: Prediction results, including recommendations if any are available.
+    """
+    try:
+        # Security checks
+        if not system_name or len(system_name) > 100:
+            return {"status": "error", "message": "Invalid system_name"}
+
+        # Call the InsightFinder API client
+        api_client = _get_api_client()
+        result = await api_client.predict_incidents(
+            system_name=system_name,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+        )
+
+        if result["status"] != "success":
+            return result
+
+        timeline_list = result["data"]
+
+        timeline_list = sorted(timeline_list, key=lambda x: x.get("timestamp", 0), reverse=True)
+
+        # Remove rootCause/rootCauseResultInfo/rootCauseInfoKey and handle projectName
+        for incident in timeline_list:
+            incident.pop("rootCause", None)
+            incident.pop("rootCauseResultInfo", None)
+            incident.pop("rootCauseInfoKey", None)
+            incident.pop("projectName", None)
+            # Rename projectDisplayName to projectName
+            if "projectDisplayName" in incident:
+                incident["projectName"] = incident.pop("projectDisplayName")
+
+        # Optionally fetch recommendations for each predicted incident
+        include_recommendations = True  # Always true for predicted incidents
+        if include_recommendations:
+            for incident in timeline_list:
+                incident_llm_key = incident.get("incidentLLMKey")
+                user_name = incident.get("userName", "")
+                if incident_llm_key:
+                    try:
+                        recommendation = await api_client.fetch_recommendation(
+                            incident_llm_key=incident_llm_key,
+                            customer_name=user_name
+                        )
+                        if recommendation:
+                            incident["recommendation"] = recommendation
+                    except Exception as e:
+                        pass # Ignore recommendation fetch errors
+
+        return {
+            "status": "success",
+            "system_name": system_name,
+            "time_range": {
+                "start": start_time_ms,
+                "end": end_time_ms,
+                "start_human": format_timestamp_in_user_timezone(start_time_ms),
+                "end_human": format_timestamp_in_user_timezone(end_time_ms)
+            },
+            "predicted_incidents": timeline_list,
+            "returned_count": len(timeline_list)
+        }
+    except Exception as e:
+        error_message = f"Error in predict_incidents: {str(e)}"
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(error_message)
+        return {"status": "error", "message": error_message}
+
 def _get_api_client():
     """
     Get the API client for the current request context.
