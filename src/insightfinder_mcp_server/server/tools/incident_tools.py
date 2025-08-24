@@ -494,7 +494,7 @@ async def get_incident_details(
 
     Root Cause/Causal Chain Policy:
     - When a user asks for root cause or causal chain, always fetch the full root cause analysis (RCA) chain.
-    - Always display the full RCA chain at once, including all available timestamps, project names (always display from projectDisplayName), and details (with cdn if available) for each event in the chain.
+    - Always display the full RCA chain at once, including all available timestamps, project names, and details (with cdn if available) for each event in the chain.
     - The response should include the entire causal chain, not just a summary or a single root cause event.
     - This ensures users get a complete, timestamped view of the incident's causal sequence.
 
@@ -558,7 +558,6 @@ async def get_incident_details(
                     customer_name=incident_data.get('userName', '')
                 )
                 rca_chain = rca_data.get('rcaChainList', [])
-                # print(f"[DEBUG] Fetched RCA chain: {rca_chain}")
                 # Sort the RCA chain by the earliest eventTimestamp in each rcaNodeList
                 def get_min_event_timestamp(chain_item):
                     node_list = chain_item.get('rcaNodeList', [])
@@ -571,9 +570,22 @@ async def get_incident_details(
                 for chain_item in rca_chain:
                     node_list = chain_item.get('rcaNodeList', [])
                     if isinstance(node_list, list) and node_list and 'eventTimestamp' in node_list[0]:
+                        # Replace sourceProjectName with sourceProjectDisplayName in each node
+                        for node in node_list:
+                            if 'sourceProjectDisplayName' in node:
+                                node['sourceProjectName'] = node['sourceProjectDisplayName']
+                                # Try to update projectName in sourceDetail JSON if possible
+                                if 'sourceDetail' in node and node['sourceDetail']:
+                                    import json
+                                    try:
+                                        detail_obj = json.loads(node['sourceDetail'])
+                                        if 'projectName' in detail_obj:
+                                            detail_obj['projectName'] = node['sourceProjectDisplayName']
+                                            node['sourceDetail'] = json.dumps(detail_obj)
+                                    except Exception:
+                                        pass
                         chain_item['rcaNodeList'] = sorted(node_list, key=lambda n: n.get('eventTimestamp', 0))
 
-                # print(f"[DEBUG] Sorted Fetched RCA chain: {rca_chain}")
                 result['root_cause_available'] = True
                 result['root_cause_chain'] = rca_chain
             except Exception as e:
@@ -596,6 +608,7 @@ async def get_incident_details(
                 if recommendation:
                     result['recommendation_available'] = True
                     result['recommendation'] = recommendation
+                    # print(f"[DEBUG] Recommendation fetch result: {str(result['recommendation'])}", file=sys.stderr)
             except Exception as e:
                 logger.warning(f"Failed to fetch recommendations: {str(e)}")
 
