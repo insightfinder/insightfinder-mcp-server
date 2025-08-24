@@ -1,7 +1,10 @@
 import sys
 import os
+import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone, timedelta
+
+logger = logging.getLogger(__name__)
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
 from ...config.settings import settings
