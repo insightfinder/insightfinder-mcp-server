@@ -1028,16 +1028,22 @@ async def predict_incidents(
     system_name: str,
     start_time_ms: int,
     end_time_ms: int,
+    include_raw_data: bool = True
 ) -> Dict[str, Any]:
     """
     Predicts future incidents for a system in a given time window.
     Uses the InsightFinder prediction API to fetch predicted incidents.
     This will include recommendations for each predicted incident if available.
+    
+    Note:
+        The timestamp for each predicted incident is always taken from the top-level 'timestamp' field of the incident object.
+        Any timestamp values that may appear inside the 'raw_data' field are ignored and not used for processing or sorting.
 
     Args:
         system_name (str): The name of the system to predict incidents for.
         start_time_ms (int): Start of the prediction window (UTC ms).
         end_time_ms (int): End of the prediction window (UTC ms).
+        include_raw_data (bool, optional): If True, include raw_data in each predicted incident. Default is True.
 
     Returns:
         Dict[str, Any]: Prediction results, including recommendations if any are available.
@@ -1060,34 +1066,74 @@ async def predict_incidents(
 
         timeline_list = result["data"]
 
-        timeline_list = sorted(timeline_list, key=lambda x: x.get("timestamp", 0), reverse=True)
+        timeline_list = sorted(timeline_list, key=lambda x: x.get("timestamp", 0), reverse=False)
 
-        # Remove rootCause/rootCauseResultInfo/rootCauseInfoKey and handle projectName
-        for incident in timeline_list:
-            incident.pop("rootCause", None)
-            incident.pop("rootCauseResultInfo", None)
-            incident.pop("rootCauseInfoKey", None)
-            incident.pop("projectName", None)
-            # Rename projectDisplayName to projectName
-            if "projectDisplayName" in incident:
-                incident["projectName"] = incident.pop("projectDisplayName")
+        # # Remove rootCause/rootCauseResultInfo/rootCauseInfoKey and handle projectName
+        # for incident in timeline_list:
+        #     incident.pop("rootCause", None)
+        #     incident.pop("rootCauseResultInfo", None)
+        #     incident.pop("rootCauseInfoKey", None)
+        #     incident.pop("projectName", None)
+        #     # Rename projectDisplayName to projectName
+        #     if "projectDisplayName" in incident:
+        #         incident["projectName"] = incident.pop("projectDisplayName")
+        #     # Handle raw_data field
+        #     if not include_raw_data:
+        #         incident.pop("rawData", None)
+            
+        #     print(f"[DEBUG] Predicted incident timestamp: {incident.get('timestamp')} - {format_api_timestamp_corrected(incident.get('timestamp'))}", file=sys.stderr)
+
+
+        incident_list = []
+        for i, incident in enumerate(timeline_list):
+            incident_info = {
+                "id": i + 1,
+                "timestamp": incident["timestamp"],
+                "timestamp_human": format_api_timestamp_corrected(incident["timestamp"]),
+                "project": incident.get("projectDisplayName", "Unknown"),
+                "component": incident.get("componentName", "Unknown"),
+                "instance": incident.get("instanceName", "Unknown"),
+                "pattern": incident.get("patternName", "Unknown"),
+                "anomaly_score": round(incident.get("anomalyScore", 0), 2),
+                "is_incident": incident.get("isIncident", False),
+                "status": incident.get("status", "unknown"),
+                "active": incident.get("active", False)
+            }
+
+            if include_raw_data:
+                incident_info["raw_data"] = incident.get("rawData", "")
+
+            incident_llm_key = incident.get("incidentLLMKey")
+            user_name = incident.get("userName", "")
+            if incident_llm_key:
+                try:
+                    recommendation = await api_client.fetch_recommendation(
+                        incident_llm_key=incident_llm_key,
+                        customer_name=user_name
+                    )
+                    if recommendation:
+                        incident_info["recommendation"] = recommendation
+                except Exception as e:
+                    pass # Ignore recommendation fetch errors
+
+            incident_list.append(incident_info)
 
         # Optionally fetch recommendations for each predicted incident
-        include_recommendations = True  # Always true for predicted incidents
-        if include_recommendations:
-            for incident in timeline_list:
-                incident_llm_key = incident.get("incidentLLMKey")
-                user_name = incident.get("userName", "")
-                if incident_llm_key:
-                    try:
-                        recommendation = await api_client.fetch_recommendation(
-                            incident_llm_key=incident_llm_key,
-                            customer_name=user_name
-                        )
-                        if recommendation:
-                            incident["recommendation"] = recommendation
-                    except Exception as e:
-                        pass # Ignore recommendation fetch errors
+        # include_recommendations = True  # Always true for predicted incidents
+        # if include_recommendations:
+        #     for incident in timeline_list:
+        #         incident_llm_key = incident.get("incidentLLMKey")
+        #         user_name = incident.get("userName", "")
+        #         if incident_llm_key:
+        #             try:
+        #                 recommendation = await api_client.fetch_recommendation(
+        #                     incident_llm_key=incident_llm_key,
+        #                     customer_name=user_name
+        #                 )
+        #                 if recommendation:
+        #                     incident["recommendation"] = recommendation
+        #             except Exception as e:
+        #                 pass # Ignore recommendation fetch errors
 
         return {
             "status": "success",
@@ -1098,8 +1144,8 @@ async def predict_incidents(
                 "start_human": format_timestamp_in_user_timezone(start_time_ms),
                 "end_human": format_timestamp_in_user_timezone(end_time_ms)
             },
-            "predicted_incidents": timeline_list,
-            "returned_count": len(timeline_list)
+            "predicted_incidents": incident_list,
+            "returned_count": len(incident_list)
         }
     except Exception as e:
         error_message = f"Error in predict_incidents: {str(e)}"
