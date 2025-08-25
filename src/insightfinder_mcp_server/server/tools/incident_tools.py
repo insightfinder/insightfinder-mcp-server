@@ -493,12 +493,13 @@ async def get_incident_details(
     Use this after identifying a specific incident from the list or summary layers.
 
     Root Cause/Causal Chain Policy:
-    - When a user asks for root cause or causal chain, always fetch the full root cause analysis (RCA) chain.
+    - Please always fetch and include the full root cause analysis (RCA) chain in the response.
     - Always display the full RCA chain at once, including all available timestamps, project names, and details (with cdn if available) for each event in the chain.
     - The response should include the entire causal chain, not just a summary or a single root cause event.
     - This ensures users get a complete, timestamped view of the incident's causal sequence.
 
     Recommendations:
+    - Please always fetch and include the full root cause analysis (RCA) chain in the response.
     - When a user requests recommendations or remediation steps, set `include_recommendations=True`.
     - If recommendations are available for the incident (via LLM or other sources), they will be included in the response under the `recommendation` field.
     - The response will indicate whether recommendations are available with the `recommendation_available` flag.
@@ -553,6 +554,7 @@ async def get_incident_details(
         root_cause_info = incident_data.get('rootCauseInfoKey')
         if include_root_cause and root_cause_info and fetch_rca_chain:
             try:
+                # print(f"[DEBUG] Fetching RCA chain for rootCauseInfoKey: {root_cause_info}", file=sys.stderr)
                 rca_data = await client.fetch_root_cause_analysis(
                     root_cause_info_key=root_cause_info,
                     customer_name=incident_data.get('userName', '')
@@ -578,16 +580,42 @@ async def get_incident_details(
                                 if 'sourceDetail' in node and node['sourceDetail']:
                                     import json
                                     try:
-                                        detail_obj = json.loads(node['sourceDetail'])
-                                        if 'projectName' in detail_obj:
-                                            detail_obj['projectName'] = node['sourceProjectDisplayName']
-                                            node['sourceDetail'] = json.dumps(detail_obj)
+                                        detail_obj = json.loads(node['sourceDetail']) # ////////////
+                                        # if 'projectName' in detail_obj:
+                                        #     detail_obj['projectName'] = node['sourceProjectDisplayName']
+                                        #     node['sourceDetail'] = json.dumps(detail_obj)
+
+                                        # Add parsed fields for easy access
+                                        # print(f"[DEBUG] Parsing sourceDetail JSON: {detail_obj}", file=sys.stderr)
+                                        if detail_obj and detail_obj.get('content'):
+                                            content_str = detail_obj['content']
+                                            import json as _json
+                                            try:
+                                                content = _json.loads(content_str) if isinstance(content_str, str) else content_str
+                                            except Exception:
+                                                content = content_str
+                                            # Extract common fields if they exist
+                                            common_fields = ["_id", "cdn", "id", "status_code", "status_text", "url", "name", "product", "location", "time", "execution_uid"]
+                                            extracted_fields = {}
+                                            for field in common_fields:
+                                                if isinstance(content, dict) and field in content:
+                                                    extracted_fields[field] = content[field]
+                                        
+                                            if extracted_fields:
+                                                node["key_fields"] = extracted_fields
+                                        
+                                        node.pop('sourceDetail', None)  # Remove the original sourceDetail to reduce clutter
+                                        # print(f"[DEBUG] Updated node after parsing sourceDetail: {node}", file=sys.stderr)
                                     except Exception:
                                         pass
                         chain_item['rcaNodeList'] = sorted(node_list, key=lambda n: n.get('eventTimestamp', 0))
 
                 result['root_cause_available'] = True
+                # include the count of events in the chain
+                result['root_cause_chain_event_count'] = sum(len(item.get('rcaNodeList', [])) for item in rca_chain)
                 result['root_cause_chain'] = rca_chain
+                # print(f"[DEBUG] RCA chain fetch result: {str(result['root_cause_chain'])}", file=sys.stderr)
+                # print(f"[DEBUG] RCA chain event count: {result['root_cause_chain_event_count']}", file=sys.stderr)
             except Exception as e:
                 logger.warning(f"Failed to fetch root cause analysis: {str(e)}")
         
