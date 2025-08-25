@@ -1056,7 +1056,6 @@ async def predict_incidents(
     system_name: str,
     start_time_ms: int,
     end_time_ms: int,
-    include_raw_data: bool = True
 ) -> Dict[str, Any]:
     """
     Predicts future incidents for a system in a given time window.
@@ -1064,14 +1063,12 @@ async def predict_incidents(
     This will include recommendations for each predicted incident if available.
     
     Note:
-        The timestamp for each predicted incident is always taken from the top-level 'timestamp' field of the incident object.
-        Any timestamp values that may appear inside the 'raw_data' field are ignored and not used for processing or sorting.
+        The timestamp for each predicted incident is always taken from the top-level 'timestamp_prediction' field of the incident object.
 
     Args:
         system_name (str): The name of the system to predict incidents for.
         start_time_ms (int): Start of the prediction window (UTC ms).
         end_time_ms (int): End of the prediction window (UTC ms).
-        include_raw_data (bool, optional): If True, include raw_data in each predicted incident. Default is True.
 
     Returns:
         Dict[str, Any]: Prediction results, including recommendations if any are available.
@@ -1116,8 +1113,10 @@ async def predict_incidents(
         for i, incident in enumerate(timeline_list):
             incident_info = {
                 "id": i + 1,
-                "timestamp": incident["timestamp"],
-                "timestamp_human": format_api_timestamp_corrected(incident["timestamp"]),
+                "timestamp_prediction": incident["predictionTime"],
+                "timestamp_prediction_human": format_api_timestamp_corrected(incident["predictionTime"]),
+                "timestamp_occurence_prediction": incident["predictionOccurenceTime"],
+                "timestamp_occurence_prediction_human": format_api_timestamp_corrected(incident["predictionOccurenceTime"]),
                 "project": incident.get("projectDisplayName", "Unknown"),
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
@@ -1127,9 +1126,6 @@ async def predict_incidents(
                 "status": incident.get("status", "unknown"),
                 "active": incident.get("active", False)
             }
-
-            if include_raw_data:
-                incident_info["raw_data"] = incident.get("rawData", "")
 
             incident_llm_key = incident.get("incidentLLMKey")
             user_name = incident.get("userName", "")
