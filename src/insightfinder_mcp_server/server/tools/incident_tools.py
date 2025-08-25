@@ -1091,7 +1091,7 @@ async def predict_incidents(
 
         timeline_list = result["data"]
 
-        timeline_list = sorted(timeline_list, key=lambda x: x.get("timestamp", 0), reverse=False)
+        timeline_list = sorted(timeline_list, key=lambda x: x.get("predictionTime", 0), reverse=False)
 
         # # Remove rootCause/rootCauseResultInfo/rootCauseInfoKey and handle projectName
         # for incident in timeline_list:
