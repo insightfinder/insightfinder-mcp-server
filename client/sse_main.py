@@ -28,6 +28,11 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.tools import BaseTool
 from langgraph.prebuilt import create_react_agent
 
+from rich.console import Console
+from rich.markdown import Markdown
+
+import readline
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -268,7 +273,7 @@ class MCPTool(BaseTool):
                 
             elif event in ["error", "tool_error"]:
                 error_msg = data.get("error", "Unknown error")
-                print(f"  ❌ Error: {error_msg}")
+                # print(f"  ❌ Error: {error_msg}")
                 return f"Tool execution failed: {error_msg}"
         
         # Format the final result
@@ -628,7 +633,8 @@ async def interactive_chat():
     print(f"🔧 Tools: {len(client.get_tools())} available")
     print(f"📊 Progress updates: {'ON' if progress_enabled else 'OFF'}")
     print()
-    
+
+    console = Console()
     while True:
         try:
             user_input = input("You > ").strip()
@@ -681,21 +687,23 @@ async def interactive_chat():
         
         # Process message
         history.append(HumanMessage(content=user_input))
-        
+        history = trim_history(history)  # Always trim before sending to LLM
         try:
             # print("🤔 Processing...")
             result = await agent.ainvoke({"messages": history})
-            
             # Update history
             history = list(result["messages"])
             history = trim_history(history)
-            
             # Get assistant's response
             ai_msg = next(msg for msg in reversed(history) if isinstance(msg, AIMessage))
-            print(f"Bot > {ai_msg.content}\n")
+
+            md_content = str(ai_msg.content)
+            md = Markdown(md_content)
+            console.print(md)
             
         except Exception as err:
-            print(f"❌ Error: {err}\n")
+            # print(f"❌ Error: {err}\n")
+            pass
     
     print("👋 Goodbye!")
 
