@@ -1,6 +1,7 @@
 import httpx
 import json
 import logging
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from urllib.parse import urlparse
 
@@ -24,6 +25,90 @@ class InsightFinderAPIClient:
             "X-User-Name": self.user_name,
             "X-License-Key": self.license_key
         }
+
+    async def fetch_root_cause_analysis(
+        self,
+        root_cause_info_key: Dict[str, Any],
+        customer_name: str
+    ) -> Dict[str, Any]:
+        """
+        Fetch root cause analysis data for a specific incident.
+        
+        Args:
+            root_cause_info_key: The rootCauseInfoKey object from the incident response
+            customer_name: The customer/user name
+            
+        Returns:
+            A dictionary containing the RCA chain data
+        """
+        api_path = "/api/v2/timeline-detail"
+        url = f"{self.base_url}{api_path}"
+        
+        params = {
+            "operation": "RCA",
+            "customerName": customer_name,
+            "queryString": json.dumps(root_cause_info_key)
+        }
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=self.headers
+                )
+                response.raise_for_status()
+                return response.json()
+        except Exception as e:
+            logger.error(f"Error fetching root cause analysis: {str(e)}")
+            raise
+
+    async def fetch_recommendation(
+        self,
+        incident_llm_key: Dict[str, Any],
+        customer_name: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch recommendations for a specific incident.
+        
+        Args:
+            incident_llm_key: The incidentLLMKey object from the incident response
+            customer_name: The customer/user name
+            
+        Returns:
+            A dictionary containing the recommendation data or None if not available
+        """
+        api_path = "/api/v2/timeline-detail"
+        url = f"{self.base_url}{api_path}"
+        
+        params = {
+            "operation": "Recommendation",
+            "customerName": customer_name,
+            "queryString": json.dumps(incident_llm_key)
+        }
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=self.headers
+                )
+                response.raise_for_status()
+                # Defensive: check if response is empty or not JSON
+                if not response.text or not response.text.strip():
+                    logger.warning(f"Empty response when fetching recommendations for incidentLLMKey: {incident_llm_key}")
+                    return None
+                try:
+                    data = response.json()
+                except Exception as json_err:
+                    logger.warning(f"Non-JSON response when fetching recommendations: {response.text[:200]}")
+                    return None
+                # print(f"[DEBUG] Recommendations fetched: {data.get('recommendation', {}).get('response')}")
+                return data.get("recommendation", {}).get("response")
+        except Exception as e:
+            logger.warning(f"Error fetching recommendations: {str(e)}")
+            return None
 
     async def _fetch_timeline_data(
         self,
@@ -54,6 +139,13 @@ class InsightFinderAPIClient:
             "timelineEventType": timeline_event_type
         }
 
+        print(f"Fetching {timeline_event_type} data for {system_name} from {self.base_url} with params: {params}")
+        
+        # Debug: Display human-readable time range in UTC
+        start_time_readable = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        end_time_readable = datetime.fromtimestamp(end_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        print(f"DEBUG: Time range - Start: {start_time_readable}, End: {end_time_readable}")
+
         # Basic input validation
         if not system_name or len(system_name) > 100:
             return {"status": "error", "message": "Invalid system_name"}
@@ -71,7 +163,14 @@ class InsightFinderAPIClient:
                 if content_length and int(content_length) > 10 * 1024 * 1024:  # 10MB limit
                     return {"status": "error", "message": "Response too large"}
                 
-                raw_data = response.json()
+                # Parse JSON with error handling
+                try:
+                    raw_data = response.json()
+                except (json.JSONDecodeError, ValueError) as json_err:
+                    response_text = response.text[:200] if response.text else "Empty response"
+                    logger.error(f"JSON parse error for {timeline_event_type}: {json_err}. Response: {response_text}")
+                    return {"status": "error", "message": f"Invalid JSON response: {response_text}"}
+                    
                 timeline_list = raw_data.get("timelineList", [])
                 
                 # Limit number of items to prevent memory issues
@@ -189,6 +288,82 @@ class InsightFinderAPIClient:
             A dictionary containing deployment timeline data
         """
         return await self._fetch_timeline_data("deployment", system_name, start_time_ms, end_time_ms)
+    
+    async def predict_incidents(
+        self,
+        system_name: str,
+        start_time_ms: int,
+        end_time_ms: int
+    ) -> dict:
+        """
+        Predict future incidents for a system in a given time window using the InsightFinder prediction API.
+        Args:
+            system_name (str): The name of the system to predict incidents for.
+            start_time_ms (int): Start of the prediction window (UTC ms).
+            end_time_ms (int): End of the prediction window (UTC ms).
+        Returns:
+            dict: API response containing predicted incidents (timelineList).
+        """
+        import httpx
+        url = f"{self.base_url}/api/v2/timeline"
+        params = {
+            "systemName": system_name,
+            "startTime": start_time_ms,
+            "endTime": end_time_ms,
+            "timelineEventType": "incident",
+            "predict": "true"
+        }
+        
+        start_time_readable = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        end_time_readable = datetime.fromtimestamp(end_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        print(f"DEBUG: Time range - Start: {start_time_readable}, End: {end_time_readable}")
+
+        # Basic input validation
+        if not system_name or len(system_name) > 100:
+            return {"status": "error", "message": "Invalid system_name"}
+        
+        if end_time_ms - start_time_ms > 365 * 24 * 60 * 60 * 1000:  # Max 1 year
+            return {"status": "error", "message": "Time range too large (max 1 year)"}
+
+        async with httpx.AsyncClient(timeout=30.0) as client:  # Shorter timeout
+            try:
+                response = await client.get(url, params=params, headers=self.headers)
+                response.raise_for_status()
+                
+                # Check response size (prevent large payloads)
+                content_length = response.headers.get('content-length')
+                if content_length and int(content_length) > 10 * 1024 * 1024:  # 10MB limit
+                    return {"status": "error", "message": "Response too large"}
+                
+                # Parse JSON with error handling
+                try:
+                    raw_data = response.json()
+                except (json.JSONDecodeError, ValueError) as json_err:
+                    response_text = response.text[:200] if response.text else "Empty response"
+                    logger.error(f"JSON parse error for prediction api: {json_err}. Response: {response_text}")
+                    return {"status": "error", "message": f"Invalid JSON response: {response_text}"}
+                    
+                timeline_list = raw_data.get("timelineList", [])
+                
+                # Limit number of items to prevent memory issues
+                if len(timeline_list) > 5000:
+                    timeline_list = timeline_list[:5000]
+                
+                return {
+                    "status": "success", 
+                    "data": timeline_list,
+                    "total_count": len(timeline_list),
+                    "event_type": "prediction"
+                }
+            except httpx.HTTPStatusError as e:
+                logger.error(f"API error {e.response.status_code} for prediction api")
+                return {"status": "error", "message": "API request failed"}
+            except httpx.RequestError as e:
+                logger.error(f"Network error for prediction api: {str(e)}")
+                return {"status": "error", "message": "Network error"}
+            except Exception as e:
+                logger.error(f"Unexpected error: {str(e)}")
+                return {"status": "error", "message": "Internal error"}
 
 # Factory function to create API client instances with provided credentials
 def create_api_client(license_key: str, user_name: str, system_name: Optional[str] = None, api_url: Optional[str] = None) -> InsightFinderAPIClient:

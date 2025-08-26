@@ -32,6 +32,11 @@ from langgraph.prebuilt import create_react_agent
 from langgraph.graph import StateGraph, MessagesState
 from langgraph.prebuilt import ToolNode
 
+from rich.console import Console
+from rich.markdown import Markdown
+
+import readline
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -361,7 +366,7 @@ class MCPTool(BaseTool):
                 
             elif event in ["error", "tool_error"]:
                 error_msg = data.get("error", "Unknown error")
-                print(f"  ❌ Error: {error_msg}")
+                # print(f"  ❌ Error: {error_msg}")
                 return f"Tool execution failed: {error_msg}"
         
         # Format the final result
@@ -702,11 +707,11 @@ async def bootstrap_agent(llm_provider: str, model: Optional[str] = None):
     # Create agent based on provider
     if llm_provider == "vllm":
         # Use function calling agent for vLLM
-        print("🔧 Creating function calling agent for vLLM...")
+        # print("🔧 Creating function calling agent for vLLM...")
         agent = create_function_calling_agent(llm, tools)
     else:
         # Use ReAct agent for other providers
-        print(f"🔧 Creating ReAct agent for {llm_provider}...")
+        # print(f"🔧 Creating ReAct agent for {llm_provider}...")
         agent = create_react_agent(llm, tools)
     
     return agent, client
@@ -800,7 +805,8 @@ async def interactive_chat():
     else:
         print(f"🤖 Using ReAct agent for {llm_provider}")
     print()
-    
+
+    console = Console()
     while True:
         try:
             user_input = input("You > ").strip()
@@ -853,33 +859,40 @@ async def interactive_chat():
         
         # Process message
         history.append(HumanMessage(content=user_input))
-        
+        history = trim_history(history)  # Always trim before sending to LLM
         try:
             result = await agent.ainvoke({"messages": history})
-            
             # Update history
             history = list(result["messages"])
             history = trim_history(history)
+            # Get assistant's response
+            ai_msg = next(msg for msg in reversed(history) if isinstance(msg, AIMessage))
+
+            md_content = str(ai_msg.content)
+            md = Markdown(md_content)
+            console.print(md)
+
+
+            # # Get assistant's final response (the last AIMessage that doesn't have tool calls)
+            # ai_msg = None
+            # for msg in reversed(history):
+            #     if isinstance(msg, AIMessage):
+            #         # For function calling agents, get the final response after tool execution
+            #         if llm_provider == "vllm":
+            #             # Skip messages that only contain tool calls
+            #             if hasattr(msg, 'tool_calls') and msg.tool_calls and not msg.content:
+            #                 continue
+            #         ai_msg = msg
+            #         break
             
-            # Get assistant's final response (the last AIMessage that doesn't have tool calls)
-            ai_msg = None
-            for msg in reversed(history):
-                if isinstance(msg, AIMessage):
-                    # For function calling agents, get the final response after tool execution
-                    if llm_provider == "vllm":
-                        # Skip messages that only contain tool calls
-                        if hasattr(msg, 'tool_calls') and msg.tool_calls and not msg.content:
-                            continue
-                    ai_msg = msg
-                    break
-            
-            if ai_msg and ai_msg.content:
-                print(f"Bot > {ai_msg.content}\n")
-            else:
-                print("Bot > [No response generated]\n")
+            # if ai_msg and ai_msg.content:
+            #     print(f"Bot > {ai_msg.content}\n")
+            # else:
+            #     print("Bot > [No response generated]\n")
             
         except Exception as err:
-            print(f"❌ Error: {err}\n")
+            # print(f"❌ Error: {err}\n")
+            pass
     
     print("👋 Goodbye!")
 
