@@ -439,7 +439,7 @@ async def get_incidents_summary(
                         "hasPrecedingEvent": incident["rootCauseResultInfo"].get("hasPrecedingEvent", False),
                         "hasTrailingEvent": incident["rootCauseResultInfo"].get("hasTrailingEvent", False),
                         "causedByChangeEvent": incident["rootCauseResultInfo"].get("causedByChangeEvent", False),
-                        "leadToIncident": incident["rootCauseResultInfo"].get("leadToIncident", False)
+                        # "leadToIncident": incident["rootCauseResultInfo"].get("leadToIncident", False)
                     }
                 
                 # Add root cause info key if available (used for fetching full RCA chain)
