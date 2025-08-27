@@ -439,7 +439,7 @@ async def get_incidents_summary(
                         "hasPrecedingEvent": incident["rootCauseResultInfo"].get("hasPrecedingEvent", False),
                         "hasTrailingEvent": incident["rootCauseResultInfo"].get("hasTrailingEvent", False),
                         "causedByChangeEvent": incident["rootCauseResultInfo"].get("causedByChangeEvent", False),
-                        "leadToIncident": incident["rootCauseResultInfo"].get("leadToIncident", False)
+                        # "leadToIncident": incident["rootCauseResultInfo"].get("leadToIncident", False)
                     }
                 
                 # Add root cause info key if available (used for fetching full RCA chain)
@@ -581,6 +581,8 @@ async def get_incident_details(
                     node_list = chain_item.get('rcaNodeList', [])
                     if not (isinstance(node_list, list) and node_list and 'eventTimestamp' in node_list[0]):
                         continue
+                    import json
+                    unique_nodes = {}
                     for node in node_list:
                         # Format didPredictionTime and eventEndTimestamp if present
                         for ts_field in ('didPredictionTime', 'eventEndTimestamp', 'eventTimestamp'):
@@ -593,31 +595,54 @@ async def get_incident_details(
                             node.pop('sourceProjectDisplayName', None)
 
                         # Parse and extract key fields from sourceDetail if present
+                        nid = node.get('nid')
+                        pattern_name = node.get('patternName')
                         if 'sourceDetail' in node and node['sourceDetail']:
                             import json
                             try:
                                 detail_obj = json.loads(node['sourceDetail'])
-                                if detail_obj and detail_obj.get('content'):
-                                    content_str = detail_obj['content']
-                                    import json as _json
-                                    try:
-                                        content = _json.loads(content_str) if isinstance(content_str, str) else content_str
-                                    except Exception:
-                                        content = content_str
-                                    # Extract common fields if they exist
-                                    common_fields = ["_id", "cdn", "id", "status_code", "status_text", "url", "name", "product", "location", "time"]
-                                    extracted_fields = {field: content[field] for field in common_fields if isinstance(content, dict) and field in content}
-                                    if extracted_fields:
-                                        node["key_fields"] = extracted_fields
+                                if detail_obj:
+                                    if detail_obj.get('nid'):
+                                        nid = detail_obj['nid']
+                                        node['nid'] = nid
+                                    if detail_obj.get('patternName'):
+                                        pattern_name = detail_obj['patternName']
+                                        node['patternName'] = pattern_name
+                                    if detail_obj.get('content'):
+                                        content_str = detail_obj['content']
+                                        import json as _json
+                                        try:
+                                            content = _json.loads(content_str) if isinstance(content_str, str) else content_str
+                                        except Exception:
+                                            content = content_str
+                                        # Extract common fields if they exist
+                                        common_fields = ["_id", "cdn", "id", "status_code", "status_text", "url", "name", "product", "location", "time"]
+                                        extracted_fields = {field: content[field] for field in common_fields if isinstance(content, dict) and field in content}
+                                        if extracted_fields:
+                                            node["key_fields"] = extracted_fields
                                 node.pop('sourceDetail', None)  # Remove the original sourceDetail to reduce clutter
                             except Exception:
                                 pass
-                    chain_item['rcaNodeList'] = sorted(node_list, key=lambda n: n.get('eventTimestamp', 0))
+                        # Build deduplication key
+                        key = (nid, pattern_name, node.get('sourceInstanceName'), node.get('sourceProjectName'))
+                        if key not in unique_nodes:
+                            # Copy node to avoid mutating original
+                            node_copy = dict(node)
+                            unique_nodes[key] = node_copy
+                    # Remove nid from each node to reduce clutter
+                    deduped_nodes = list(unique_nodes.values())
+                    # for n in deduped_nodes:
+                    #     n.pop('nid', None)
+                    chain_item['rcaNodeList'] = sorted(deduped_nodes, key=lambda n: n.get('eventTimestamp', 0))
 
+
+                merged_nodes = merge_rca_chain(rca_chain)
+                result["root_cause_chain"] = merged_nodes
+                result["root_cause_chain_event_count"] = len(merged_nodes)  
                 result['root_cause_available'] = True
                 # include the count of events in the chain
-                result['root_cause_chain_event_count'] = sum(len(item.get('rcaNodeList', [])) for item in rca_chain)
-                result['root_cause_chain'] = rca_chain
+                # result['root_cause_chain_event_count'] = sum(len(item.get('rcaNodeList', [])) for item in rca_chain)
+                # result['root_cause_chain'] = rca_chain
                 # print(f"[DEBUG] RCA chain fetch result: {str(result['root_cause_chain'])}", file=sys.stderr)
                 # print(f"[DEBUG] RCA chain event count: {result['root_cause_chain_event_count']}", file=sys.stderr)
             except Exception as e:
@@ -1125,7 +1150,7 @@ async def predict_incidents(
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
                 "pattern": incident.get("patternName", "Unknown"),
-                "anomaly_score": round(incident.get("anomalyScore", 0), 2),
+                # "anomaly_score": round(incident.get("anomalyScore", 0), 2),
                 "is_incident": incident.get("isIncident", False),
                 "status": incident.get("status", "unknown"),
                 "active": incident.get("active", False)
@@ -1199,3 +1224,39 @@ def _get_api_client():
             "X-InsightFinder-License-Key and X-InsightFinder-User-Name"
         )
     return api_client
+
+def merge_rca_chain(rca_chain: list) -> list:
+    """
+    Merge all rcaNodeList items into a single deduplicated list sorted by eventTimestamp.
+    Deduplication is based on (sourceInstanceName, sourceProjectName, patternName, eventTimestamp).
+    """
+    unique_nodes = {}
+    merged_nodes = []
+
+    for chain_item in rca_chain:
+        node_list = chain_item.get("rcaNodeList", [])
+        for node in node_list:
+            # Deduplication key
+            key = (
+                node.get("sourceInstanceName"),
+                node.get("sourceProjectName"),
+                node.get("patternName"),
+                node.get("nid")
+            )
+            if key not in unique_nodes:
+                unique_nodes[key] = node
+
+    # Collect deduplicated nodes
+    merged_nodes = list(unique_nodes.values())
+
+    # Sort strictly by eventTimestamp (assumes already formatted string UTC)
+    from datetime import datetime
+    def parse_ts(ts):
+        try:
+            return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S %Z")
+        except Exception:
+            return ts  # fallback, keep order as-is
+
+    merged_nodes.sort(key=lambda n: parse_ts(n.get("eventTimestamp", "")))
+
+    return merged_nodes
