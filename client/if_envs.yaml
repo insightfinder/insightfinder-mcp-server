@@ -1,0 +1,15 @@
+environments:
+ - name: stg
+   api_url: https://stg.insightfinder.com
+   accounts:
+     - user_name: stg_user1
+       license_key: stg_key1
+     - user_name: stg_user2
+       license_key: stg_key2
+ - name: prod
+   api_url: https://app.insightfinder.com
+   accounts:
+     - user_name: prod_user1
+       license_key: prod_key1
+     - user_name: prod_user2
+       license_key: prod_key2
