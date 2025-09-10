@@ -365,6 +365,104 @@ class InsightFinderAPIClient:
                 logger.error(f"Unexpected error: {str(e)}")
                 return {"status": "error", "message": "Internal error"}
 
+    async def create_jira_ticket(
+        self,
+        customer_name: str,
+        project_key: str,
+        jira_assignee_id: str,
+        jira_reporter_id: str,
+        summary: str,
+        project_name: str = "jira ticket created by mcp server",
+        pattern_id: int = 0,
+        anomaly_score: int = 0,
+    raw_data: str = "",
+    jira_issue_fields: str | Dict[str, Any] = '{"fixVersions":"10019"}'
+    ) -> Dict[str, Any]:
+        """Create a Jira ticket via InsightFinder jiraPostEvent endpoint.
+
+        Args:
+            customer_name: InsightFinder customer/user name (maps to customerName)
+            project_key: Jira project key (projectKey)
+            jira_assignee_id: Jira account id for assignee (jiraAssigneeId)
+            jira_reporter_id: Jira account id for reporter (jiraReporterId)
+            summary: Ticket summary/title (summary)
+            project_name: InsightFinder projectName (default fixed string)
+            pattern_id: Pattern identifier (patternId) default 0
+            anomaly_score: Anomaly score (anomalyScore) default 0
+            raw_data: Description/body text (rawData)
+
+        Returns:
+            Dict with status and response content.
+        """
+        api_path = "/api/v1/jiraPostEvent"
+        url = f"{self.base_url}{api_path}"
+
+        # Allow caller to pass jira_issue_fields either as JSON string or dict
+        if isinstance(jira_issue_fields, dict):
+            try:
+                jira_issue_fields_str = json.dumps(jira_issue_fields, separators=(",", ":"))
+            except Exception:
+                jira_issue_fields_str = '{}'
+        else:
+            jira_issue_fields_str = jira_issue_fields
+
+        params = {
+            "projectKey": project_key,
+            "jiraAssigneeId": jira_assignee_id,
+            "jiraReporterId": jira_reporter_id,
+            "jiraIssueFields": jira_issue_fields_str,
+            "summary": summary,
+            "customerName": customer_name,
+            "projectName": project_name,
+            "patternId": str(pattern_id),  # ensure string per API examples
+            "anomalyScore": str(anomaly_score),
+            "rawData": raw_data
+        }
+
+        # Allow optional issue fields extension through future parameter but keep simple now
+        try:
+            # Manual URL encoding to satisfy requirement of building full URL with query string
+            from urllib.parse import urlencode
+            query_string = urlencode(params, safe="")
+            full_url = f"{url}?{query_string}"
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Send as POST with all parameters in URL (no body) matching provided pattern
+                response = await client.post(full_url, headers=self.headers)
+                # Some older endpoints may return 200 even on logical failure; capture body
+                text = response.text
+                http_status_ok = True
+                try:
+                    response.raise_for_status()
+                except Exception:
+                    # We still attempt to parse body even if HTTP error
+                    http_status_ok = False
+                # Attempt JSON parse but fallback to raw text
+                try:
+                    body = response.json()
+                except Exception:
+                    body = {"raw": text}
+
+                # Determine success strictly from the API's SUCCESS flag if present
+                success_flag = None
+                if isinstance(body, dict) and "SUCCESS" in body:
+                    success_flag = bool(body.get("SUCCESS"))
+
+                # Status precedence: use SUCCESS flag when available; otherwise fall back to HTTP status
+                if success_flag is not None:
+                    status = "success" if success_flag else "error"
+                else:
+                    status = "success" if http_status_ok else "error"
+
+                return {
+                    "status": status,
+                    "success": success_flag if success_flag is not None else (True if status == "success" else False),
+                    "response": body,
+                    "http_status": response.status_code,
+                }
+        except Exception as e:
+            logger.error(f"Error creating Jira ticket: {e}")
+            return {"status": "error", "message": str(e)}
+
 # Factory function to create API client instances with provided credentials
 def create_api_client(license_key: str, user_name: str, system_name: Optional[str] = None, api_url: Optional[str] = None) -> InsightFinderAPIClient:
     """
