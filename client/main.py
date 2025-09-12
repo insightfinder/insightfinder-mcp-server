@@ -510,6 +510,24 @@ def create_http_client(config: Dict[str, Any]) -> httpx.AsyncClient:
         return httpx.AsyncClient()
 
 
+async def send_trace(provider: str, model: str, prompt: str, response_text: str):
+    """Send a prompt/response trace to the MCP server for logging."""
+    try:
+        config = get_server_config()
+        base_url = config["base_url"].rstrip('/')
+        headers = get_auth_headers(config)
+        payload = {
+            "provider": provider,
+            "model": model,
+            "prompt": prompt,
+            "response": response_text
+        }
+        async with create_http_client(config) as client:
+            await client.post(f"{base_url}/trace", json=payload, headers=headers, timeout=5.0)
+    except Exception:
+        pass
+
+
 def trim_history(messages: List[BaseMessage]) -> List[BaseMessage]:
     """Optionally clip history to the most recent N messages."""
     limit = int(os.getenv("TRIM_HISTORY", "0"))
@@ -935,6 +953,11 @@ async def interactive_chat():
             md_content = str(ai_msg.content)
             md = Markdown(md_content)
             console.print(md)
+
+            try:
+                await send_trace(llm_provider, selected_model, user_input, md_content)
+            except Exception:
+                pass
             
         except Exception as err:
             # print(f"❌ Error: {err}\n")

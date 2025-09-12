@@ -368,6 +368,44 @@ class HTTPMCPServer:
                     status_code=500,
                     media_type="application/json"
                 )
+
+        @self.app.post("/trace")
+        async def trace_llm_interaction(request: Request):
+            """Receive LLM prompt/response traces from the client and log them.
+
+            Expected JSON body (flexible, extra fields allowed):
+            {
+              "provider": "openai",
+              "model": "gpt-4o",
+              "prompt": "user text",
+              "response": "assistant text"
+            }
+            """
+            try:
+                payload = await request.json()
+            except Exception:
+                payload = {"error": "invalid_json"}
+
+            # Minimal normalization
+            record = {
+                "provider": payload.get("provider"),
+                "model": payload.get("model"),
+                "prompt": payload.get("prompt"),
+                "response": payload.get("response"),
+                "ts": time.time()
+            }
+
+            # Log in structured form (single line JSON for easy parsing)
+            try:
+                logger.info("LLM_TRACE %s", json.dumps(record, ensure_ascii=False))
+            except Exception as e:  # Fallback if serialization fails
+                logger.info(f"LLM_TRACE provider={record.get('provider')} model={record.get('model')} serialization_error={e}")
+
+            if settings.ENABLE_DEBUG_MESSAGES:
+                # Also emit to stderr for quick visibility
+                print(f"TRACE => {json.dumps(record, ensure_ascii=False)}", file=sys.stderr)
+
+            return {"status": "ok"}
         
         @self.app.post("/mcp/stream")
         async def handle_streaming_mcp_request(request: Request):
