@@ -967,6 +967,29 @@ async def process_chat_message(agent, history: List[BaseMessage], user_input: st
     return result
 
 
+# New workflow to emit a dedicated prompt/response trace span separate from the broader
+# chat_message_processing workflow. This allows downstream tracing systems to index and
+# analyze raw prompt/response pairs (after tool execution) independently.
+@workflow(name="prompt_response_trace")
+async def trace_prompt_response(prompt: str, response: str, llm_provider: str, model: str):  # type: ignore[unused-ignore]
+    """Emit a tracing workflow span containing just the final prompt and response.
+
+    Parameters
+    ----------
+    prompt: The user (or synthesized) prompt that led to the final LLM response.
+    response: The final natural language response returned to the user.
+    llm_provider: Provider key (e.g. chatgpt, claude, gemini, llama, deepseek).
+    model: Concrete model name used for this exchange.
+    """
+    # The body is intentionally minimal; Traceloop captures inputs (args) & outputs (return).
+    return {
+        "prompt": prompt,
+        "response": response,
+        "llm_provider": llm_provider,
+        "model": model,
+    }
+
+
 # =============================================================================
 # Interactive Chat Interface
 # =============================================================================
@@ -1133,13 +1156,22 @@ async def interactive_chat():
         try:
             # print("🤔 Processing...")
             result = await process_chat_message(agent, history, user_input, llm_provider, selected_model)
-            # Update history
+            # Update history from agent result
             history = list(result["messages"])
             history = trim_history(history)
-            # Get assistant's response
+            # Extract final AI message content
             ai_msg = next(msg for msg in reversed(history) if isinstance(msg, AIMessage))
-
             md_content = str(ai_msg.content)
+
+            # Emit dedicated prompt/response span (fire and forget)
+            try:
+                # Import inside block to avoid circular import issues
+                from functools import partial  # lightweight
+                # We don't await to avoid adding latency; schedule task instead.
+                asyncio.create_task(trace_prompt_response(user_input, md_content, llm_provider, selected_model))
+            except Exception:
+                pass
+
             md = Markdown(md_content)
             console.print(md)
             
