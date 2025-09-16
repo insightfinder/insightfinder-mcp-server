@@ -196,7 +196,6 @@ def initialize_tracing():
             app_name="Multi-LLM-MCP-Chatbot",
             api_endpoint=grpc_endpoint,  # Use gRPC endpoint format
             resource_attributes={
-                "service.name": "llm-chatbot",
                 "service.version": "1.0.0",
                 "environment": os.getenv("ENVIRONMENT", "development"),
                 "mcp.server.url": os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8000"),
@@ -928,7 +927,6 @@ def select_if_environment_and_account(console: Optional[Console] = None) -> Opti
 # Agent Bootstrap
 # =============================================================================
 
-@workflow(name="agent_bootstrap")
 async def bootstrap_agent(llm_provider: str, model: Optional[str] = None):
     """Bootstrap the LangChain agent with MCP tools."""
     config = get_server_config()
@@ -960,7 +958,7 @@ async def bootstrap_agent(llm_provider: str, model: Optional[str] = None):
 # Chat Processing Functions
 # =============================================================================
 
-@workflow(name="chat_message_processing")
+@task(name="chat_message_processing")
 async def process_chat_message(agent, history: List[BaseMessage], user_input: str, llm_provider: str, model: str):
     """Process a single chat message with tracing."""
     result = await agent.ainvoke({"messages": history})
@@ -970,7 +968,7 @@ async def process_chat_message(agent, history: List[BaseMessage], user_input: st
 # New workflow to emit a dedicated prompt/response trace span separate from the broader
 # chat_message_processing workflow. This allows downstream tracing systems to index and
 # analyze raw prompt/response pairs (after tool execution) independently.
-@workflow(name="prompt_response_trace")
+@task(name="prompt_response_trace")
 async def trace_prompt_response(prompt: str, response: str, llm_provider: str, model: str):  # type: ignore[unused-ignore]
     """Emit a tracing workflow span containing just the final prompt and response.
 
@@ -993,14 +991,13 @@ async def trace_prompt_response(prompt: str, response: str, llm_provider: str, m
 # =============================================================================
 # Interactive Chat Interface
 # =============================================================================
-
+@workflow(name="interactive_chat")
 async def interactive_chat():
     """Interactive chat with LLM selection."""
     print("🚀 Multi-LLM MCP Streaming Chatbot")
     print("=" * 50)
     
-    # Initialize tracing
-    tracing_enabled = initialize_tracing()
+
     
     # Show available LLMs
     available_llms = get_available_llms()
@@ -1096,7 +1093,6 @@ async def interactive_chat():
     print(f"\n💬 Chat ready! Type 'help' for commands, 'exit' to quit.")
     print(f"🔧 Tools: {len(client.get_tools())} available")
     print(f"📊 Progress updates: {'ON' if progress_enabled else 'OFF'}")
-    print(f"📈 LLM Tracing: {'ON' if tracing_enabled else 'OFF'}")
     print()
 
     console = Console()
@@ -1168,7 +1164,7 @@ async def interactive_chat():
                 # Import inside block to avoid circular import issues
                 from functools import partial  # lightweight
                 # We don't await to avoid adding latency; schedule task instead.
-                asyncio.create_task(trace_prompt_response(user_input, md_content, llm_provider, selected_model))
+                await trace_prompt_response(user_input, md_content, llm_provider, selected_model)
             except Exception:
                 pass
 
@@ -1239,6 +1235,11 @@ def print_setup_help():
 
 
 if __name__ == "__main__":
+
+    # Initialize tracing
+    tracing_enabled = initialize_tracing()
+    print(f"📈 LLM Tracing: {'ON' if tracing_enabled else 'OFF'}")
+
     try:
         asyncio.run(interactive_chat())
     except KeyboardInterrupt:
