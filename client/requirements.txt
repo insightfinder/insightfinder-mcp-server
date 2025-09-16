@@ -13,6 +13,9 @@ PyYAML>=6.0.0
 opentelemetry-api>=1.20.0
 opentelemetry-sdk>=1.20.0
 
+# Traceloop for LLM Observability
+traceloop-sdk>=0.18.0
+
 # LLM Providers (install only the ones you plan to use)
 
 # OpenAI (ChatGPT)

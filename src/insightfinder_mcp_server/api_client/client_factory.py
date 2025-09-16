@@ -26,8 +26,9 @@ def extract_insightfinder_credentials_from_headers(request: Request) -> dict:
     Raises:
         HTTPException: If required headers are missing
     """
-    license_key = request.headers.get("X-IF-License-Key")
-    user_name = request.headers.get("X-IF-User-Name")
+    # Support both new (X-IF-*) and legacy header names
+    license_key = request.headers.get("X-IF-License-Key") or request.headers.get("X-License-Key")
+    user_name = request.headers.get("X-IF-User-Name") or request.headers.get("X-User-Name")
     api_url = request.headers.get("X-IF-API-URL")  # Optional
     
     if not license_key:

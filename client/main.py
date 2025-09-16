@@ -33,8 +33,197 @@ from rich.markdown import Markdown
 
 import readline
 
+# Import Traceloop for LLM observability
+try:
+    from traceloop.sdk import Traceloop
+    from traceloop.sdk.decorators import workflow, task
+    TRACELOOP_AVAILABLE = True
+except ImportError:
+    print("⚠️  Traceloop not installed. Install with: pip install traceloop-sdk")
+    TRACELOOP_AVAILABLE = False
+    # Create dummy decorators
+    def workflow(name=None):
+        def decorator(func):
+            return func
+        return decorator
+    def task(name=None):
+        def decorator(func):
+            return func
+        return decorator
+
 # Load environment variables from .env file
 load_dotenv()
+
+# =============================================================================
+# Traceloop Initialization
+# =============================================================================
+
+def initialize_tracing():
+    """Initialize Traceloop for LLM observability."""
+    if not TRACELOOP_AVAILABLE:
+        print("⚠️  Traceloop not available - skipping tracing initialization")
+        return False
+    
+    try:
+        # Completely disable metrics export at the OpenTelemetry level first
+        # Set these BEFORE any OpenTelemetry imports or initialization
+        os.environ["OTEL_METRICS_EXPORTER"] = "none"
+        os.environ["OTEL_LOGS_EXPORTER"] = "none"
+        os.environ["OTEL_TRACES_EXPORTER"] = "otlp"
+        
+        # Disable OpenTelemetry metrics completely
+        os.environ["OTEL_PYTHON_METER_PROVIDER"] = "none"
+        os.environ["OTEL_PYTHON_METRICS_EXPORTER"] = "none"
+        
+        # Silence OpenTelemetry warnings about missing exporters
+        import logging
+        logging.getLogger("opentelemetry").setLevel(logging.ERROR)
+        logging.getLogger("opentelemetry.exporter").setLevel(logging.ERROR)
+        logging.getLogger("opentelemetry.sdk").setLevel(logging.ERROR)
+        logging.getLogger("opentelemetry.exporter.otlp").setLevel(logging.ERROR)
+        
+        # Temporarily suppress telemetry error messages during initialization only
+        # Store original streams to restore after initialization
+        original_stderr = None
+        original_stdout = None
+        try:
+            import sys
+            import io
+            
+            # Store the original streams
+            original_stderr = sys.stderr
+            original_stdout = sys.stdout
+            
+            # Create filters for both stderr and stdout during Traceloop initialization
+            class InitTelemetryFilter:
+                def __init__(self, original_stream):
+                    self.original_stream = original_stream
+                    
+                def write(self, text):
+                    # Filter out metrics export error messages and meter provider errors
+                    suppress_patterns = [
+                        "Failed to export metrics",
+                        "StatusCode.UNIMPLEMENTED", 
+                        "Failed to load configured provider meter_provider",
+                        "Error initializing",
+                        "No valid instruments set",
+                        "Warning: No valid instruments set",
+                        "Ensure the instrumented libraries are installed"
+                    ]
+                    if not any(pattern in text for pattern in suppress_patterns):
+                        self.original_stream.write(text)
+                        
+                def flush(self):
+                    self.original_stream.flush()
+                    
+            # Apply filters temporarily during initialization only
+            sys.stderr = InitTelemetryFilter(original_stderr)
+            sys.stdout = InitTelemetryFilter(original_stdout)
+        except Exception:
+            pass  # If filtering fails, continue without it
+        
+        # Get configuration from environment
+        trace_server_url = os.getenv("TRACE_SERVER_URL", "http://127.0.0.1:4317")  # gRPC endpoint
+        insightfinder_user = os.getenv("TRACE_INSIGHTFINDER_USER_NAME", "")
+        insightfinder_license = os.getenv("TRACE_INSIGHTFINDER_LICENSE_KEY", "")
+        insightfinder_project = os.getenv("TRACE_INSIGHTFINDER_PROJECT", "")
+
+        if not insightfinder_user or not insightfinder_license:
+            print("⚠️  Missing InsightFinder credentials - skipping tracing")
+            return False
+        
+        # Test connectivity to trace server first (skip for localhost)
+        if not trace_server_url.startswith("http://127.0.0.1") and not trace_server_url.startswith("http://localhost"):
+            try:
+                import socket
+                # Extract host and port from URL
+                url_parts = trace_server_url.replace("http://", "").replace("https://", "")
+                if ":" in url_parts:
+                    host, port = url_parts.split(":", 1)
+                    port = int(port)
+                else:
+                    host = url_parts
+                    port = 4317  # default gRPC port
+                
+                # Test socket connection
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(3)
+                result = sock.connect_ex((host, port))
+                sock.close()
+                
+                if result != 0:
+                    print(f"⚠️  Cannot connect to trace server at {trace_server_url} - tracing will be disabled")
+                    print("💡 Check if the InsightFinder trace server is running and accessible")
+                    return False
+            except Exception as e:
+                print(f"⚠️  Cannot connect to trace server at {trace_server_url} - tracing will be disabled")
+                print("💡 Check if the InsightFinder trace server is running and accessible")
+                return False
+        
+        # Initialize Traceloop with InsightFinder trace server
+        # Convert HTTP URL to gRPC endpoint (remove http:// and use gRPC format)
+        grpc_endpoint = trace_server_url.replace("http://", "").replace("https://", "")
+        
+        # Set environment variables for OpenTelemetry OTLP exporter
+        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"http://{grpc_endpoint}"
+        os.environ["OTEL_EXPORTER_OTLP_INSECURE"] = "true"
+        os.environ["OTEL_EXPORTER_OTLP_PROTOCOL"] = "grpc"
+        
+        # Completely disable metrics and logs since the server only supports traces  
+        os.environ["OTEL_METRICS_EXPORTER"] = "none"
+        os.environ["OTEL_LOGS_EXPORTER"] = "none"
+        os.environ["OTEL_SDK_DISABLED"] = "false"  # Keep SDK enabled but disable specific exporters
+        
+        # Disable metrics collection at the SDK level
+        os.environ["OTEL_PYTHON_DISABLED_INSTRUMENTATIONS"] = "requests,urllib3,httpx"
+        
+        # Only enable trace export
+        os.environ["OTEL_TRACES_EXPORTER"] = "otlp"
+        
+        # Set headers that the InsightFinder trace server expects
+        headers_dict = {
+            "ifuser": insightfinder_user,
+            "iflicenseKey": insightfinder_license, 
+            "ifproject": insightfinder_project,
+            "ifsystem": os.getenv("TRACE_INSIGHTFINDER_SYSTEM_NAME", "")
+        }
+        
+        # Convert headers to the format expected by OTLP exporter
+        headers_str = ",".join([f"{k}={v}" for k, v in headers_dict.items() if v])
+        os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = headers_str
+        
+        Traceloop.init(
+            app_name="Multi-LLM-MCP-Chatbot",
+            api_endpoint=grpc_endpoint,  # Use gRPC endpoint format
+            resource_attributes={
+                "service.version": "1.0.0",
+                "environment": os.getenv("ENVIRONMENT", "development"),
+                "mcp.server.url": os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8000"),
+                "insightfinder.user": insightfinder_user,
+                "insightfinder.project": insightfinder_project,
+                "insightfinder.license_key": insightfinder_license
+            },
+            disable_batch=False,  # Enable batching for better performance
+            should_enrich_metrics=False,  # Disable metrics enrichment to prevent metrics export
+        )
+        
+        # Restore original streams to fully restore readline functionality
+        try:
+            import sys
+            if original_stderr:
+                sys.stderr = original_stderr
+            if original_stdout:
+                sys.stdout = original_stdout
+        except Exception:
+            pass
+        
+        print("✅ Traceloop initialized - LLM tracing enabled")
+        return True
+        
+    except Exception as e:
+        print(f"⚠️  Failed to initialize Traceloop: {e}")
+        return False
+
 
 # =============================================================================
 # LLM Providers
@@ -228,6 +417,7 @@ class MCPTool(BaseTool):
             except Exception as e:
                 yield {"event": "error", "data": {"error": str(e)}}
     
+    @task(name="mcp_tool_execution")
     async def _arun(self, **kwargs) -> str:
         """Execute the tool via SSE streaming."""
         results = []
@@ -510,24 +700,6 @@ def create_http_client(config: Dict[str, Any]) -> httpx.AsyncClient:
         return httpx.AsyncClient()
 
 
-async def send_trace(provider: str, model: str, prompt: str, response_text: str):
-    """Send a prompt/response trace to the MCP server for logging."""
-    try:
-        config = get_server_config()
-        base_url = config["base_url"].rstrip('/')
-        headers = get_auth_headers(config)
-        payload = {
-            "provider": provider,
-            "model": model,
-            "prompt": prompt,
-            "response": response_text
-        }
-        async with create_http_client(config) as client:
-            await client.post(f"{base_url}/trace", json=payload, headers=headers, timeout=5.0)
-    except Exception:
-        pass
-
-
 def trim_history(messages: List[BaseMessage]) -> List[BaseMessage]:
     """Optionally clip history to the most recent N messages."""
     limit = int(os.getenv("TRIM_HISTORY", "0"))
@@ -783,13 +955,49 @@ async def bootstrap_agent(llm_provider: str, model: Optional[str] = None):
 
 
 # =============================================================================
-# Interactive Chat Interface
+# Chat Processing Functions
 # =============================================================================
 
+@task(name="chat_message_processing")
+async def process_chat_message(agent, history: List[BaseMessage], user_input: str, llm_provider: str, model: str):
+    """Process a single chat message with tracing."""
+    result = await agent.ainvoke({"messages": history})
+    return result
+
+
+# New workflow to emit a dedicated prompt/response trace span separate from the broader
+# chat_message_processing workflow. This allows downstream tracing systems to index and
+# analyze raw prompt/response pairs (after tool execution) independently.
+@task(name="prompt_response_trace")
+async def trace_prompt_response(prompt: str, response: str, llm_provider: str, model: str):  # type: ignore[unused-ignore]
+    """Emit a tracing workflow span containing just the final prompt and response.
+
+    Parameters
+    ----------
+    prompt: The user (or synthesized) prompt that led to the final LLM response.
+    response: The final natural language response returned to the user.
+    llm_provider: Provider key (e.g. chatgpt, claude, gemini, llama, deepseek).
+    model: Concrete model name used for this exchange.
+    """
+    # The body is intentionally minimal; Traceloop captures inputs (args) & outputs (return).
+    return {
+        "prompt": prompt,
+        "response": response,
+        "llm_provider": llm_provider,
+        "model": model,
+    }
+
+
+# =============================================================================
+# Interactive Chat Interface
+# =============================================================================
+@workflow(name="interactive_chat")
 async def interactive_chat():
     """Interactive chat with LLM selection."""
     print("🚀 Multi-LLM MCP Streaming Chatbot")
     print("=" * 50)
+    
+
     
     # Show available LLMs
     available_llms = get_available_llms()
@@ -943,21 +1151,25 @@ async def interactive_chat():
         history = trim_history(history)  # Always trim before sending to LLM
         try:
             # print("🤔 Processing...")
-            result = await agent.ainvoke({"messages": history})
-            # Update history
+            result = await process_chat_message(agent, history, user_input, llm_provider, selected_model)
+            # Update history from agent result
             history = list(result["messages"])
             history = trim_history(history)
-            # Get assistant's response
+            # Extract final AI message content
             ai_msg = next(msg for msg in reversed(history) if isinstance(msg, AIMessage))
-
             md_content = str(ai_msg.content)
-            md = Markdown(md_content)
-            console.print(md)
 
+            # Emit dedicated prompt/response span (fire and forget)
             try:
-                await send_trace(llm_provider, selected_model, user_input, md_content)
+                # Import inside block to avoid circular import issues
+                from functools import partial  # lightweight
+                # We don't await to avoid adding latency; schedule task instead.
+                await trace_prompt_response(user_input, md_content, llm_provider, selected_model)
             except Exception:
                 pass
+
+            md = Markdown(md_content)
+            console.print(md)
             
         except Exception as err:
             # print(f"❌ Error: {err}\n")
@@ -973,25 +1185,38 @@ async def interactive_chat():
 def print_setup_help():
     """Print setup instructions."""
     print("""
-🔧 Multi-LLM MCP Client Setup:
+🔧 Multi-LLM MCP Client Setup with Traceloop Observability:
 
-1. Copy the example environment file:
-   cp client/.env.example client/.env
+1. Install dependencies:
+   pip install -r llm-client/requirements-traceloop.txt
 
-2. Edit client/.env and add your API keys for the LLMs you want to use:
+2. Copy the example environment file:
+   cp llm-client/.env.example llm-client/.env
+
+3. Edit llm-client/.env and configure:
+   
+   🤖 LLM API Keys (add the ones you want to use):
    - OPENAI_API_KEY=your_openai_key (for ChatGPT)
    - ANTHROPIC_API_KEY=your_anthropic_key (for Claude)
    - GOOGLE_API_KEY=your_google_key (for Gemini)
    - DEEPSEEK_API_KEY=your_deepseek_key (for DeepSeek)
+   
+   📊 InsightFinder Tracing:
+   - INSIGHTFINDER_USER_NAME=your_username
+   - INSIGHTFINDER_LICENSE_KEY=your_license_key
+   - INSIGHTFINDER_PROJECT=llm-chatbot-traces
+   - TRACE_SERVER_URL=http://127.0.0.1:4317
 
-3. For Ollama (Llama), make sure Ollama is running:
+4. Start the InsightFinder trace server (see trace server documentation)
+
+5. For Ollama (Llama), make sure Ollama is running:
    ollama serve
 
-4. Start the MCP server:
+6. Start the MCP server:
    TRANSPORT_TYPE=http SSE_ENABLED=true python -m insightfinder_mcp_server.main
 
-5. Run this client:
-   python client/sse_main_clean.py
+7. Run this client with tracing:
+   python llm-client/main.py
 
 🎯 Supported LLM Providers:
 - OpenAI (ChatGPT): GPT-4o, GPT-4-turbo, GPT-3.5-turbo
@@ -999,10 +1224,22 @@ def print_setup_help():
 - Google (Gemini): Gemini-2.0-Flash, Gemini-1.5-Pro, Gemini-1.5-Flash  
 - Ollama (Llama): Local Llama models
 - DeepSeek: DeepSeek-Chat, DeepSeek-Coder
+
+📈 Tracing Features:
+- Automatic LLM call tracing (prompts, responses, tokens, latency)
+- MCP tool execution tracing
+- Chat workflow tracing
+- Sends traces directly to InsightFinder trace server
+- Works with all LLM providers automatically
 """)
 
 
 if __name__ == "__main__":
+
+    # Initialize tracing
+    tracing_enabled = initialize_tracing()
+    print(f"📈 LLM Tracing: {'ON' if tracing_enabled else 'OFF'}")
+
     try:
         asyncio.run(interactive_chat())
     except KeyboardInterrupt:
