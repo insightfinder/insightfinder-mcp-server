@@ -127,7 +127,7 @@ def initialize_tracing():
         # Set headers that the InsightFinder trace server expects
         headers_dict = {
             "ifuser": insightfinder_user,
-            "iflicenseKey": insightfinder_license, 
+            "iflicensekey": insightfinder_license,
             "ifproject": insightfinder_project,
             "ifsystem": os.getenv("TRACE_INSIGHTFINDER_SYSTEM_NAME", "")
         }
@@ -146,7 +146,7 @@ def initialize_tracing():
         # Create OTLP exporter
         exporter = OTLPSpanExporter(
             endpoint=f"http://{grpc_endpoint}",
-            #headers=headers_dict,
+            headers=headers_dict,
             insecure=True
         )
 
