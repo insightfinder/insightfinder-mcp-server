@@ -33,95 +33,53 @@ from rich.markdown import Markdown
 
 import readline
 
-# Import Traceloop for LLM observability
+from traceloop.sdk import Traceloop
+
+# Import OpenTelemetry for LLM observability
 try:
-    from traceloop.sdk import Traceloop
-    from traceloop.sdk.decorators import workflow, task
-    TRACELOOP_AVAILABLE = True
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.sdk.resources import Resource
+    #from opentelemetry.instrumentation.auto_instrumentation import sitecustomize
+    from opentelemetry.instrumentation.langchain import LangchainInstrumentor
+
+    OPENTELEMETRY_AVAILABLE = True
 except ImportError:
-    print("⚠️  Traceloop not installed. Install with: pip install traceloop-sdk")
-    TRACELOOP_AVAILABLE = False
-    # Create dummy decorators
-    def workflow(name=None):
-        def decorator(func):
-            return func
-        return decorator
-    def task(name=None):
-        def decorator(func):
-            return func
-        return decorator
+    print("⚠️  OpenTelemetry not installed. Install with: pip install opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp")
+    OPENTELEMETRY_AVAILABLE = False
+
+    # Create dummy trace objects
+    class DummyTracer:
+        def start_span(self, name, **kwargs):
+            class DummySpan:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *args):
+                    pass
+                def set_attribute(self, key, value):
+                    pass
+                def set_status(self, status):
+                    pass
+            return DummySpan()
+
+    trace = type('trace', (), {'get_tracer': lambda name: DummyTracer()})()
 
 # Load environment variables from .env file
 load_dotenv()
 
 # =============================================================================
-# Traceloop Initialization
+# OpenTelemetry Initialization
 # =============================================================================
 
 def initialize_tracing():
-    """Initialize Traceloop for LLM observability."""
-    if not TRACELOOP_AVAILABLE:
-        print("⚠️  Traceloop not available - skipping tracing initialization")
+    """Initialize OpenTelemetry for LLM observability."""
+    if not OPENTELEMETRY_AVAILABLE:
+        print("⚠️  OpenTelemetry not available - skipping tracing initialization")
         return False
-    
+
     try:
-        # Completely disable metrics export at the OpenTelemetry level first
-        # Set these BEFORE any OpenTelemetry imports or initialization
-        os.environ["OTEL_METRICS_EXPORTER"] = "none"
-        os.environ["OTEL_LOGS_EXPORTER"] = "none"
-        os.environ["OTEL_TRACES_EXPORTER"] = "otlp"
-        
-        # Disable OpenTelemetry metrics completely
-        os.environ["OTEL_PYTHON_METER_PROVIDER"] = "none"
-        os.environ["OTEL_PYTHON_METRICS_EXPORTER"] = "none"
-        
-        # Silence OpenTelemetry warnings about missing exporters
-        import logging
-        logging.getLogger("opentelemetry").setLevel(logging.ERROR)
-        logging.getLogger("opentelemetry.exporter").setLevel(logging.ERROR)
-        logging.getLogger("opentelemetry.sdk").setLevel(logging.ERROR)
-        logging.getLogger("opentelemetry.exporter.otlp").setLevel(logging.ERROR)
-        
-        # Temporarily suppress telemetry error messages during initialization only
-        # Store original streams to restore after initialization
-        original_stderr = None
-        original_stdout = None
-        try:
-            import sys
-            import io
-            
-            # Store the original streams
-            original_stderr = sys.stderr
-            original_stdout = sys.stdout
-            
-            # Create filters for both stderr and stdout during Traceloop initialization
-            class InitTelemetryFilter:
-                def __init__(self, original_stream):
-                    self.original_stream = original_stream
-                    
-                def write(self, text):
-                    # Filter out metrics export error messages and meter provider errors
-                    suppress_patterns = [
-                        "Failed to export metrics",
-                        "StatusCode.UNIMPLEMENTED", 
-                        "Failed to load configured provider meter_provider",
-                        "Error initializing",
-                        "No valid instruments set",
-                        "Warning: No valid instruments set",
-                        "Ensure the instrumented libraries are installed"
-                    ]
-                    if not any(pattern in text for pattern in suppress_patterns):
-                        self.original_stream.write(text)
-                        
-                def flush(self):
-                    self.original_stream.flush()
-                    
-            # Apply filters temporarily during initialization only
-            sys.stderr = InitTelemetryFilter(original_stderr)
-            sys.stdout = InitTelemetryFilter(original_stdout)
-        except Exception:
-            pass  # If filtering fails, continue without it
-        
         # Get configuration from environment
         trace_server_url = os.getenv("TRACE_SERVER_URL", "http://127.0.0.1:4317")  # gRPC endpoint
         insightfinder_user = os.getenv("TRACE_INSIGHTFINDER_USER_NAME", "")
@@ -131,7 +89,7 @@ def initialize_tracing():
         if not insightfinder_user or not insightfinder_license:
             print("⚠️  Missing InsightFinder credentials - skipping tracing")
             return False
-        
+
         # Test connectivity to trace server first (skip for localhost)
         if not trace_server_url.startswith("http://127.0.0.1") and not trace_server_url.startswith("http://localhost"):
             try:
@@ -144,13 +102,13 @@ def initialize_tracing():
                 else:
                     host = url_parts
                     port = 4317  # default gRPC port
-                
+
                 # Test socket connection
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(3)
                 result = sock.connect_ex((host, port))
                 sock.close()
-                
+
                 if result != 0:
                     print(f"⚠️  Cannot connect to trace server at {trace_server_url} - tracing will be disabled")
                     print("💡 Check if the InsightFinder trace server is running and accessible")
@@ -159,27 +117,13 @@ def initialize_tracing():
                 print(f"⚠️  Cannot connect to trace server at {trace_server_url} - tracing will be disabled")
                 print("💡 Check if the InsightFinder trace server is running and accessible")
                 return False
-        
-        # Initialize Traceloop with InsightFinder trace server
+
         # Convert HTTP URL to gRPC endpoint (remove http:// and use gRPC format)
         grpc_endpoint = trace_server_url.replace("http://", "").replace("https://", "")
-        
-        # Set environment variables for OpenTelemetry OTLP exporter
-        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"http://{grpc_endpoint}"
-        os.environ["OTEL_EXPORTER_OTLP_INSECURE"] = "true"
-        os.environ["OTEL_EXPORTER_OTLP_PROTOCOL"] = "grpc"
-        
-        # Completely disable metrics and logs since the server only supports traces  
-        os.environ["OTEL_METRICS_EXPORTER"] = "none"
-        os.environ["OTEL_LOGS_EXPORTER"] = "none"
-        os.environ["OTEL_SDK_DISABLED"] = "false"  # Keep SDK enabled but disable specific exporters
-        
-        # Disable metrics collection at the SDK level
-        os.environ["OTEL_PYTHON_DISABLED_INSTRUMENTATIONS"] = "requests,urllib3,httpx"
-        
-        # Only enable trace export
-        os.environ["OTEL_TRACES_EXPORTER"] = "otlp"
-        
+
+        # Enable instrumentor
+        LangchainInstrumentor().instrument()
+
         # Set headers that the InsightFinder trace server expects
         headers_dict = {
             "ifuser": insightfinder_user,
@@ -187,42 +131,43 @@ def initialize_tracing():
             "ifproject": insightfinder_project,
             "ifsystem": os.getenv("TRACE_INSIGHTFINDER_SYSTEM_NAME", "")
         }
-        
-        # Convert headers to the format expected by OTLP exporter
-        headers_str = ",".join([f"{k}={v}" for k, v in headers_dict.items() if v])
-        os.environ["OTEL_EXPORTER_OTLP_HEADERS"] = headers_str
-        
-        Traceloop.init(
-            app_name="Multi-LLM-MCP-Chatbot",
-            api_endpoint=grpc_endpoint,  # Use gRPC endpoint format
-            resource_attributes={
-                "service.version": "1.0.0",
-                "environment": os.getenv("ENVIRONMENT", "development"),
-                "mcp.server.url": os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8000"),
-                "insightfinder.user": insightfinder_user,
-                "insightfinder.project": insightfinder_project,
-                "insightfinder.license_key": insightfinder_license
-            },
-            disable_batch=False,  # Enable batching for better performance
-            should_enrich_metrics=False,  # Disable metrics enrichment to prevent metrics export
+
+        # Create resource with service information
+        resource = Resource.create({
+            "service.name": "Multi-LLM-MCP-Chatbot",
+            "service.version": "1.0.0",
+            "environment": os.getenv("ENVIRONMENT", "development"),
+            "mcp.server.url": os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8000"),
+            "insightfinder.user": insightfinder_user,
+            "insightfinder.project": insightfinder_project,
+            "insightfinder.license_key": insightfinder_license
+        })
+
+        # Create OTLP exporter
+        exporter = OTLPSpanExporter(
+            endpoint=f"http://{grpc_endpoint}",
+            #headers=headers_dict,
+            insecure=True
         )
-        
-        # Restore original streams to fully restore readline functionality
-        try:
-            import sys
-            if original_stderr:
-                sys.stderr = original_stderr
-            if original_stdout:
-                sys.stdout = original_stdout
-        except Exception:
-            pass
-        
-        print("✅ Traceloop initialized - LLM tracing enabled")
+
+        # Create span processor and tracer provider
+        span_processor = BatchSpanProcessor(exporter)
+        tracer_provider = TracerProvider(resource=resource)
+        tracer_provider.add_span_processor(span_processor)
+
+        # Set the tracer provider
+        trace.set_tracer_provider(tracer_provider)
+
+        print("✅ OpenTelemetry initialized - LLM tracing enabled")
         return True
-        
+
     except Exception as e:
-        print(f"⚠️  Failed to initialize Traceloop: {e}")
+        print(f"⚠️  Failed to initialize OpenTelemetry: {e}")
         return False
+
+
+# Global tracer for the application
+tracer = trace.get_tracer("multi-llm-mcp-chatbot")
 
 
 # =============================================================================
@@ -417,66 +362,90 @@ class MCPTool(BaseTool):
             except Exception as e:
                 yield {"event": "error", "data": {"error": str(e)}}
     
-    @task(name="mcp_tool_execution")
     async def _arun(self, **kwargs) -> str:
-        """Execute the tool via SSE streaming."""
-        results = []
-        progress_info = None
-        
-        if self.enable_progress:
-            print(f"🔧 Streaming {self.tool_name}...")
-        
-        async for event_data in self._stream_tool_execution(**kwargs):
-            event = event_data.get("event")
-            data = event_data.get("data", {})
-            
-            if event == "tool_started":
-                if self.enable_progress:
-                    print(f"  ▶️  Started: {data.get('tool', 'unknown')}")
-            
-            elif event == "partial_result":
-                batch = data.get("batch", [])
-                progress = data.get("progress", {})
-                results.extend(batch)
-                
-                if self.enable_progress and progress:
-                    current = progress.get("current", 0)
-                    total = progress.get("total", 0)
-                    percentage = progress.get("percentage", 0)
-                    print(f"  📊 Progress: {current}/{total} ({percentage:.1f}%)")
-                    progress_info = progress
-            
-            elif event == "tool_result":
-                result = data.get("result")
-                if isinstance(result, list):
-                    results.extend(result)
+        """Execute the tool via SSE streaming with OpenTelemetry tracing."""
+        with tracer.start_span(f"mcp_tool_{self.tool_name}") as span:
+            span.set_attribute("tool.name", self.tool_name)
+            span.set_attribute("tool.args", json.dumps(kwargs, default=str))
+
+            results = []
+            progress_info = None
+
+            if self.enable_progress:
+                print(f"🔧 Streaming {self.tool_name}...")
+
+            try:
+                async for event_data in self._stream_tool_execution(**kwargs):
+                    event = event_data.get("event")
+                    data = event_data.get("data", {})
+
+                    if event == "tool_started":
+                        span.set_attribute("tool.status", "started")
+                        if self.enable_progress:
+                            print(f"  ▶️  Started: {data.get('tool', 'unknown')}")
+
+                    elif event == "partial_result":
+                        batch = data.get("batch", [])
+                        progress = data.get("progress", {})
+                        results.extend(batch)
+
+                        if progress:
+                            span.set_attribute("tool.progress.current", progress.get("current", 0))
+                            span.set_attribute("tool.progress.total", progress.get("total", 0))
+                            span.set_attribute("tool.progress.percentage", progress.get("percentage", 0))
+
+                        if self.enable_progress and progress:
+                            current = progress.get("current", 0)
+                            total = progress.get("total", 0)
+                            percentage = progress.get("percentage", 0)
+                            print(f"  📊 Progress: {current}/{total} ({percentage:.1f}%)")
+                            progress_info = progress
+
+                    elif event == "tool_result":
+                        result = data.get("result")
+                        if isinstance(result, list):
+                            results.extend(result)
+                        else:
+                            results.append(result)
+
+                        if self.enable_progress:
+                            print(f"  ✅ Received result")
+
+                    elif event == "tool_completed":
+                        span.set_attribute("tool.status", "completed")
+                        span.set_attribute("tool.result_count", len(results))
+                        if self.enable_progress:
+                            print(f"  🏁 Completed: {data.get('tool', 'unknown')}")
+                        break
+
+                    elif event in ["error", "tool_error"]:
+                        error_msg = data.get("error", "Unknown error")
+                        span.set_attribute("tool.status", "error")
+                        span.set_attribute("tool.error", error_msg)
+                        return f"Tool execution failed: {error_msg}"
+
+                # Format the final result
+                if results:
+                    span.set_attribute("tool.result_count", len(results))
+                    if len(results) == 1:
+                        result = json.dumps(results[0], indent=2, default=str)
+                        span.set_attribute("tool.result_size", len(result))
+                        return result
+                    else:
+                        summary = f"Retrieved {len(results)} items"
+                        if progress_info:
+                            summary += f" (streamed in batches)"
+                        result = f"{summary}\n\n" + json.dumps(results, indent=2, default=str)
+                        span.set_attribute("tool.result_size", len(result))
+                        return result
                 else:
-                    results.append(result)
-                    
-                if self.enable_progress:
-                    print(f"  ✅ Received result")
-            
-            elif event == "tool_completed":
-                if self.enable_progress:
-                    print(f"  🏁 Completed: {data.get('tool', 'unknown')}")
-                break
-                
-            elif event in ["error", "tool_error"]:
-                error_msg = data.get("error", "Unknown error")
-                # print(f"  ❌ Error: {error_msg}")
-                return f"Tool execution failed: {error_msg}"
-        
-        # Format the final result
-        if results:
-            if len(results) == 1:
-                return json.dumps(results[0], indent=2, default=str)
-            else:
-                summary = f"Retrieved {len(results)} items"
-                if progress_info:
-                    summary += f" (streamed in batches)"
-                return f"{summary}\n\n" + json.dumps(results, indent=2, default=str)
-        else:
-            return "No results returned from tool execution"
+                    span.set_attribute("tool.result_count", 0)
+                    return "No results returned from tool execution"
+
+            except Exception as e:
+                span.set_attribute("tool.status", "error")
+                span.set_attribute("tool.error", str(e))
+                raise
     
     def _run(self, **kwargs) -> str:
         """Synchronous version (calls async version)."""
@@ -958,42 +927,37 @@ async def bootstrap_agent(llm_provider: str, model: Optional[str] = None):
 # Chat Processing Functions
 # =============================================================================
 
-@task(name="chat_message_processing")
 async def process_chat_message(agent, history: List[BaseMessage], user_input: str, llm_provider: str, model: str):
-    """Process a single chat message with tracing."""
-    result = await agent.ainvoke({"messages": history})
-    return result
+    """Process a single chat message with OpenTelemetry tracing."""
+    with tracer.start_span("process_chat_message") as span:
+        span.set_attribute("chat.model", model)
+        span.set_attribute("chat.llm_provider", llm_provider)
+
+        try:
+            result = await agent.ainvoke({"messages": history})
+            span.set_attribute("chat.status", "success")
+
+            with tracer.start_as_current_span("chat-prompt-response") as pr_span:
+                history = trim_history(list(result["messages"]))
+                # Extract final AI message content
+                model_response = next(msg for msg in reversed(history) if isinstance(msg, AIMessage))
+                pr_span.set_attribute("chat.prompt", user_input)
+                pr_span.set_attribute("chat.response", str(model_response.content))
+                pr_span.set_attribute("trace.entity", "chat-prompt-response")
 
 
-# New workflow to emit a dedicated prompt/response trace span separate from the broader
-# chat_message_processing workflow. This allows downstream tracing systems to index and
-# analyze raw prompt/response pairs (after tool execution) independently.
-@task(name="prompt_response_trace")
-async def trace_prompt_response(prompt: str, response: str, llm_provider: str, model: str):  # type: ignore[unused-ignore]
-    """Emit a tracing workflow span containing just the final prompt and response.
-
-    Parameters
-    ----------
-    prompt: The user (or synthesized) prompt that led to the final LLM response.
-    response: The final natural language response returned to the user.
-    llm_provider: Provider key (e.g. chatgpt, claude, gemini, llama, deepseek).
-    model: Concrete model name used for this exchange.
-    """
-    # The body is intentionally minimal; Traceloop captures inputs (args) & outputs (return).
-    return {
-        "prompt": prompt,
-        "response": response,
-        "llm_provider": llm_provider,
-        "model": model,
-    }
+            return result
+        except Exception as e:
+            span.set_attribute("chat.status", "error")
+            span.set_attribute("chat.error", str(e))
+            raise
 
 
 # =============================================================================
 # Interactive Chat Interface
 # =============================================================================
-@workflow(name="interactive_chat")
 async def interactive_chat():
-    """Interactive chat with LLM selection."""
+    """Interactive chat with LLM selection and OpenTelemetry tracing."""
     print("🚀 Multi-LLM MCP Streaming Chatbot")
     print("=" * 50)
     
@@ -1150,26 +1114,17 @@ async def interactive_chat():
         history.append(HumanMessage(content=user_input))
         history = trim_history(history)  # Always trim before sending to LLM
         try:
-            # print("🤔 Processing...")
-            result = await process_chat_message(agent, history, user_input, llm_provider, selected_model)
-            # Update history from agent result
-            history = list(result["messages"])
-            history = trim_history(history)
-            # Extract final AI message content
-            ai_msg = next(msg for msg in reversed(history) if isinstance(msg, AIMessage))
-            md_content = str(ai_msg.content)
+            with tracer.start_as_current_span("agent-chat-loop") as agent_chat_loop_span:
+                result = await process_chat_message(agent, history, user_input, llm_provider, selected_model)
+                # Update history from agent result
+                history = list(result["messages"])
+                history = trim_history(history)
+                # Extract final AI message content
+                ai_msg = next(msg for msg in reversed(history) if isinstance(msg, AIMessage))
+                md_content = str(ai_msg.content)
 
-            # Emit dedicated prompt/response span (fire and forget)
-            try:
-                # Import inside block to avoid circular import issues
-                from functools import partial  # lightweight
-                # We don't await to avoid adding latency; schedule task instead.
-                await trace_prompt_response(user_input, md_content, llm_provider, selected_model)
-            except Exception:
-                pass
-
-            md = Markdown(md_content)
-            console.print(md)
+                md = Markdown(md_content)
+                console.print(md)
             
         except Exception as err:
             # print(f"❌ Error: {err}\n")
@@ -1185,22 +1140,22 @@ async def interactive_chat():
 def print_setup_help():
     """Print setup instructions."""
     print("""
-🔧 Multi-LLM MCP Client Setup with Traceloop Observability:
+🔧 Multi-LLM MCP Client Setup with OpenTelemetry Observability:
 
 1. Install dependencies:
-   pip install -r llm-client/requirements-traceloop.txt
+   pip install opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp
 
 2. Copy the example environment file:
    cp llm-client/.env.example llm-client/.env
 
 3. Edit llm-client/.env and configure:
-   
+
    🤖 LLM API Keys (add the ones you want to use):
    - OPENAI_API_KEY=your_openai_key (for ChatGPT)
    - ANTHROPIC_API_KEY=your_anthropic_key (for Claude)
    - GOOGLE_API_KEY=your_google_key (for Gemini)
    - DEEPSEEK_API_KEY=your_deepseek_key (for DeepSeek)
-   
+
    📊 InsightFinder Tracing:
    - INSIGHTFINDER_USER_NAME=your_username
    - INSIGHTFINDER_LICENSE_KEY=your_license_key
@@ -1215,7 +1170,7 @@ def print_setup_help():
 6. Start the MCP server:
    TRANSPORT_TYPE=http SSE_ENABLED=true python -m insightfinder_mcp_server.main
 
-7. Run this client with tracing:
+7. Run this client with OpenTelemetry tracing:
    python llm-client/main.py
 
 🎯 Supported LLM Providers:
@@ -1225,11 +1180,12 @@ def print_setup_help():
 - Ollama (Llama): Local Llama models
 - DeepSeek: DeepSeek-Chat, DeepSeek-Coder
 
-📈 Tracing Features:
-- Automatic LLM call tracing (prompts, responses, tokens, latency)
-- MCP tool execution tracing
-- Chat workflow tracing
-- Sends traces directly to InsightFinder trace server
+📈 OpenTelemetry Tracing Features:
+- Manual span creation for chat workflows
+- MCP tool execution tracing with detailed attributes
+- Prompt/response tracing for LLM interactions
+- Direct integration with OpenTelemetry ecosystem
+- Sends traces directly to InsightFinder trace server via OTLP
 - Works with all LLM providers automatically
 """)
 
