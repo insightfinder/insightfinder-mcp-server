@@ -941,8 +941,13 @@ async def process_chat_message(agent, history: List[BaseMessage], user_input: st
                 history = trim_history(list(result["messages"]))
                 # Extract final AI message content
                 model_response = next(msg for msg in reversed(history) if isinstance(msg, AIMessage))
+
+                chat_result = {"prompt":user_input,"response":str(model_response.content)}
+
                 pr_span.set_attribute("chat.prompt", user_input)
                 pr_span.set_attribute("chat.response", str(model_response.content))
+                pr_span.set_attribute("chat.result", json.dumps(chat_result))
+                pr_span.set_attribute("username", os.getenv("TRACE_INSIGHTFINDER_USER_NAME", ""))
                 pr_span.set_attribute("trace.entity", "chat-prompt-response")
 
 
