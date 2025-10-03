@@ -17,6 +17,7 @@ import asyncio
 import json
 import os
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -46,6 +47,10 @@ try:
     from opentelemetry.instrumentation.langchain import LangchainInstrumentor
 
     OPENTELEMETRY_AVAILABLE = True
+
+    # Setup Session Id to be viewed in the Trace
+    session_id = str(uuid.uuid4())
+
 except ImportError:
     print("⚠️  OpenTelemetry not installed. Install with: pip install opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp")
     OPENTELEMETRY_AVAILABLE = False
@@ -932,6 +937,7 @@ async def process_chat_message(agent, history: List[BaseMessage], user_input: st
     with tracer.start_span("process_chat_message") as span:
         span.set_attribute("chat.model", model)
         span.set_attribute("chat.llm_provider", llm_provider)
+        span.set_attribute("uuid", session_id)
 
         try:
             result = await agent.ainvoke({"messages": history})
