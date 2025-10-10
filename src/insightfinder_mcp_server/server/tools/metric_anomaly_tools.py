@@ -23,7 +23,7 @@ from datetime import datetime
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
 from ...config.settings import settings
-from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, format_api_timestamp_corrected, get_today_time_range_ms
+from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, format_api_timestamp_corrected
 
 logger = logging.getLogger(__name__)
 

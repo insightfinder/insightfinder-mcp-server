@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
 from ...config.settings import settings
-from .get_time import get_timezone_aware_timestamp_ms, get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, get_today_time_range_ms, format_timestamp_no_conversion, format_api_timestamp_corrected
+from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, format_api_timestamp_corrected
 
 """
 === INCIDENT INVESTIGATION TOOLS - LLM USAGE GUIDELINES ===
@@ -197,12 +197,10 @@ async def get_incidents_overview(
             for i, incident in enumerate(incidents[:3]):  # Show first 3 for debugging
                 raw_timestamp = incident["timestamp"]
                 timestamp_with_conversion = format_timestamp_in_user_timezone(raw_timestamp)
-                timestamp_no_conversion = format_timestamp_no_conversion(raw_timestamp)
-                timestamp_corrected = format_api_timestamp_corrected(raw_timestamp)
                 print(f"[DEBUG] Incident {i+1}:", file=sys.stderr)
                 print(f"  Raw timestamp: {raw_timestamp}", file=sys.stderr)
                 print(f"  With UTC->Local conversion: {timestamp_with_conversion}", file=sys.stderr)
-                print(f"  No conversion (treat as local): {timestamp_no_conversion}", file=sys.stderr)
+                print(f"  No conversion (treat as local): {timestamp_with_conversion}", file=sys.stderr)
                 print(f"  Component: {incident.get('componentName', 'N/A')}", file=sys.stderr)
         
         # Basic counts and metrics

@@ -855,6 +855,112 @@ class HTTPMCPServer:
                     "result": {"tools": tools}
                 }
             
+            elif method == "resources/list":
+                # List available resources
+                resources = []
+                
+                # Access resources via the resource manager
+                if hasattr(mcp_server, '_resource_manager'):
+                    resource_manager = mcp_server._resource_manager
+                    
+                    # Get resources from the _resources dictionary
+                    if hasattr(resource_manager, '_resources'):
+                        resources_dict = resource_manager._resources
+                        if settings.ENABLE_DEBUG_MESSAGES:
+                            print(f"Found {len(resources_dict)} registered resources in _resource_manager._resources", file=sys.stderr)
+                        
+                        for uri, resource in resources_dict.items():
+                            try:
+                                resource_info = {
+                                    "uri": uri,
+                                    "name": uri.split("://")[-1].replace("-", " ").title(),
+                                    "description": getattr(resource, 'description', f"Resource: {uri}"),
+                                    "mimeType": "text/plain"
+                                }
+                                resources.append(resource_info)
+                            except Exception as e:
+                                if settings.ENABLE_DEBUG_MESSAGES:
+                                    print(f"Error processing resource {uri}: {e}", file=sys.stderr)
+                    else:
+                        if settings.ENABLE_DEBUG_MESSAGES:
+                            print("No _resources attribute found in resource_manager", file=sys.stderr)
+                else:
+                    if settings.ENABLE_DEBUG_MESSAGES:
+                        print("No _resource_manager found in mcp_server", file=sys.stderr)
+                
+                if settings.ENABLE_DEBUG_MESSAGES:
+                    print(f"Returning {len(resources)} resources", file=sys.stderr)
+                
+                return {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {"resources": resources}
+                }
+            
+            elif method == "resources/read":
+                # Read a specific resource
+                resource_uri = params.get("uri")
+                
+                if not resource_uri:
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32602,
+                            "message": "Invalid params: missing 'uri'"
+                        }
+                    }
+                
+                # Access resources via the resource manager
+                resources_dict = None
+                if hasattr(mcp_server, '_resource_manager'):
+                    resource_manager = mcp_server._resource_manager
+                    if hasattr(resource_manager, '_resources'):
+                        resources_dict = resource_manager._resources
+                
+                if not resources_dict or resource_uri not in resources_dict:
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32601,
+                            "message": f"Resource not found: {resource_uri}"
+                        }
+                    }
+                
+                try:
+                    resource = resources_dict[resource_uri]
+                    resource_func = getattr(resource, 'fn', resource)
+                    
+                    # Call the resource function
+                    if getattr(resource, 'is_async', False):
+                        content = await resource_func()
+                    else:
+                        content = resource_func()
+                    
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "contents": [
+                                {
+                                    "uri": resource_uri,
+                                    "mimeType": "text/plain",
+                                    "text": content
+                                }
+                            ]
+                        }
+                    }
+                except Exception as e:
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32603,
+                            "message": f"Resource read error: {str(e)}"
+                        }
+                    }
+            
             elif method == "tools/call":
                 # Call a specific tool
                 tool_name = params.get("name")
@@ -950,6 +1056,13 @@ class HTTPMCPServer:
             if hasattr(tool_manager, '_tools'):
                 tool_count = len(tool_manager._tools)
         
+        # Count available resources
+        resource_count = 0
+        if hasattr(mcp_server, '_resource_manager'):
+            resource_manager = mcp_server._resource_manager
+            if hasattr(resource_manager, '_resources'):
+                resource_count = len(resource_manager._resources)
+        
         capabilities = {
             "tools": {
                 "listChanged": True,
@@ -957,9 +1070,13 @@ class HTTPMCPServer:
             },
             "logging": {},
             "prompts": {},
-            "resources": {},
+            "resources": {
+                "listChanged": True,
+                "subscribe": False
+            },
             "experimental": {
-                "toolCount": tool_count
+                "toolCount": tool_count,
+                "resourceCount": resource_count
             }
         }
         
