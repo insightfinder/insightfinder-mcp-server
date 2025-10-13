@@ -634,6 +634,9 @@ def get_server_config() -> Dict[str, Any]:
         "ssl_cert_path": os.getenv("SSL_CERT_PATH", ""),
         "auth_method": os.getenv("HTTP_AUTH_METHOD", "api_key"),
         "api_key": os.getenv("HTTP_API_KEY", ""),
+        "jira_server_url": os.getenv("JIRA_SERVER_URL", ""),
+        "jira_username": os.getenv("JIRA_USERNAME", ""),
+        "jira_api_token": os.getenv("JIRA_API_TOKEN", ""),
     }
 
 
@@ -648,6 +651,14 @@ def get_auth_headers(config: Dict[str, Any]) -> Dict[str, str]:
         headers["X-IF-User-Name"] = config["user_name"]
     if config.get("api_url"):
         headers["X-IF-API-URL"] = config["api_url"]
+    
+    # Add JIRA configuration headers
+    if config.get("jira_server_url"):
+        headers["X-JIRA-Server-URL"] = config["jira_server_url"]
+    if config.get("jira_username"):
+        headers["X-JIRA-Username"] = config["jira_username"]
+    if config.get("jira_api_token"):
+        headers["X-JIRA-API-Token"] = config["jira_api_token"]
     
     # Add server authentication headers
     if config["api_key"]:
@@ -681,6 +692,12 @@ def trim_history(messages: List[BaseMessage]) -> List[BaseMessage]:
 # InsightFinder Environment & Account Selection
 # =============================================================================
 
+class JiraConfig(BaseModel):
+    server_url: str
+    username: str
+    api_token: str
+
+
 class IFAccount(BaseModel):
     user_name: str
     license_key: str
@@ -691,6 +708,7 @@ class IFEnvironment(BaseModel):
     name: str
     api_url: str
     accounts: List[IFAccount] = Field(default_factory=list)
+    jira: Optional[JiraConfig] = None
 
 
 def load_if_environments() -> List[IFEnvironment]:
@@ -802,7 +820,7 @@ def load_if_environments() -> List[IFEnvironment]:
 def select_if_environment_and_account(console: Optional[Console] = None) -> Optional[Dict[str, str]]:
     """Interactively select IF environment and account; returns selected fields or None.
 
-    Returns a dict with api_url, user_name, license_key, and optionally system_name.
+    Returns a dict with api_url, user_name, license_key, system_name, and JIRA configuration.
     """
     envs = load_if_environments()
     if not envs:
@@ -816,7 +834,8 @@ def select_if_environment_and_account(console: Optional[Console] = None) -> Opti
     print("\n🌐 InsightFinder environments:")
     for i, e in enumerate(envs, 1):
         acct_count = len(e.accounts)
-        print(f"  {i}. {e.name} ({e.api_url}) - {acct_count} account{'s' if acct_count != 1 else ''}")
+        jira_status = "✓ JIRA" if e.jira else "✗ No JIRA"
+        print(f"  {i}. {e.name} ({e.api_url}) - {acct_count} account{'s' if acct_count != 1 else ''} [{jira_status}]")
 
     # Resolve default index if any
     env_idx = None
@@ -851,7 +870,15 @@ def select_if_environment_and_account(console: Optional[Console] = None) -> Opti
     accounts = selected_env.accounts
     if not accounts:
         print("⚠️  No InsightFinder accounts configured for this environment.")
-        return {"api_url": selected_env.api_url}
+        result = {"api_url": selected_env.api_url}
+        # Add JIRA config if available
+        if selected_env.jira:
+            result.update({
+                "jira_server_url": selected_env.jira.server_url,
+                "jira_username": selected_env.jira.username,
+                "jira_api_token": selected_env.jira.api_token
+            })
+        return result
 
     print(f"\n👤 Accounts for {selected_env.name}:")
     for i, a in enumerate(accounts, 1):
@@ -884,12 +911,23 @@ def select_if_environment_and_account(console: Optional[Console] = None) -> Opti
                 break
         print("❌ Invalid selection. Try again.")
 
-    return {
+    result = {
         "api_url": selected_env.api_url,
         "user_name": account.user_name,
         "license_key": account.license_key,
         "system_name": account.system_name or "",
     }
+    
+    # Add JIRA config if available
+    if selected_env.jira:
+        result.update({
+            "jira_server_url": selected_env.jira.server_url,
+            "jira_username": selected_env.jira.username,
+            "jira_api_token": selected_env.jira.api_token
+        })
+        print(f"✓ JIRA configuration loaded: {selected_env.jira.server_url}")
+
+    return result
 
 
 # =============================================================================
@@ -1039,9 +1077,18 @@ async def interactive_chat():
                 os.environ["INSIGHTFINDER_LICENSE_KEY"] = sel["license_key"]
             if sel.get("system_name"):
                 os.environ["INSIGHTFINDER_SYSTEM_NAME"] = sel["system_name"]
+            
+            # Apply JIRA configuration to environment variables
+            if sel.get("jira_server_url"):
+                os.environ["JIRA_SERVER_URL"] = sel["jira_server_url"]
+            if sel.get("jira_username"):
+                os.environ["JIRA_USERNAME"] = sel["jira_username"]
+            if sel.get("jira_api_token"):
+                os.environ["JIRA_API_TOKEN"] = sel["jira_api_token"]
 
             env_label = "prod" if "app.insightfinder.com" in sel.get("api_url", "") else "stg"
-            print(f"✓ InsightFinder: {env_label} ({sel.get('user_name','')})")
+            jira_status = "✓ JIRA" if sel.get("jira_server_url") else "✗ No JIRA"
+            print(f"✓ InsightFinder: {env_label} ({sel.get('user_name','')}) [{jira_status}]")
     except Exception:
         # Non-fatal; continue with defaults
         pass
