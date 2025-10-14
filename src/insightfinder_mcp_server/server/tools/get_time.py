@@ -12,6 +12,9 @@ def get_current_datetime() -> str:
     
     Always uses UTC timezone to avoid timezone conversion confusion.
     Returns timestamps in milliseconds for query compatibility.
+    
+    ⚠️ IMPORTANT: Call this tool FIRST before any date/time calculations!
+    See resource 'time-tools://usage-guide' for detailed usage patterns.
     """
     # Always use UTC
     user_timezone = timezone.utc
@@ -67,6 +70,10 @@ def get_time_range(hours_back: int = 24) -> str:
     
     Returns time range in UTC only to avoid timezone conversion issues.
     Provides both milliseconds and seconds timestamps for compatibility.
+    
+    ⚠️ NOTE: Use get_date_range_utc() for full calendar days (e.g., "yesterday").
+    This tool is for rolling time windows (e.g., "last 6 hours").
+    See resource 'time-tools://usage-guide' for correct usage patterns.
     """
     # Always use UTC
     user_timezone = timezone.utc
@@ -100,15 +107,6 @@ def get_time_range(hours_back: int = 24) -> str:
     }
     
     return json.dumps(result, indent=2)
-
-def get_timezone_aware_timestamp_ms() -> int:
-    """Get current timestamp in milliseconds, always in UTC."""
-    # Always use UTC
-    user_timezone = timezone.utc
-    
-    # Get current time in UTC and round to nearest second
-    now_utc = datetime.now(timezone.utc)
-    return int(now_utc.timestamp()) * 1000
 
 def get_timezone_aware_time_range_ms(days_back: int = 1) -> tuple[int, int]:
     """Get start and end timestamps in milliseconds for a time range in UTC.
@@ -155,24 +153,6 @@ def get_timezone_aware_time_range_ms(days_back: int = 1) -> tuple[int, int]:
     
     return start_time_ms, end_time_ms
 
-def get_today_time_range_ms() -> tuple[int, int]:
-    """Get start and end timestamps for 'today' in UTC."""
-    # Always use UTC
-    tz_name = 'UTC'
-    user_timezone = timezone.utc
-    
-    # Get current time in UTC
-    now_user_tz = datetime.now(user_timezone)
-    
-    # Get start of today (midnight) in UTC
-    start_of_today = now_user_tz.replace(hour=0, minute=0, second=0, microsecond=0)
-    
-    # Convert to UTC timestamps in milliseconds (rounded to nearest second)
-    start_time_ms = int(start_of_today.timestamp()) * 1000
-    end_time_ms = int(now_user_tz.timestamp()) * 1000
-    
-    return start_time_ms, end_time_ms
-
 def format_timestamp_in_user_timezone(timestamp_ms: int, assume_utc: bool = True) -> str:
     """Format a timestamp in UTC only to avoid timezone conversion confusion.
     
@@ -209,28 +189,6 @@ def format_timestamp_in_user_timezone(timestamp_ms: int, assume_utc: bool = True
     
     return dt_user_tz.strftime(f'%Y-%m-%d %H:%M:%S {tz_str}')
 
-def format_timestamp_no_conversion(timestamp_ms: int) -> str:
-    """Format a timestamp without timezone conversion - always uses UTC."""
-    # Always use UTC
-    tz_name = 'UTC'
-    user_timezone = timezone.utc
-    
-    # Treat timestamp as UTC
-    dt_user_tz = datetime.fromtimestamp(timestamp_ms / 1000, tz=user_timezone)
-    
-    # Debug logging
-    from ...config.settings import settings
-    if settings.ENABLE_DEBUG_MESSAGES:
-        import sys
-        print(f"[DEBUG TIMESTAMP] format_timestamp_no_conversion({timestamp_ms}):", file=sys.stderr)
-        print(f"  Target timezone: {tz_name} -> {user_timezone}", file=sys.stderr)
-        print(f"  Result: {dt_user_tz.strftime('%Y-%m-%d %H:%M:%S %Z')}", file=sys.stderr)
-    
-    # Format with timezone abbreviation (always UTC)
-    tz_str = "UTC"
-    
-    return dt_user_tz.strftime(f'%Y-%m-%d %H:%M:%S {tz_str}')
-
 def format_api_timestamp_corrected(timestamp_ms: int) -> str:
     """Format an API timestamp in UTC (no correction needed).
     
@@ -262,33 +220,6 @@ def format_api_timestamp_corrected(timestamp_ms: int) -> str:
     
     return dt_user_tz.strftime(f'%Y-%m-%d %H:%M:%S {tz_str}')
 
-def normalize_timezone(tz_name: str) -> str:
-    """Normalize timezone names and abbreviations to proper timezone identifiers."""
-    if not tz_name:
-        return 'UTC'
-    
-    tz_upper = tz_name.upper()
-    
-    # Handle common timezone abbreviations
-    abbreviation_map = {
-        'EDT': 'America/New_York',
-        'EST': 'America/New_York', 
-        'CDT': 'America/Chicago',
-        'CST': 'America/Chicago',
-        'MDT': 'America/Denver',
-        'MST': 'America/Denver',
-        'PDT': 'America/Los_Angeles',
-        'PST': 'America/Los_Angeles',
-        'UTC': 'UTC',
-        'GMT': 'UTC'
-    }
-    
-    if tz_upper in abbreviation_map:
-        return abbreviation_map[tz_upper]
-    
-    # Return as-is for proper timezone names
-    return tz_name
-
 @mcp_server.tool()
 def get_date_range_utc(date_input: str) -> str:
     """Get start and end time range in UTC for a specific date.
@@ -303,6 +234,10 @@ def get_date_range_utc(date_input: str) -> str:
     Returns:
         JSON with start_time (00:00:00 UTC) and end_time (23:59:59.999 UTC) 
         in both milliseconds and seconds timestamps, plus human-readable formats.
+    
+    ⚠️ USAGE: For queries like "yesterday's data", "data from Aug 21", etc.
+    First call get_current_datetime() to know today's date, then calculate the target date.
+    See resource 'time-tools://examples' for detailed examples.
     """
     import re
     

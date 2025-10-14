@@ -5,6 +5,7 @@ Factory module for creating InsightFinder API client instances from HTTP request
 from typing import Optional
 from fastapi import Request, HTTPException
 from .insightfinder_client import InsightFinderAPIClient, create_api_client
+from .jira_client import JiraAPIClient, create_jira_client, set_current_jira_client
 from ..config.settings import settings
 
 
@@ -50,6 +51,35 @@ def extract_insightfinder_credentials_from_headers(request: Request) -> dict:
     }
 
 
+def extract_jira_credentials_from_headers(request: Request) -> Optional[dict]:
+    """
+    Extract JIRA credentials from HTTP headers.
+    
+    Expected headers:
+    - X-JIRA-Server-URL: The JIRA server URL
+    - X-JIRA-Username: The JIRA username/email
+    - X-JIRA-API-Token: The JIRA API token
+    
+    Args:
+        request: FastAPI Request object
+        
+    Returns:
+        dict with JIRA credentials or None if not provided
+    """
+    server_url = request.headers.get("X-JIRA-Server-URL")
+    username = request.headers.get("X-JIRA-Username")
+    api_token = request.headers.get("X-JIRA-API-Token")
+    
+    if not all([server_url, username, api_token]):
+        return None
+    
+    return {
+        "server_url": server_url,
+        "username": username,
+        "api_token": api_token
+    }
+
+
 def create_api_client_from_request(request: Request) -> InsightFinderAPIClient:
     """
     Create an InsightFinder API client from HTTP request headers.
@@ -78,6 +108,14 @@ def set_request_context(request: Request, api_client: InsightFinderAPIClient):
         "request": request,
         "api_client": api_client
     }
+    
+    # Also try to create and set JIRA client if credentials are provided
+    jira_credentials = extract_jira_credentials_from_headers(request)
+    if jira_credentials:
+        jira_client = create_jira_client(**jira_credentials)
+        set_current_jira_client(jira_client)
+    else:
+        set_current_jira_client(None)
 
 def get_current_api_client() -> Optional[InsightFinderAPIClient]:
     """Get the API client for the current request context."""

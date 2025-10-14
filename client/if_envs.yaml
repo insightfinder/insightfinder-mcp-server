@@ -6,6 +6,10 @@ environments:
        license_key: stg_key1
      - user_name: stg_user2
        license_key: stg_key2
+   jira:
+     server_url: https://insightfinders.atlassian.net
+     username: if_jira_user
+     api_token: if_jira_token
  - name: prod
    api_url: https://app.insightfinder.com
    accounts:
@@ -13,3 +17,7 @@ environments:
        license_key: prod_key1
      - user_name: prod_user2
        license_key: prod_key2
+   jira:
+     server_url: https://insightfinders.atlassian.net
+     username: if_jira_user
+     api_token: if_jira_token
