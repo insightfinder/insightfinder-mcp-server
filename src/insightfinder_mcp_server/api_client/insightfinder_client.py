@@ -365,6 +365,165 @@ class InsightFinderAPIClient:
                 logger.error(f"Unexpected error: {str(e)}")
                 return {"status": "error", "message": "Internal error"}
 
+    async def get_metric_data(
+        self,
+        project_name: str,
+        instance_name: str,
+        metric_list: List[str],
+        start_time_ms: int,
+        end_time_ms: int
+    ) -> Dict[str, Any]:
+        """
+        Fetch metric time-series data for specified metrics and instance.
+        
+        Args:
+            project_name: Name of the project to query
+            instance_name: Name of the instance/host to query
+            metric_list: List of metric names to fetch
+            start_time_ms: Start timestamp in milliseconds
+            end_time_ms: End timestamp in milliseconds
+            
+        Returns:
+            A dictionary containing the API response with metric data
+        """
+        api_path = "/api/v1/metricdataquery-external"
+        url = f"{self.base_url}{api_path}"
+        
+        # Format metric list as JSON array string for URL parameter
+        metric_list_json = json.dumps(metric_list)
+        
+        params = {
+            "customerName": self.user_name,
+            "projectName": project_name,
+            "instanceName": instance_name,
+            "metricList": metric_list_json,
+            "startTime": start_time_ms,
+            "endTime": end_time_ms
+        }
+        
+        logger.info(f"Fetching metric data for project={project_name}, instance={instance_name}, "
+                   f"metrics={metric_list}")
+        
+        # Debug: Display human-readable time range
+        start_time_readable = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        end_time_readable = datetime.fromtimestamp(end_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        print(f"DEBUG: Metric data time range - Start: {start_time_readable}, End: {end_time_readable}")
+        
+        # Basic input validation
+        if not project_name or not instance_name:
+            return {"status": "error", "message": "project_name and instance_name are required"}
+        
+        if not metric_list or len(metric_list) == 0:
+            return {"status": "error", "message": "metric_list must contain at least one metric"}
+        
+        if end_time_ms - start_time_ms > 365 * 24 * 60 * 60 * 1000:  # Max 1 year
+            return {"status": "error", "message": "Time range too large (max 1 year)"}
+        
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:  # Longer timeout for potentially large data
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=self.headers
+                )
+                response.raise_for_status()
+                
+                # Check response size
+                content_length = response.headers.get('content-length')
+                if content_length and int(content_length) > 50 * 1024 * 1024:  # 50MB limit
+                    return {"status": "error", "message": "Response too large (>50MB)"}
+                
+                # Parse JSON
+                try:
+                    raw_data = response.json()
+                except (json.JSONDecodeError, ValueError) as json_err:
+                    response_text = response.text[:200] if response.text else "Empty response"
+                    logger.error(f"JSON parse error for metric data: {json_err}. Response: {response_text}")
+                    return {"status": "error", "message": f"Invalid JSON response: {response_text}"}
+                
+                # Validate response structure
+                if not isinstance(raw_data, list):
+                    return {"status": "error", "message": "Unexpected response format (expected list)"}
+                
+                return {
+                    "status": "success",
+                    "data": raw_data,
+                    "total_metrics": len(raw_data)
+                }
+                
+        except httpx.HTTPStatusError as e:
+            logger.error(f"API error {e.response.status_code} for metric data query")
+            return {"status": "error", "message": f"API request failed with status {e.response.status_code}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error for metric data query: {str(e)}")
+            return {"status": "error", "message": "Network error"}
+        except Exception as e:
+            logger.error(f"Unexpected error fetching metric data: {str(e)}")
+            return {"status": "error", "message": f"Internal error: {str(e)}"}
+
+    async def get_metric_metadata(
+        self,
+        project_name: str
+    ) -> Dict[str, Any]:
+        """
+        Fetch available metrics metadata for a project.
+        
+        Args:
+            project_name: Name of the project to query
+            
+        Returns:
+            A dictionary containing the API response with available metric list
+        """
+        api_path = "/api/v1/metricmetadata-external"
+        url = f"{self.base_url}{api_path}"
+        
+        params = {
+            "customerName": self.user_name,
+            "projectName": project_name
+        }
+        
+        logger.info(f"Fetching metric metadata for project={project_name}")
+        
+        # Basic input validation
+        if not project_name:
+            return {"status": "error", "message": "project_name is required"}
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=self.headers
+                )
+                response.raise_for_status()
+                
+                # Parse JSON
+                try:
+                    raw_data = response.json()
+                except (json.JSONDecodeError, ValueError) as json_err:
+                    response_text = response.text[:200] if response.text else "Empty response"
+                    logger.error(f"JSON parse error for metric metadata: {json_err}. Response: {response_text}")
+                    return {"status": "error", "message": f"Invalid JSON response: {response_text}"}
+                
+                # Validate response structure
+                if not isinstance(raw_data, dict):
+                    return {"status": "error", "message": "Unexpected response format (expected dict)"}
+                
+                return {
+                    "status": "success",
+                    "data": raw_data
+                }
+                
+        except httpx.HTTPStatusError as e:
+            logger.error(f"API error {e.response.status_code} for metric metadata query")
+            return {"status": "error", "message": f"API request failed with status {e.response.status_code}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error for metric metadata query: {str(e)}")
+            return {"status": "error", "message": "Network error"}
+        except Exception as e:
+            logger.error(f"Unexpected error fetching metric metadata: {str(e)}")
+            return {"status": "error", "message": f"Internal error: {str(e)}"}
+
     async def create_jira_ticket(
         self,
         customer_name: str,
