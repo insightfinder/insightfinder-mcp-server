@@ -365,6 +365,58 @@ class InsightFinderAPIClient:
                 logger.error(f"Unexpected error: {str(e)}")
                 return {"status": "error", "message": "Internal error"}
 
+    async def get_system_framework(self) -> Dict[str, Any]:
+        """
+        Get the complete system framework data including all owned and shared systems.
+        
+        Returns:
+            A dictionary containing:
+            - status: "success" or "error"
+            - ownSystemArr: Array of owned system JSON strings
+            - shareSystemArr: Array of shared system JSON strings
+        """
+        api_path = "/api/external/v1/systemframework"
+        url = f"{self.base_url}{api_path}"
+        
+        params = {
+            "customerName": self.user_name,
+            "needDetail": "false",
+            "tzOffset": "-18000000"  # Default timezone offset
+        }
+        
+        # Note: This API uses X-API-Key instead of X-License-Key
+        framework_headers = {
+            "X-User-Name": self.user_name,
+            "X-API-Key": self.license_key
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=framework_headers
+                )
+                response.raise_for_status()
+                
+                data = response.json()
+                
+                return {
+                    "status": "success",
+                    "ownSystemArr": data.get("ownSystemArr", []),
+                    "shareSystemArr": data.get("shareSystemArr", [])
+                }
+                
+        except httpx.HTTPStatusError as e:
+            logger.error(f"API error {e.response.status_code} when fetching system framework")
+            return {"status": "error", "message": f"API request failed with status {e.response.status_code}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error when fetching system framework: {str(e)}")
+            return {"status": "error", "message": "Network error"}
+        except Exception as e:
+            logger.error(f"Unexpected error fetching system framework: {str(e)}")
+            return {"status": "error", "message": f"Internal error: {str(e)}"}
+
     async def get_customer_name_for_project(
         self,
         project_name: str
