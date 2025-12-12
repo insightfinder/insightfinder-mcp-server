@@ -523,6 +523,11 @@ class InsightFinderAPIClient:
             return {"status": "error", "message": "Time range too large (max 1 year)"}
         
         try:
+            # Build the full URL with query parameters
+            from urllib.parse import urlencode
+            query_string = urlencode(params)
+            full_url = f"{url}?{query_string}"
+            
             async with httpx.AsyncClient(timeout=60.0) as client:  # Longer timeout for potentially large data
                 response = await client.get(
                     url,
@@ -551,7 +556,8 @@ class InsightFinderAPIClient:
                 return {
                     "status": "success",
                     "data": raw_data,
-                    "total_metrics": len(raw_data)
+                    "total_metrics": len(raw_data),
+                    "url": full_url
                 }
                 
         except httpx.HTTPStatusError as e:

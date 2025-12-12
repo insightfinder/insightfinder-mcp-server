@@ -31,30 +31,20 @@ async def get_metric_data(
     instance_name: str,
     metric_list: List[str],
     start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
-    sampling_interval: Optional[int] = None
+    end_time_ms: Optional[int] = None
 ) -> Dict[str, Any]:
     """
-    Fetch metric line chart data for specified metrics and instance.
+    Get the API URL for fetching metric line chart data for specified metrics and instance.
     
-    This tool retrieves time-series metric data points for visualization and analysis.
-    You can query multiple metrics at once for a specific instance within a project.
-    The data includes timestamps and metric values for creating line charts and trend analysis.
+    This tool validates the request by making an API call to InsightFinder, then returns 
+    the API URL that users can click to directly access the JSON metric data in their browser.
     
     **When to use this tool:**
     - When user wants to see metric trends over time
+    - To get a direct link to metric data JSON
     - To visualize metric performance and patterns
     - To analyze historical metric values for a specific instance
     - To compare multiple metrics side-by-side
-    
-    **Sampling:** 
-    By default, all data points are returned. For large time ranges, the response can be 
-    very long. Use the sampling_interval parameter to reduce data points:
-    - sampling_interval=2: Returns every 2nd data point
-    - sampling_interval=5: Returns every 5th data point
-    - sampling_interval=10: Returns every 10th data point
-    
-    Always confirm with the user before applying sampling, as it reduces granularity.
     
     Args:
         project_name: Name of the project to query (required)
@@ -62,35 +52,28 @@ async def get_metric_data(
         metric_list: List of metric names to fetch data for (e.g., ["Availability", "CPU", "Memory"])
         start_time_ms: Start timestamp in milliseconds (13-digit)
         end_time_ms: End timestamp in milliseconds (13-digit)
-        sampling_interval: Sample every Nth data point to reduce response size (optional, default: 1 = all points)
         
     Returns:
         A dictionary containing:
         - status: "success" or "error"
-        - data: List of metric data objects, each containing:
-            - metricName: Name of the metric
-            - metricData: List of {timestamp, metricValue} data points
-            - dataPointCount: Number of data points returned
-            - samplingApplied: Whether sampling was applied
-            - originalDataPointCount: Original count before sampling (if sampling applied)
+        - url: Direct API URL to access the metric data JSON (click to view in browser)
         - metadata: Query parameters and time range information
         
     Example:
-        # Get CPU and Memory metrics for the last 24 hours
+        # Get CPU and Memory metrics URL for the last 24 hours
         result = await get_metric_data(
             project_name="my-project",
             instance_name="server-01",
             metric_list=["CPU", "Memory"]
         )
         
-        # Get Availability metric with sampling for last 7 days
+        # Get Availability metric URL for a specific time range
         result = await get_metric_data(
             project_name="my-project",
             instance_name="server-01",
             metric_list=["Availability"],
             start_time_ms=start_timestamp,
-            end_time_ms=end_timestamp,
-            sampling_interval=5  # Get every 5th data point
+            end_time_ms=end_timestamp
         )
     """
     try:
@@ -126,21 +109,10 @@ async def get_metric_data(
                 "message": "metric_list must contain at least one metric name"
             }
         
-        # Validate sampling_interval
-        if sampling_interval is not None and sampling_interval < 1:
-            return {
-                "status": "error",
-                "message": "sampling_interval must be a positive integer (1 or greater)"
-            }
+        logger.info(f"Fetching metric data URL for project={project_name}, instance={instance_name}, "
+                   f"metrics={metric_list}")
         
-        # Set default sampling to 1 (all points)
-        if sampling_interval is None:
-            sampling_interval = 1
-        
-        logger.info(f"Fetching metric data for project={project_name}, instance={instance_name}, "
-                   f"metrics={metric_list}, sampling={sampling_interval}")
-        
-        # Fetch metric data using the API client
+        # Fetch metric data using the API client to validate the request works
         result = await api_client.get_metric_data(
             project_name=project_name,
             instance_name=instance_name,
@@ -152,30 +124,13 @@ async def get_metric_data(
         if result.get("status") == "error":
             return result
         
-        # Process and structure the response
-        raw_data = result.get("data", [])
-        processed_metrics = []
-        
-        for metric_obj in raw_data:
-            metric_name = metric_obj.get("metricName", "Unknown")
-            metric_data = metric_obj.get("metricData", [])
-            
-            # Apply sampling if requested
-            original_count = len(metric_data)
-            sampled_data = metric_data[::sampling_interval] if sampling_interval > 1 else metric_data
-            
-            processed_metric = {
-                "metricName": metric_name,
-                "metricData": sampled_data,
-                "dataPointCount": len(sampled_data),
-                "samplingApplied": sampling_interval > 1,
+        # Extract the URL from the result
+        api_url = result.get("url")
+        if not api_url:
+            return {
+                "status": "error",
+                "message": "Failed to generate API URL"
             }
-            
-            if sampling_interval > 1:
-                processed_metric["originalDataPointCount"] = original_count
-                processed_metric["samplingInterval"] = sampling_interval
-            
-            processed_metrics.append(processed_metric)
         
         # Format timestamps for display
         start_time_formatted = format_timestamp_in_user_timezone(start_time_ms)
@@ -183,28 +138,26 @@ async def get_metric_data(
         
         return {
             "status": "success",
-            "data": processed_metrics,
+            "url": api_url,
+            "message": "Click the URL to view the metric data JSON in your browser",
             "metadata": {
                 "projectName": project_name,
                 "instanceName": instance_name,
                 "requestedMetrics": metric_list,
-                "metricsReturned": len(processed_metrics),
                 "timeRange": {
                     "startTime": start_time_ms,
                     "endTime": end_time_ms,
                     "startTimeFormatted": start_time_formatted,
                     "endTimeFormatted": end_time_formatted
-                },
-                "samplingApplied": sampling_interval > 1,
-                "samplingInterval": sampling_interval if sampling_interval > 1 else None
+                }
             }
         }
         
     except Exception as e:
-        logger.error(f"Error fetching metric data: {str(e)}", exc_info=True)
+        logger.error(f"Error fetching metric data URL: {str(e)}", exc_info=True)
         return {
             "status": "error",
-            "message": f"Failed to fetch metric data: {str(e)}"
+            "message": f"Failed to fetch metric data URL: {str(e)}"
         }
 
 
