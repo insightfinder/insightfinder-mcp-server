@@ -365,6 +365,336 @@ class InsightFinderAPIClient:
                 logger.error(f"Unexpected error: {str(e)}")
                 return {"status": "error", "message": "Internal error"}
 
+    async def get_system_framework(self) -> Dict[str, Any]:
+        """
+        Get the complete system framework data including all owned and shared systems.
+        
+        Returns:
+            A dictionary containing:
+            - status: "success" or "error"
+            - ownSystemArr: Array of owned system JSON strings
+            - shareSystemArr: Array of shared system JSON strings
+        """
+        api_path = "/api/external/v1/systemframework"
+        url = f"{self.base_url}{api_path}"
+        
+        params = {
+            "customerName": self.user_name,
+            "needDetail": "false",
+            "tzOffset": "-18000000"  # Default timezone offset
+        }
+        
+        # Note: This API uses X-API-Key instead of X-License-Key
+        framework_headers = {
+            "X-User-Name": self.user_name,
+            "X-API-Key": self.license_key
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=framework_headers
+                )
+                response.raise_for_status()
+                
+                data = response.json()
+                
+                return {
+                    "status": "success",
+                    "ownSystemArr": data.get("ownSystemArr", []),
+                    "shareSystemArr": data.get("shareSystemArr", [])
+                }
+                
+        except httpx.HTTPStatusError as e:
+            logger.error(f"API error {e.response.status_code} when fetching system framework")
+            return {"status": "error", "message": f"API request failed with status {e.response.status_code}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error when fetching system framework: {str(e)}")
+            return {"status": "error", "message": "Network error"}
+        except Exception as e:
+            logger.error(f"Unexpected error fetching system framework: {str(e)}")
+            return {"status": "error", "message": f"Internal error: {str(e)}"}
+
+    async def get_customer_name_for_project(
+        self,
+        project_name: str
+    ) -> Optional[str]:
+        """
+        Get the customer/user name that owns a specific project by querying the system framework.
+        
+        This is necessary because projects can be owned by different users or shared across users.
+        The method searches through both owned and shared systems to find the project and extract
+        the correct userName to use as customerName in other API calls.
+        
+        Args:
+            project_name: Name of the project to find the owner for
+            
+        Returns:
+            The userName (customer name) that owns the project, or None if not found
+        """
+        api_path = "/api/external/v1/systemframework"
+        url = f"{self.base_url}{api_path}"
+        
+        params = {
+            "customerName": self.user_name,
+            "needDetail": "false",
+            "tzOffset": "-18000000"  # Default timezone offset
+        }
+        
+        # Note: This API uses X-API-Key instead of X-License-Key
+        framework_headers = {
+            "X-User-Name": self.user_name,
+            "X-API-Key": self.license_key
+        }
+        
+        print(f"DEBUG: Fetching system framework for project '{project_name}'")
+        print(f"DEBUG: System framework URL: {url}")
+        print(f"DEBUG: System framework params: {params}")
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=framework_headers
+                )
+                response.raise_for_status()
+                
+                data = response.json()
+                
+                # Search through owned systems
+                for system_json in data.get("ownSystemArr", []):
+                    try:
+                        system_data = json.loads(system_json)
+                        project_list_str = system_data.get("projectDetailsList", "[]")
+                        project_list = json.loads(project_list_str)
+                        
+                        # Check each project in this system
+                        for project in project_list:
+                            if project.get("projectName") == project_name:
+                                customer_name = project.get("userName")
+                                logger.info(f"Found project '{project_name}' owned by customer '{customer_name}'")
+                                return customer_name
+                    except (json.JSONDecodeError, KeyError) as e:
+                        logger.warning(f"Error parsing owned system data: {e}")
+                        continue
+                
+                # Search through shared systems
+                for system_json in data.get("shareSystemArr", []):
+                    try:
+                        system_data = json.loads(system_json)
+                        project_list_str = system_data.get("projectDetailsList", "[]")
+                        project_list = json.loads(project_list_str)
+                        
+                        # Check each project in this system
+                        for project in project_list:
+                            if project.get("projectName") == project_name:
+                                customer_name = project.get("userName")
+                                logger.info(f"Found project '{project_name}' shared from customer '{customer_name}'")
+                                return customer_name
+                    except (json.JSONDecodeError, KeyError) as e:
+                        logger.warning(f"Error parsing shared system data: {e}")
+                        continue
+                
+                logger.warning(f"Project '{project_name}' not found in system framework")
+                return None
+                
+        except httpx.HTTPStatusError as e:
+            logger.error(f"API error {e.response.status_code} when fetching system framework")
+            return None
+        except httpx.RequestError as e:
+            logger.error(f"Network error when fetching system framework: {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error fetching system framework: {str(e)}")
+            return None
+
+    async def get_metric_data(
+        self,
+        project_name: str,
+        instance_name: str,
+        metric_list: List[str],
+        start_time_ms: int,
+        end_time_ms: int
+    ) -> Dict[str, Any]:
+        """
+        Fetch metric time-series data for specified metrics and instance.
+        
+        Args:
+            project_name: Name of the project to query
+            instance_name: Name of the instance/host to query
+            metric_list: List of metric names to fetch
+            start_time_ms: Start timestamp in milliseconds
+            end_time_ms: End timestamp in milliseconds
+            
+        Returns:
+            A dictionary containing the API response with metric data
+        """
+        api_path = "/api/v1/metricdataquery-external"
+        url = f"{self.base_url}{api_path}"
+        
+        # Get the correct customer name for this project
+        customer_name = await self.get_customer_name_for_project(project_name)
+        if not customer_name:
+            logger.warning(f"Could not find owner for project '{project_name}', falling back to self.user_name")
+            customer_name = self.user_name
+        
+        # Format metric list as JSON array string for URL parameter
+        metric_list_json = json.dumps(metric_list)
+        
+        params = {
+            "customerName": customer_name,
+            "projectName": project_name,
+            "instanceName": instance_name,
+            "metricList": metric_list_json,
+            "startTime": start_time_ms,
+            "endTime": end_time_ms
+        }
+        
+        logger.info(f"Fetching metric data for project={project_name}, instance={instance_name}, "
+                   f"metrics={metric_list}, customer={customer_name}")
+        
+        # Debug: Display human-readable time range
+        start_time_readable = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        end_time_readable = datetime.fromtimestamp(end_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        print(f"DEBUG: Metric data time range - Start: {start_time_readable}, End: {end_time_readable}")
+        # print(f"DEBUG: Metric data customer: {customer_name} (logged-in user: {self.user_name})")
+        # print(f"DEBUG: Metric data API URL: {url}")
+        # print(f"DEBUG: Metric data params: {params}")
+        
+        # Basic input validation
+        if not project_name or not instance_name:
+            return {"status": "error", "message": "project_name and instance_name are required"}
+        
+        if not metric_list or len(metric_list) == 0:
+            return {"status": "error", "message": "metric_list must contain at least one metric"}
+        
+        if end_time_ms - start_time_ms > 365 * 24 * 60 * 60 * 1000:  # Max 1 year
+            return {"status": "error", "message": "Time range too large (max 1 year)"}
+        
+        try:
+            # Build the full URL with query parameters
+            from urllib.parse import urlencode
+            query_string = urlencode(params)
+            full_url = f"{url}?{query_string}"
+            
+            async with httpx.AsyncClient(timeout=60.0) as client:  # Longer timeout for potentially large data
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=self.headers
+                )
+                response.raise_for_status()
+                
+                # Check response size
+                content_length = response.headers.get('content-length')
+                if content_length and int(content_length) > 50 * 1024 * 1024:  # 50MB limit
+                    return {"status": "error", "message": "Response too large (>50MB)"}
+                
+                # Parse JSON
+                try:
+                    raw_data = response.json()
+                except (json.JSONDecodeError, ValueError) as json_err:
+                    response_text = response.text[:200] if response.text else "Empty response"
+                    logger.error(f"JSON parse error for metric data: {json_err}. Response: {response_text}")
+                    return {"status": "error", "message": f"Invalid JSON response: {response_text}"}
+                
+                # Validate response structure
+                if not isinstance(raw_data, list):
+                    return {"status": "error", "message": "Unexpected response format (expected list)"}
+                
+                return {
+                    "status": "success",
+                    "data": raw_data,
+                    "total_metrics": len(raw_data),
+                    "url": full_url
+                }
+                
+        except httpx.HTTPStatusError as e:
+            logger.error(f"API error {e.response.status_code} for metric data query")
+            return {"status": "error", "message": f"API request failed with status {e.response.status_code}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error for metric data query: {str(e)}")
+            return {"status": "error", "message": "Network error"}
+        except Exception as e:
+            logger.error(f"Unexpected error fetching metric data: {str(e)}")
+            return {"status": "error", "message": f"Internal error: {str(e)}"}
+
+    async def get_metric_metadata(
+        self,
+        project_name: str
+    ) -> Dict[str, Any]:
+        """
+        Fetch available metrics metadata for a project.
+        
+        Args:
+            project_name: Name of the project to query
+            
+        Returns:
+            A dictionary containing the API response with available metric list
+        """
+        api_path = "/api/v1/metricmetadata-external"
+        url = f"{self.base_url}{api_path}"
+        
+        # Get the correct customer name for this project
+        customer_name = await self.get_customer_name_for_project(project_name)
+        if not customer_name:
+            logger.warning(f"Could not find owner for project '{project_name}', falling back to self.user_name")
+            customer_name = self.user_name
+        
+        params = {
+            "customerName": customer_name,
+            "projectName": project_name
+        }
+        
+        logger.info(f"Fetching metric metadata for project={project_name}, customer={customer_name}")
+        
+        # print(f"DEBUG: Metric metadata customer: {customer_name} (logged-in user: {self.user_name})")
+        # print(f"DEBUG: Metric metadata API URL: {url}")
+        # print(f"DEBUG: Metric metadata params: {params}")
+        
+        # Basic input validation
+        if not project_name:
+            return {"status": "error", "message": "project_name is required"}
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=self.headers
+                )
+                response.raise_for_status()
+                
+                # Parse JSON
+                try:
+                    raw_data = response.json()
+                except (json.JSONDecodeError, ValueError) as json_err:
+                    response_text = response.text[:200] if response.text else "Empty response"
+                    logger.error(f"JSON parse error for metric metadata: {json_err}. Response: {response_text}")
+                    return {"status": "error", "message": f"Invalid JSON response: {response_text}"}
+                
+                # Validate response structure
+                if not isinstance(raw_data, dict):
+                    return {"status": "error", "message": "Unexpected response format (expected dict)"}
+                
+                return {
+                    "status": "success",
+                    "data": raw_data
+                }
+                
+        except httpx.HTTPStatusError as e:
+            logger.error(f"API error {e.response.status_code} for metric metadata query")
+            return {"status": "error", "message": f"API request failed with status {e.response.status_code}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error for metric metadata query: {str(e)}")
+            return {"status": "error", "message": "Network error"}
+        except Exception as e:
+            logger.error(f"Unexpected error fetching metric metadata: {str(e)}")
+            return {"status": "error", "message": f"Internal error: {str(e)}"}
+
     async def create_jira_ticket(
         self,
         customer_name: str,
