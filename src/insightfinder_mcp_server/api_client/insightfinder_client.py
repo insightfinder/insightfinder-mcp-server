@@ -365,6 +365,100 @@ class InsightFinderAPIClient:
                 logger.error(f"Unexpected error: {str(e)}")
                 return {"status": "error", "message": "Internal error"}
 
+    async def get_customer_name_for_project(
+        self,
+        project_name: str
+    ) -> Optional[str]:
+        """
+        Get the customer/user name that owns a specific project by querying the system framework.
+        
+        This is necessary because projects can be owned by different users or shared across users.
+        The method searches through both owned and shared systems to find the project and extract
+        the correct userName to use as customerName in other API calls.
+        
+        Args:
+            project_name: Name of the project to find the owner for
+            
+        Returns:
+            The userName (customer name) that owns the project, or None if not found
+        """
+        api_path = "/api/external/v1/systemframework"
+        url = f"{self.base_url}{api_path}"
+        
+        params = {
+            "customerName": self.user_name,
+            "needDetail": "false",
+            "tzOffset": "-18000000"  # Default timezone offset
+        }
+        
+        # Note: This API uses X-API-Key instead of X-License-Key
+        framework_headers = {
+            "X-User-Name": self.user_name,
+            "X-API-Key": self.license_key
+        }
+        
+        print(f"DEBUG: Fetching system framework for project '{project_name}'")
+        print(f"DEBUG: System framework URL: {url}")
+        print(f"DEBUG: System framework params: {params}")
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=framework_headers
+                )
+                response.raise_for_status()
+                
+                data = response.json()
+                
+                # Search through owned systems
+                for system_json in data.get("ownSystemArr", []):
+                    try:
+                        system_data = json.loads(system_json)
+                        project_list_str = system_data.get("projectDetailsList", "[]")
+                        project_list = json.loads(project_list_str)
+                        
+                        # Check each project in this system
+                        for project in project_list:
+                            if project.get("projectName") == project_name:
+                                customer_name = project.get("userName")
+                                logger.info(f"Found project '{project_name}' owned by customer '{customer_name}'")
+                                return customer_name
+                    except (json.JSONDecodeError, KeyError) as e:
+                        logger.warning(f"Error parsing owned system data: {e}")
+                        continue
+                
+                # Search through shared systems
+                for system_json in data.get("shareSystemArr", []):
+                    try:
+                        system_data = json.loads(system_json)
+                        project_list_str = system_data.get("projectDetailsList", "[]")
+                        project_list = json.loads(project_list_str)
+                        
+                        # Check each project in this system
+                        for project in project_list:
+                            if project.get("projectName") == project_name:
+                                customer_name = project.get("userName")
+                                logger.info(f"Found project '{project_name}' shared from customer '{customer_name}'")
+                                return customer_name
+                    except (json.JSONDecodeError, KeyError) as e:
+                        logger.warning(f"Error parsing shared system data: {e}")
+                        continue
+                
+                logger.warning(f"Project '{project_name}' not found in system framework")
+                return None
+                
+        except httpx.HTTPStatusError as e:
+            logger.error(f"API error {e.response.status_code} when fetching system framework")
+            return None
+        except httpx.RequestError as e:
+            logger.error(f"Network error when fetching system framework: {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error fetching system framework: {str(e)}")
+            return None
+
     async def get_metric_data(
         self,
         project_name: str,
@@ -389,11 +483,17 @@ class InsightFinderAPIClient:
         api_path = "/api/v1/metricdataquery-external"
         url = f"{self.base_url}{api_path}"
         
+        # Get the correct customer name for this project
+        customer_name = await self.get_customer_name_for_project(project_name)
+        if not customer_name:
+            logger.warning(f"Could not find owner for project '{project_name}', falling back to self.user_name")
+            customer_name = self.user_name
+        
         # Format metric list as JSON array string for URL parameter
         metric_list_json = json.dumps(metric_list)
         
         params = {
-            "customerName": self.user_name,
+            "customerName": customer_name,
             "projectName": project_name,
             "instanceName": instance_name,
             "metricList": metric_list_json,
@@ -402,12 +502,15 @@ class InsightFinderAPIClient:
         }
         
         logger.info(f"Fetching metric data for project={project_name}, instance={instance_name}, "
-                   f"metrics={metric_list}")
+                   f"metrics={metric_list}, customer={customer_name}")
         
         # Debug: Display human-readable time range
         start_time_readable = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
         end_time_readable = datetime.fromtimestamp(end_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
         print(f"DEBUG: Metric data time range - Start: {start_time_readable}, End: {end_time_readable}")
+        # print(f"DEBUG: Metric data customer: {customer_name} (logged-in user: {self.user_name})")
+        # print(f"DEBUG: Metric data API URL: {url}")
+        # print(f"DEBUG: Metric data params: {params}")
         
         # Basic input validation
         if not project_name or not instance_name:
@@ -477,12 +580,22 @@ class InsightFinderAPIClient:
         api_path = "/api/v1/metricmetadata-external"
         url = f"{self.base_url}{api_path}"
         
+        # Get the correct customer name for this project
+        customer_name = await self.get_customer_name_for_project(project_name)
+        if not customer_name:
+            logger.warning(f"Could not find owner for project '{project_name}', falling back to self.user_name")
+            customer_name = self.user_name
+        
         params = {
-            "customerName": self.user_name,
+            "customerName": customer_name,
             "projectName": project_name
         }
         
-        logger.info(f"Fetching metric metadata for project={project_name}")
+        logger.info(f"Fetching metric metadata for project={project_name}, customer={customer_name}")
+        
+        # print(f"DEBUG: Metric metadata customer: {customer_name} (logged-in user: {self.user_name})")
+        # print(f"DEBUG: Metric metadata API URL: {url}")
+        # print(f"DEBUG: Metric metadata params: {params}")
         
         # Basic input validation
         if not project_name:
