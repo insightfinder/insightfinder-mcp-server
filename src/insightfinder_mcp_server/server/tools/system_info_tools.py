@@ -151,14 +151,19 @@ def find_best_match(target_name: str, available_systems: List[Dict[str, Any]], t
 
 @mcp_server.tool()
 async def list_all_systems(
-    include_shared: bool = True
+    include_shared: bool = True,
+    page: int = 1,
+    page_size: int = 20
 ) -> Dict[str, Any]:
     """
-    List all available InsightFinder systems with their basic information.
+    List all available InsightFinder systems with their basic information (paginated).
     
     This tool retrieves a list of all systems accessible to the current user,
     including both owned systems and optionally shared systems. Each system
     entry includes the system name, display name, owner, and project count.
+    
+    **Pagination**: Results are returned in pages to avoid overwhelming responses.
+    Default page size is 20 systems. Use the page parameter to navigate through results.
     
     **When to use this tool:**
     - When user asks "what systems do I have?"
@@ -168,20 +173,25 @@ async def list_all_systems(
     
     Args:
         include_shared: Whether to include systems shared with the user (default: True)
+        page: Page number to retrieve (1-indexed, default: 1)
+        page_size: Number of systems per page (default: 20, max: 100)
         
     Returns:
         A dictionary containing:
         - status: "success" or "error"
-        - ownedSystems: List of systems owned by the user
-        - sharedSystems: List of systems shared with the user (if include_shared=True)
-        - totalCount: Total number of systems
+        - ownedSystems: List of systems owned by the user (paginated)
+        - sharedSystems: List of systems shared with the user (paginated, if include_shared=True)
+        - pagination: Pagination information (currentPage, pageSize, totalPages, totalCount, hasMore)
         
     Example:
-        # List all systems
+        # List first page of systems
         result = await list_all_systems()
         
-        # List only owned systems
-        result = await list_all_systems(include_shared=False)
+        # List second page
+        result = await list_all_systems(page=2)
+        
+        # List only owned systems with custom page size
+        result = await list_all_systems(include_shared=False, page_size=10)
     """
     try:
         api_client = get_current_api_client()
@@ -191,7 +201,20 @@ async def list_all_systems(
                 "message": "No API client configured. Please configure your InsightFinder credentials."
             }
         
-        logger.info("Fetching system framework data")
+        # Validate pagination parameters
+        if page < 1:
+            return {
+                "status": "error",
+                "message": "Page number must be >= 1"
+            }
+        
+        if page_size < 1 or page_size > 100:
+            return {
+                "status": "error",
+                "message": "Page size must be between 1 and 100"
+            }
+        
+        logger.info(f"Fetching system framework data (page={page}, page_size={page_size})")
         
         # Fetch system framework data
         framework_data = await api_client.get_system_framework()
@@ -219,17 +242,61 @@ async def list_all_systems(
                     system_info['isShared'] = True
                     shared_systems.append(system_info)
         
+        # Combine and paginate
+        all_systems = owned_systems + (shared_systems if include_shared else [])
+        total_count = len(all_systems)
+        total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 1
+        
+        # Calculate pagination boundaries
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        
+        # Check if page is out of range
+        if start_idx >= total_count and total_count > 0:
+            return {
+                "status": "error",
+                "message": f"Page {page} is out of range. Total pages: {total_pages}",
+                "pagination": {
+                    "totalPages": total_pages,
+                    "totalCount": total_count
+                }
+            }
+        
+        # Get paginated slice
+        paginated_systems = all_systems[start_idx:end_idx]
+        
+        # Separate back into owned and shared for response
+        paginated_owned = [s for s in paginated_systems if not s['isShared']]
+        paginated_shared = [s for s in paginated_systems if s['isShared']]
+        
+        # Build pagination message
+        pagination_msg = f"Showing page {page} of {total_pages} ({len(paginated_systems)} systems on this page, {total_count} total systems)"
+        if page < total_pages:
+            pagination_msg += f". There are {total_pages - page} more page(s) available. Use page={page + 1} to see the next page."
+        
         result = {
             "status": "success",
-            "ownedSystems": owned_systems,
-            "ownedSystemsCount": len(owned_systems)
+            "message": pagination_msg,
+            "systems": paginated_systems,
+            "ownedSystems": paginated_owned,
+            "sharedSystems": paginated_shared if include_shared else [],
+            "pagination": {
+                "currentPage": page,
+                "pageSize": page_size,
+                "totalPages": total_pages,
+                "totalCount": total_count,
+                "itemsOnPage": len(paginated_systems),
+                "hasMore": page < total_pages,
+                "hasPrevious": page > 1,
+                "nextPage": page + 1 if page < total_pages else None,
+                "previousPage": page - 1 if page > 1 else None
+            },
+            "summary": {
+                "totalOwnedSystems": len(owned_systems),
+                "totalSharedSystems": len(shared_systems) if include_shared else 0,
+                "displayMessage": f"Total: {len(owned_systems)} owned systems, {len(shared_systems) if include_shared else 0} shared systems"
+            }
         }
-        
-        if include_shared:
-            result["sharedSystems"] = shared_systems
-            result["sharedSystemsCount"] = len(shared_systems)
-        
-        result["totalCount"] = len(owned_systems) + (len(shared_systems) if include_shared else 0)
         
         return result
         
@@ -242,13 +309,19 @@ async def list_all_systems(
 
 
 @mcp_server.tool()
-async def list_all_systems_and_projects() -> Dict[str, Any]:
+async def list_all_systems_and_projects(
+    page: int = 1,
+    page_size: int = 20
+) -> Dict[str, Any]:
     """
-    Get comprehensive information about all systems and their projects.
+    Get comprehensive information about all systems and their projects (paginated).
     
     This tool retrieves detailed information about all accessible systems,
     including all projects within each system. This provides a complete
     view of the InsightFinder hierarchy: systems -> projects.
+    
+    **Pagination**: Results are returned in pages to avoid overwhelming responses.
+    Default page size is 20 systems per page. Each system includes ALL its projects.
     
     **When to use this tool:**
     - When user asks for a complete overview of their InsightFinder setup
@@ -256,17 +329,25 @@ async def list_all_systems_and_projects() -> Dict[str, Any]:
     - To see which projects belong to which systems
     - When user needs detailed project information across all systems
     
+    Args:
+        page: Page number to retrieve (1-indexed, default: 1)
+        page_size: Number of systems per page (default: 20, max: 100)
+    
     Returns:
         A dictionary containing:
         - status: "success" or "error"
-        - systems: List of systems with their projects
+        - systems: List of systems with their projects (paginated)
+        - pagination: Pagination information
         - summary: Overall statistics (total systems, projects, owners)
         
     Example:
-        # Get all systems and projects
+        # Get first page of systems and projects
         result = await list_all_systems_and_projects()
         
-        # Response includes full hierarchy:
+        # Get second page
+        result = await list_all_systems_and_projects(page=2)
+        
+        # Response includes full hierarchy (paginated):
         {
             "status": "success",
             "systems": [
@@ -295,7 +376,20 @@ async def list_all_systems_and_projects() -> Dict[str, Any]:
                 "message": "No API client configured. Please configure your InsightFinder credentials."
             }
         
-        logger.info("Fetching complete system and project hierarchy")
+        # Validate pagination parameters
+        if page < 1:
+            return {
+                "status": "error",
+                "message": "Page number must be >= 1"
+            }
+        
+        if page_size < 1 or page_size > 100:
+            return {
+                "status": "error",
+                "message": "Page size must be between 1 and 100"
+            }
+        
+        logger.info(f"Fetching complete system and project hierarchy (page={page}, page_size={page_size})")
         
         # Fetch system framework data
         framework_data = await api_client.get_system_framework()
@@ -345,11 +439,54 @@ async def list_all_systems_and_projects() -> Dict[str, Any]:
                 total_projects += len(projects)
                 unique_owners.add(system_info['userName'])
         
+        # Apply pagination
+        total_count = len(all_systems)
+        total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 1
+        
+        # Calculate pagination boundaries
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        
+        # Check if page is out of range
+        if start_idx >= total_count and total_count > 0:
+            return {
+                "status": "error",
+                "message": f"Page {page} is out of range. Total pages: {total_pages}",
+                "pagination": {
+                    "totalPages": total_pages,
+                    "totalCount": total_count
+                }
+            }
+        
+        # Get paginated slice
+        paginated_systems = all_systems[start_idx:end_idx]
+        
+        # Calculate projects on current page
+        projects_on_page = sum(len(s['projects']) for s in paginated_systems)
+        
+        # Build pagination message
+        pagination_msg = f"Showing page {page} of {total_pages} ({len(paginated_systems)} systems with {projects_on_page} projects on this page, {total_count} total systems with {total_projects} total projects)"
+        if page < total_pages:
+            pagination_msg += f". There are {total_pages - page} more page(s) available. Use page={page + 1} to see the next page."
+        
         return {
             "status": "success",
-            "systems": all_systems,
+            "message": pagination_msg,
+            "systems": paginated_systems,
+            "pagination": {
+                "currentPage": page,
+                "pageSize": page_size,
+                "totalPages": total_pages,
+                "totalSystems": total_count,
+                "systemsOnPage": len(paginated_systems),
+                "projectsOnPage": projects_on_page,
+                "hasMore": page < total_pages,
+                "hasPrevious": page > 1,
+                "nextPage": page + 1 if page < total_pages else None,
+                "previousPage": page - 1 if page > 1 else None
+            },
             "summary": {
-                "totalSystems": len(all_systems),
+                "totalSystems": total_count,
                 "totalProjects": total_projects,
                 "uniqueOwners": len(unique_owners),
                 "ownersList": sorted(list(unique_owners))
@@ -367,14 +504,19 @@ async def list_all_systems_and_projects() -> Dict[str, Any]:
 @mcp_server.tool()
 async def get_projects_for_system(
     system_name: str,
-    use_fuzzy_match: bool = True
+    use_fuzzy_match: bool = True,
+    page: int = 1,
+    page_size: int = 20
 ) -> Dict[str, Any]:
     """
-    Get all projects within a specific system.
+    Get all projects within a specific system (paginated).
     
     This tool retrieves detailed information about all projects belonging to
     a specific system. It supports fuzzy matching to handle typos or case
     differences in the system name.
+    
+    **Pagination**: Projects are returned in pages to avoid overwhelming responses.
+    Default page size is 20 projects.
     
     **When to use this tool:**
     - When user asks "what projects are in system X?"
@@ -385,17 +527,23 @@ async def get_projects_for_system(
     Args:
         system_name: The system display name or system ID to query
         use_fuzzy_match: Enable fuzzy matching for system name (default: True)
+        page: Page number to retrieve (1-indexed, default: 1)
+        page_size: Number of projects per page (default: 20, max: 100)
         
     Returns:
         A dictionary containing:
         - status: "success" or "error"
         - systemInfo: Information about the matched system
-        - projects: List of projects in the system
+        - projects: List of projects in the system (paginated)
+        - pagination: Pagination information
         - matchInfo: Fuzzy match details (if fuzzy matching was used)
         
     Example:
         # Get projects for a system (with fuzzy matching)
         result = await get_projects_for_system(system_name="production system")
+        
+        # Get second page of projects
+        result = await get_projects_for_system(system_name="production system", page=2)
         
         # Exact match only
         result = await get_projects_for_system(
@@ -409,6 +557,19 @@ async def get_projects_for_system(
             return {
                 "status": "error",
                 "message": "No API client configured. Please configure your InsightFinder credentials."
+            }
+        
+        # Validate pagination parameters
+        if page < 1:
+            return {
+                "status": "error",
+                "message": "Page number must be >= 1"
+            }
+        
+        if page_size < 1 or page_size > 100:
+            return {
+                "status": "error",
+                "message": "Page size must be between 1 and 100"
             }
         
         logger.info(f"Fetching projects for system: {system_name}")
@@ -446,27 +607,22 @@ async def get_projects_for_system(
                 break
         
         # Try fuzzy match if exact match failed and fuzzy matching is enabled
+        match_info = {}
         if not matched_system and use_fuzzy_match:
             matched_system = find_best_match(system_name, all_systems)
-            
             if matched_system:
-                return {
-                    "status": "success",
-                    "systemInfo": {
-                        "systemDisplayName": matched_system['systemDisplayName'],
-                        "systemName": matched_system['systemName'],
-                        "userName": matched_system['userName'],
-                        "projectCount": len(matched_system['projects'])
-                    },
-                    "projects": matched_system['projects'],
-                    "matchInfo": {
-                        "searchedFor": system_name,
-                        "matchedTo": matched_system['systemDisplayName'],
-                        "matchScore": matched_system['matchScore'],
-                        "matchedField": matched_system['matchedField'],
-                        "fuzzyMatchUsed": True
-                    }
+                match_info = {
+                    "searchedFor": system_name,
+                    "matchedTo": matched_system['systemDisplayName'],
+                    "matchScore": matched_system['matchScore'],
+                    "matchedField": matched_system['matchedField'],
+                    "fuzzyMatchUsed": True
                 }
+        else:
+            match_info = {
+                "exactMatch": True,
+                "fuzzyMatchUsed": False
+            }
         
         if not matched_system:
             # System not found, provide suggestions
@@ -478,19 +634,56 @@ async def get_projects_for_system(
                 "hint": "Try using list_all_systems to see all available systems"
             }
         
+        # Apply pagination to projects
+        all_projects = matched_system['projects']
+        total_projects = len(all_projects)
+        total_pages = (total_projects + page_size - 1) // page_size if total_projects > 0 else 1
+        
+        # Calculate pagination boundaries
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        
+        # Check if page is out of range
+        if start_idx >= total_projects and total_projects > 0:
+            return {
+                "status": "error",
+                "message": f"Page {page} is out of range. Total pages: {total_pages}",
+                "pagination": {
+                    "totalPages": total_pages,
+                    "totalProjects": total_projects
+                }
+            }
+        
+        # Get paginated slice
+        paginated_projects = all_projects[start_idx:end_idx]
+        
+        # Build pagination message
+        pagination_msg = f"Showing page {page} of {total_pages} ({len(paginated_projects)} projects on this page, {total_projects} total projects in system '{matched_system['systemDisplayName']}')"
+        if page < total_pages:
+            pagination_msg += f". There are {total_pages - page} more page(s) available. Use page={page + 1} to see the next page."
+        
         return {
             "status": "success",
+            "message": pagination_msg,
             "systemInfo": {
                 "systemDisplayName": matched_system['systemDisplayName'],
                 "systemName": matched_system['systemName'],
                 "userName": matched_system['userName'],
-                "projectCount": len(matched_system['projects'])
+                "projectCount": total_projects
             },
-            "projects": matched_system['projects'],
-            "matchInfo": {
-                "exactMatch": True,
-                "fuzzyMatchUsed": False
-            }
+            "projects": paginated_projects,
+            "pagination": {
+                "currentPage": page,
+                "pageSize": page_size,
+                "totalPages": total_pages,
+                "totalProjects": total_projects,
+                "projectsOnPage": len(paginated_projects),
+                "hasMore": page < total_pages,
+                "hasPrevious": page > 1,
+                "nextPage": page + 1 if page < total_pages else None,
+                "previousPage": page - 1 if page > 1 else None
+            },
+            "matchInfo": match_info
         }
         
     except Exception as e:

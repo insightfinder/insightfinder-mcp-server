@@ -39,6 +39,17 @@ async def get_metric_data(
     This tool validates the request by making an API call to InsightFinder, then returns 
     the API URL that users can click to directly access the JSON metric data in their browser.
     
+    **Important Time Range Requirements:**
+    - start_time_ms and end_time_ms must be valid timestamps in milliseconds (13-digit epoch time)
+    - start_time_ms must be LESS than end_time_ms (start time must come before end time)
+    - start_time_ms and end_time_ms cannot be the same value
+    
+    **Metric Validation:**
+    - All requested metrics in metric_list must be available in the project
+    - The tool automatically validates metrics against the project's available metrics
+    - If invalid metrics are requested, an error is returned with the list of available metrics
+    - Use list_available_metrics tool first to see what metrics are available
+    
     **When to use this tool:**
     - When user wants to see metric trends over time
     - To get a direct link to metric data JSON
@@ -50,8 +61,9 @@ async def get_metric_data(
         project_name: Name of the project to query (required)
         instance_name: Name of the specific instance/host to query (required)
         metric_list: List of metric names to fetch data for (e.g., ["Availability", "CPU", "Memory"])
-        start_time_ms: Start timestamp in milliseconds (13-digit)
-        end_time_ms: End timestamp in milliseconds (13-digit)
+                    - Must be valid metrics available in the project
+        start_time_ms: Start timestamp in milliseconds (13-digit epoch time, must be before end_time_ms)
+        end_time_ms: End timestamp in milliseconds (13-digit epoch time, must be after start_time_ms)
         
     Returns:
         A dictionary containing:
@@ -72,8 +84,8 @@ async def get_metric_data(
             project_name="my-project",
             instance_name="server-01",
             metric_list=["Availability"],
-            start_time_ms=start_timestamp,
-            end_time_ms=end_timestamp
+            start_time_ms=1734307200000,  # Must be valid and before end_time_ms
+            end_time_ms=1734393600000     # Must be valid and after start_time_ms
         )
     """
     try:
@@ -96,6 +108,20 @@ async def get_metric_data(
                 "message": "Failed to determine valid time range"
             }
         
+        # Validate time range - start and end cannot be the same
+        if start_time_ms == end_time_ms:
+            return {
+                "status": "error",
+                "message": f"Invalid time range: start_time_ms and end_time_ms cannot be the same value ({start_time_ms}). Please provide a valid time range where start_time_ms < end_time_ms."
+            }
+        
+        # Validate time range - start must be before end
+        if start_time_ms > end_time_ms:
+            return {
+                "status": "error",
+                "message": f"Invalid time range: start_time_ms ({start_time_ms}) must be less than end_time_ms ({end_time_ms}). Start time must come before end time."
+            }
+        
         # Validate inputs
         if not project_name or not instance_name:
             return {
@@ -107,6 +133,39 @@ async def get_metric_data(
             return {
                 "status": "error",
                 "message": "metric_list must contain at least one metric name"
+            }
+        
+        # Validate that requested metrics are available in the project
+        logger.info(f"Validating metrics for project={project_name}")
+        metadata_result = await api_client.get_metric_metadata(project_name=project_name)
+        
+        if metadata_result.get("status") == "error":
+            return {
+                "status": "error",
+                "message": f"Failed to validate metrics: {metadata_result.get('message', 'Unknown error')}"
+            }
+        
+        # Get available metrics
+        raw_metadata = metadata_result.get("data", {})
+        available_metrics = raw_metadata.get("possibleMetricList", [])
+        
+        if not available_metrics:
+            return {
+                "status": "error",
+                "message": f"No metrics available for project '{project_name}'. The project may not have any metric data or the project name may be incorrect."
+            }
+        
+        # Check if all requested metrics are available
+        invalid_metrics = [metric for metric in metric_list if metric not in available_metrics]
+        
+        if invalid_metrics:
+            return {
+                "status": "error",
+                "message": f"Invalid metric(s) requested: {invalid_metrics}. These metrics are not available in project '{project_name}'.",
+                "invalidMetrics": invalid_metrics,
+                "availableMetrics": available_metrics[:20],  # Show first 20 available metrics
+                "totalAvailableMetrics": len(available_metrics),
+                "hint": f"Use list_available_metrics tool to see all {len(available_metrics)} available metrics for this project."
             }
         
         logger.info(f"Fetching metric data URL for project={project_name}, instance={instance_name}, "
@@ -123,6 +182,29 @@ async def get_metric_data(
         
         if result.get("status") == "error":
             return result
+        
+        # Check if response data is empty
+        response_data = result.get("data", [])
+        if not response_data or len(response_data) == 0:
+            # Format timestamps for error message
+            start_time_formatted = format_timestamp_in_user_timezone(start_time_ms)
+            end_time_formatted = format_timestamp_in_user_timezone(end_time_ms)
+            
+            return {
+                "status": "error",
+                "message": f"No data available for the given time range. No metric data found for project '{project_name}', instance '{instance_name}', metrics {metric_list} between {start_time_formatted} and {end_time_formatted}. Please verify the time range, instance name, and metric names are correct.",
+                "metadata": {
+                    "projectName": project_name,
+                    "instanceName": instance_name,
+                    "requestedMetrics": metric_list,
+                    "timeRange": {
+                        "startTime": start_time_ms,
+                        "endTime": end_time_ms,
+                        "startTimeFormatted": start_time_formatted,
+                        "endTimeFormatted": end_time_formatted
+                    }
+                }
+            }
         
         # Extract the URL from the result
         api_url = result.get("url")
