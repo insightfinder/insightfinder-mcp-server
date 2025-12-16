@@ -420,26 +420,28 @@ class InsightFinderAPIClient:
     async def get_customer_name_for_project(
         self,
         project_name: str
-    ) -> Optional[str]:
+    ) -> Optional[tuple[str, str]]:
         """
-        Get the customer/user name that owns a specific project by querying the system framework.
+        Get the customer/user name and actual project name for a specific project by querying the system framework.
         
         This is necessary because projects can be owned by different users or shared across users.
-        The method searches through both owned and shared systems to find the project and extract
-        the correct userName to use as customerName in other API calls.
+        The method searches through both owned and shared systems to find the project by matching
+        against either projectName or projectDisplayName, and returns the correct userName and projectName.
         
         Args:
-            project_name: Name of the project to find the owner for
+            project_name: Name or display name of the project to find (matches projectName or projectDisplayName)
             
         Returns:
-            The userName (customer name) that owns the project, or None if not found
+            Tuple of (customer_name, actual_project_name) if found, or None if not found
+            - customer_name: The userName that owns the project
+            - actual_project_name: The actual projectName (not display name) to use in API calls
         """
         api_path = "/api/external/v1/systemframework"
         url = f"{self.base_url}{api_path}"
         
         params = {
             "customerName": self.user_name,
-            "needDetail": "false",
+            "needDetail": "true",
             "tzOffset": "-18000000"  # Default timezone offset
         }
         
@@ -473,10 +475,16 @@ class InsightFinderAPIClient:
                         
                         # Check each project in this system
                         for project in project_list:
-                            if project.get("projectName") == project_name:
+                            # Match against both projectName and projectDisplayName (case-insensitive)
+                            proj_name = project.get("projectName", "")
+                            proj_display_name = project.get("projectDisplayName", "")
+                            
+                            if (proj_name.lower() == project_name.lower() or 
+                                proj_display_name.lower() == project_name.lower()):
                                 customer_name = project.get("userName")
-                                logger.info(f"Found project '{project_name}' owned by customer '{customer_name}'")
-                                return customer_name
+                                actual_project_name = proj_name  # Always use the actual projectName, not display name
+                                logger.info(f"Found project '{project_name}' (actual: '{actual_project_name}') owned by customer '{customer_name}'")
+                                return (customer_name, actual_project_name)
                     except (json.JSONDecodeError, KeyError) as e:
                         logger.warning(f"Error parsing owned system data: {e}")
                         continue
@@ -490,10 +498,17 @@ class InsightFinderAPIClient:
                         
                         # Check each project in this system
                         for project in project_list:
-                            if project.get("projectName") == project_name:
+                            # Match against both projectName and projectDisplayName (case-insensitive)
+                            proj_name = project.get("projectName", "")
+                            proj_display_name = project.get("projectDisplayName", "")
+                            
+                            if (proj_name.lower() == project_name.lower() or 
+                                proj_display_name.lower() == project_name.lower()):
                                 customer_name = project.get("userName")
-                                logger.info(f"Found project '{project_name}' shared from customer '{customer_name}'")
-                                return customer_name
+                                actual_project_name = proj_name  # Always use the actual projectName, not display name
+                                print(f"DEBUG: Found shared project display name: {proj_display_name}, actual name: {actual_project_name}")
+                                logger.info(f"Found project '{project_name}' (actual: '{actual_project_name}') shared from customer '{customer_name}'")
+                                return (customer_name, actual_project_name)
                     except (json.JSONDecodeError, KeyError) as e:
                         logger.warning(f"Error parsing shared system data: {e}")
                         continue
@@ -535,11 +550,16 @@ class InsightFinderAPIClient:
         api_path = "/api/v1/metricdataquery-external"
         url = f"{self.base_url}{api_path}"
         
-        # Get the correct customer name for this project
-        customer_name = await self.get_customer_name_for_project(project_name)
-        if not customer_name:
+        # Get the correct customer name and actual project name for this project
+        project_info = await self.get_customer_name_for_project(project_name)
+        if project_info:
+            customer_name, actual_project_name = project_info
+            # Use the actual project name returned from the API (not the display name)
+            project_name = actual_project_name
+        else:
             logger.warning(f"Could not find owner for project '{project_name}', falling back to self.user_name")
             customer_name = self.user_name
+            # Keep the provided project_name as fallback
         
         # Format metric list as JSON array string for URL parameter
         metric_list_json = json.dumps(metric_list)
@@ -638,11 +658,16 @@ class InsightFinderAPIClient:
         api_path = "/api/v1/metricmetadata-external"
         url = f"{self.base_url}{api_path}"
         
-        # Get the correct customer name for this project
-        customer_name = await self.get_customer_name_for_project(project_name)
-        if not customer_name:
+        # Get the correct customer name and actual project name for this project
+        project_info = await self.get_customer_name_for_project(project_name)
+        if project_info:
+            customer_name, actual_project_name = project_info
+            # Use the actual project name returned from the API (not the display name)
+            project_name = actual_project_name
+        else:
             logger.warning(f"Could not find owner for project '{project_name}', falling back to self.user_name")
             customer_name = self.user_name
+            # Keep the provided project_name as fallback
         
         params = {
             "customerName": customer_name,
