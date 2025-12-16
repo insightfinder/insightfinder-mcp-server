@@ -44,6 +44,9 @@ async def get_metric_anomalies_overview(
     Provides the most condensed view possible - just essential counts and high-level patterns.
     Perfect for initial assessment and determining if deeper investigation is needed.
     
+    ⚠️ NOTE FOR LLMs: If displaying individual anomalies from this data, always include project names.
+    Each anomaly contains projectName and projectDisplayName fields.
+    
     Args:
         system_name: Name of the system to query
         start_time_ms: Start timestamp in milliseconds (optional, defaults to 24 hours ago)
@@ -219,6 +222,18 @@ async def get_metric_anomalies_list(
     """
     Enhanced metric anomaly list with comprehensive information.
     This is the main tool for getting metric anomaly details - combines basic info with detailed data.
+
+    ⚠️ CRITICAL FOR LLMs/AI ASSISTANTS: When displaying metric anomalies to users, you MUST include
+    the project_name field for EVERY SINGLE anomaly in your output. Do not omit this field because project name and instance information are crucial for understanding the context of each anomaly.
+
+    REQUIRED DISPLAY FORMAT FOR EACH ANOMALY:
+        "1. [Anomaly Title]
+         • Project: [anomaly.project_name]     ← MANDATORY - ALWAYS DISPLAY THIS LINE
+         • Time: [anomaly.datetime]
+         • Metric: [anomaly.metric.name]
+         • Severity: [anomaly.severity]
+         • Component: [anomaly.location.component]
+         • Instance: [anomaly.location.instance]"
     
     Args:
         system_name: Name of the system to query
@@ -232,7 +247,16 @@ async def get_metric_anomalies_list(
         project_name: Optional project name to filter results (if not provided, returns all projects)
         
     Returns:
-        Dict containing enhanced list of anomalies with status and metadata
+        Dict containing enhanced list of anomalies with status and metadata.
+        
+        CRITICAL: Each anomaly contains project_name in TWO places:
+        - anomaly["project_name"] ← USE THIS FOR DISPLAY
+        - anomaly["project"]
+        
+        When presenting to users, ALWAYS extract and display: anomaly["project_name"]
+    
+    Note: Project name is MANDATORY in the output. It appears in both the top-level "project" field
+    and within the "location" object for each anomaly.
     """
     try:
         
@@ -279,7 +303,10 @@ async def get_metric_anomalies_list(
             }
         
         anomalies = raw_data["data"]
-        
+
+        # Print anomalies in formatted json for debugging
+        # print(f"[DEBUG] Anomalies found: {json.dumps(anomalies, indent=2)}", file=sys.stderr)
+
         # Filter by project name if specified
         if project_name:
             # anomalies = [anomaly for anomaly in anomalies if anomaly.get("projectName") == project_name]
@@ -332,22 +359,32 @@ async def get_metric_anomalies_list(
             time_pairs = root_cause.get("timePairList", [])
             duration_minutes = _calculate_duration_minutes(time_pairs)
             
+            # Get project name - prefer projectDisplayName, fallback to projectName
+            # This is CRITICAL information that must always be included
+            project_name_value = anomaly.get("projectDisplayName") or anomaly.get("projectName") or "Unknown"
+            
             enhanced_anomaly = {
+                # Top-level project identification - ALWAYS include this
+                "project_name": project_name_value,
+                "project": project_name_value,
+                
+                # Timing information
                 "timestamp": anomaly.get("timestamp"),
                 "datetime": format_api_timestamp_corrected(anomaly.get("timestamp", 0)) if anomaly.get("timestamp") else None,
+                
+                # Severity information
                 "severity": severity,
                 "anomaly_score": score,
                 "active": anomaly.get("active", 0),
                 
-                # Location information
+                # Location information (includes project again for nested access)
                 "location": {
-                    "project": anomaly.get("projectDisplayName"),
                     "component": anomaly.get("componentName"),
                     "instance": anomaly.get("instanceName"),
                     "zone": anomaly.get("zoneName")
                 },
                 
-                # Metric information
+                # Metric information (includes project for context)
                 "metric": {
                     "name": root_cause.get("metricName"),
                     "type": root_cause.get("metricType", "Unknown"),
@@ -405,6 +442,11 @@ async def get_metric_anomalies_list(
             },
             "anomalies": enhanced_anomalies
         }
+
+        #print rdata in formatted json for debugging
+        # print(json.dumps(rdata, indent=2))
+
+        # return rdata
         
     except Exception as e:
         logger.error(f"Error in get_metric_anomalies_list: {str(e)}")
@@ -678,6 +720,10 @@ async def fetch_metric_anomalies(
     """
     Fetches metric anomaly timeline data from InsightFinder for a specific system within a given time range.
     Use this tool when a user asks for metric anomalies, performance issues, or infrastructure monitoring data.
+    
+    IMPORTANT: Each returned anomaly includes projectName and projectDisplayName fields which identify 
+    the project the anomaly belongs to. These fields are CRITICAL for distinguishing anomalies when 
+    a system contains multiple projects.
 
     Args:
         system_name (str): The name of the system to query for metric anomalies.
@@ -686,6 +732,12 @@ async def fetch_metric_anomalies(
         end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
                        If not provided, defaults to the current time.
         project_name (str): Optional. Project name to filter results (if not provided, returns all projects).
+        
+    Returns:
+        Dict with status and data. Each anomaly in data array includes:
+        - projectName: The internal project name
+        - projectDisplayName: The user-facing project display name (use this for presentation)
+        - All other anomaly fields (timestamp, severity, metrics, etc.)
     """
     try:
         
@@ -750,6 +802,9 @@ async def get_project_metric_anomalies(
     Fetches metric anomalies specifically for a given project within a system.
     Use this tool when the user specifies both a system name and project name.
     
+    IMPORTANT: Each anomaly returned MUST include the project_name field. This is essential
+    for identifying which project the anomaly belongs to.
+    
     Example usage:
     - "show me metric anomalies for project demo-kpi-metrics-2 in system Citizen Cane Demo System (STG)"
     - "get metric anomalies before incident for project X in system Y"
@@ -760,6 +815,11 @@ async def get_project_metric_anomalies(
         start_time_ms (int): Start time in UTC milliseconds
         end_time_ms (int): End time in UTC milliseconds  
         limit (int): Maximum number of anomalies to return (default: 20)
+        
+    Returns:
+        Dict with status, summary, and anomalies list. Each anomaly includes:
+        - project_name: The project name (ALWAYS included - derived from projectDisplayName or projectName)
+        - All other anomaly details (severity, metrics, timestamps, location info, etc.)
     """
     try:
         # Set default time range if not provided (timezone-aware)
@@ -813,6 +873,9 @@ async def get_project_metric_anomalies(
             time_pairs = root_cause.get("timePairList", [])
             duration_minutes = _calculate_duration_minutes(time_pairs)
             
+            # Get project name - prefer projectDisplayName, fallback to projectName
+            project_display_name = anomaly.get("projectDisplayName") or anomaly.get("projectName") or project_name
+            
             anomaly_summary = {
                 "index": i + 1,
                 "timestamp": anomaly.get("timestamp"),
@@ -822,7 +885,7 @@ async def get_project_metric_anomalies(
                 "active": anomaly.get("active", 0),
                 
                 # Location information
-                "project_name": project_name,
+                "project_name": project_display_name,
                 "component_name": anomaly.get("componentName"),
                 "instance_name": anomaly.get("instanceName"),
                 "zone_name": anomaly.get("zoneName"),
