@@ -809,3 +809,184 @@ async def find_system_by_name(
             "status": "error",
             "message": f"Failed to find system: {str(e)}"
         }
+
+
+@mcp_server.tool()
+async def list_available_instances_for_project(
+    project_name: str,
+    page: int = 1,
+    page_size: int = 50
+) -> Dict[str, Any]:
+    """
+    List all available instances for a specific project (paginated).
+    
+    This tool retrieves the complete list of instance names that are available
+    within a specific project. Use this to discover what instances exist in a project
+    before querying metric data for specific instances.
+    
+    **When to use this tool:**
+    - Before querying metric data, to see what instances are available in a project
+    - When user asks "what instances are in this project?"
+    - To help users understand the infrastructure covered by their project
+    - When users need to know exact instance names for querying
+    - When an invalid instance error occurs, to see valid options
+    
+    **Workflow:**
+    1. Use list_all_systems_and_projects to find projects
+    2. Use this tool to get available instances for a project
+    3. Use get_metric_data with selected instance and metrics
+    
+    **Pagination**: Results are returned in pages to avoid overwhelming responses.
+    Default page size is 50 instances.
+    
+    Args:
+        project_name: Name or display name of the project to query (required)
+        page: Page number to retrieve (1-indexed, default: 1)
+        page_size: Number of instances per page (default: 50, max: 500)
+        
+    Returns:
+        A dictionary containing:
+        - status: "success" or "error"
+        - projectName: Name of the queried project (actual projectName from API)
+        - availableInstances: List of instance names available for this project (paginated)
+        - pagination: Pagination information (currentPage, pageSize, totalPages, totalCount, hasMore)
+        
+    Example:
+        # List first page of instances
+        result = await list_available_instances_for_project(project_name="my-project")
+        
+        # List second page
+        result = await list_available_instances_for_project(
+            project_name="my-project", 
+            page=2
+        )
+        
+        # Custom page size
+        result = await list_available_instances_for_project(
+            project_name="my-project",
+            page_size=100
+        )
+        
+        # Response format:
+        {
+            "status": "success",
+            "projectName": "my-project",
+            "availableInstances": ["server-01", "server-02", ...],
+            "pagination": {
+                "currentPage": 1,
+                "pageSize": 50,
+                "totalPages": 3,
+                "totalCount": 142,
+                "hasMore": true
+            }
+        }
+    """
+    try:
+        # Get current API client
+        api_client = get_current_api_client()
+        if not api_client:
+            return {
+                "status": "error",
+                "message": "No API client configured. Please configure your InsightFinder credentials."
+            }
+        
+        # Validate pagination parameters
+        if page < 1:
+            return {
+                "status": "error",
+                "message": "Page number must be >= 1"
+            }
+        
+        if page_size < 1 or page_size > 500:
+            return {
+                "status": "error",
+                "message": "Page size must be between 1 and 500"
+            }
+        
+        # Validate input
+        if not project_name:
+            return {
+                "status": "error",
+                "message": "project_name is a required parameter"
+            }
+        
+        logger.info(f"Fetching available instances for project={project_name} (page={page}, page_size={page_size})")
+        
+        # Get project info including instance list
+        project_info = await api_client.get_customer_name_for_project(project_name)
+        
+        if not project_info:
+            return {
+                "status": "error",
+                "message": f"Project '{project_name}' not found. Please verify the project name or use list_all_systems_and_projects to see available projects."
+            }
+        
+        customer_name, actual_project_name, instance_list, system_id = project_info
+        
+        if not instance_list:
+            return {
+                "status": "success",
+                "message": f"No instances found for project '{actual_project_name}'",
+                "projectName": actual_project_name,
+                "availableInstances": [],
+                "instanceCount": 0,
+                "pagination": {
+                    "currentPage": 1,
+                    "pageSize": page_size,
+                    "totalPages": 0,
+                    "totalCount": 0,
+                    "hasMore": False
+                }
+            }
+        
+        # Calculate pagination
+        total_count = len(instance_list)
+        total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 1
+        
+        # Check if page is out of range
+        start_idx = (page - 1) * page_size
+        if start_idx >= total_count and total_count > 0:
+            return {
+                "status": "error",
+                "message": f"Page {page} is out of range. Total pages: {total_pages}",
+                "pagination": {
+                    "totalPages": total_pages,
+                    "totalCount": total_count
+                }
+            }
+        
+        # Get paginated slice
+        end_idx = start_idx + page_size
+        paginated_instances = instance_list[start_idx:end_idx]
+        
+        # Build pagination message
+        pagination_msg = f"Showing page {page} of {total_pages} ({len(paginated_instances)} instances on this page, {total_count} total instances)"
+        if page < total_pages:
+            pagination_msg += f". There are {total_pages - page} more page(s) available. Use page={page + 1} to see the next page."
+        
+        return {
+            "status": "success",
+            "message": pagination_msg,
+            "projectName": actual_project_name,
+            "customerName": customer_name,
+            "availableInstances": paginated_instances,
+            "instanceCount": len(paginated_instances),
+            "pagination": {
+                "currentPage": page,
+                "pageSize": page_size,
+                "totalPages": total_pages,
+                "totalCount": total_count,
+                "itemsOnPage": len(paginated_instances),
+                "hasMore": page < total_pages,
+                "hasPrevious": page > 1,
+                "nextPage": page + 1 if page < total_pages else None,
+                "previousPage": page - 1 if page > 1 else None
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching instances for project: {str(e)}", exc_info=True)
+        return {
+            "status": "error",
+            "message": f"Failed to fetch instances for project: {str(e)}"
+        }

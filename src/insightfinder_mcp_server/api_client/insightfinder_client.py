@@ -420,21 +420,23 @@ class InsightFinderAPIClient:
     async def get_customer_name_for_project(
         self,
         project_name: str
-    ) -> Optional[tuple[str, str]]:
+    ) -> Optional[tuple[str, str, List[str], str]]:
         """
-        Get the customer/user name and actual project name for a specific project by querying the system framework.
+        Get the customer/user name, actual project name, and instance list for a specific project by querying the system framework.
         
         This is necessary because projects can be owned by different users or shared across users.
         The method searches through both owned and shared systems to find the project by matching
-        against either projectName or projectDisplayName, and returns the correct userName and projectName.
+        against either projectName or projectDisplayName, and returns the correct userName, projectName, and available instances.
         
         Args:
             project_name: Name or display name of the project to find (matches projectName or projectDisplayName)
             
         Returns:
-            Tuple of (customer_name, actual_project_name) if found, or None if not found
+            Tuple of (customer_name, actual_project_name, instance_list) if found, or None if not found
             - customer_name: The userName that owns the project
             - actual_project_name: The actual projectName (not display name) to use in API calls
+            - instance_list: List of available instance names for this project
+            - system_id: The system id that contains this project
         """
         api_path = "/api/external/v1/systemframework"
         url = f"{self.base_url}{api_path}"
@@ -472,19 +474,28 @@ class InsightFinderAPIClient:
                         system_data = json.loads(system_json)
                         project_list_str = system_data.get("projectDetailsList", "[]")
                         project_list = json.loads(project_list_str)
+
+                        systemKey_json = system_data.get("systemKey", "{}")
+                        # Handle both dict and JSON string formats
+                        if isinstance(systemKey_json, dict):
+                            systemKey_data = systemKey_json
+                        else:
+                            systemKey_data = json.loads(systemKey_json)
+                        system_id = systemKey_data.get("systemName", "")
                         
                         # Check each project in this system
                         for project in project_list:
                             # Match against both projectName and projectDisplayName (case-insensitive)
                             proj_name = project.get("projectName", "")
                             proj_display_name = project.get("projectDisplayName", "")
+                            instance_list = project.get("instanceList", [])
                             
                             if (proj_name.lower() == project_name.lower() or 
                                 proj_display_name.lower() == project_name.lower()):
                                 customer_name = project.get("userName")
                                 actual_project_name = proj_name  # Always use the actual projectName, not display name
-                                logger.info(f"Found project '{project_name}' (actual: '{actual_project_name}') owned by customer '{customer_name}'")
-                                return (customer_name, actual_project_name)
+                                logger.info(f"Found project '{project_name}' (actual: '{actual_project_name}') owned by customer '{customer_name}' with {len(instance_list)} instances")
+                                return (customer_name, actual_project_name, instance_list, system_id)
                     except (json.JSONDecodeError, KeyError) as e:
                         logger.warning(f"Error parsing owned system data: {e}")
                         continue
@@ -495,20 +506,28 @@ class InsightFinderAPIClient:
                         system_data = json.loads(system_json)
                         project_list_str = system_data.get("projectDetailsList", "[]")
                         project_list = json.loads(project_list_str)
-                        
+
+                        systemKey_json = system_data.get("systemKey", "{}")
+                        # Handle both dict and JSON string formats
+                        if isinstance(systemKey_json, dict):
+                            systemKey_data = systemKey_json
+                        else:
+                            systemKey_data = json.loads(systemKey_json)
+                        system_id = systemKey_data.get("systemName", "")
+
                         # Check each project in this system
                         for project in project_list:
                             # Match against both projectName and projectDisplayName (case-insensitive)
                             proj_name = project.get("projectName", "")
                             proj_display_name = project.get("projectDisplayName", "")
+                            instance_list = project.get("instanceList", [])
                             
                             if (proj_name.lower() == project_name.lower() or 
                                 proj_display_name.lower() == project_name.lower()):
                                 customer_name = project.get("userName")
                                 actual_project_name = proj_name  # Always use the actual projectName, not display name
-                                print(f"DEBUG: Found shared project display name: {proj_display_name}, actual name: {actual_project_name}")
-                                logger.info(f"Found project '{project_name}' (actual: '{actual_project_name}') shared from customer '{customer_name}'")
-                                return (customer_name, actual_project_name)
+                                logger.info(f"Found project '{project_name}' (actual: '{actual_project_name}') shared from customer '{customer_name}' with {len(instance_list)} instances")
+                                return (customer_name, actual_project_name, instance_list, system_id)
                     except (json.JSONDecodeError, KeyError) as e:
                         logger.warning(f"Error parsing shared system data: {e}")
                         continue
@@ -553,12 +572,13 @@ class InsightFinderAPIClient:
         # Get the correct customer name and actual project name for this project
         project_info = await self.get_customer_name_for_project(project_name)
         if project_info:
-            customer_name, actual_project_name = project_info
+            customer_name, actual_project_name, instance_list, system_id = project_info
             # Use the actual project name returned from the API (not the display name)
             project_name = actual_project_name
         else:
             logger.warning(f"Could not find owner for project '{project_name}', falling back to self.user_name")
             customer_name = self.user_name
+            instance_list = []
             # Keep the provided project_name as fallback
         
         # Format metric list as JSON array string for URL parameter
@@ -590,6 +610,17 @@ class InsightFinderAPIClient:
         
         if not metric_list or len(metric_list) == 0:
             return {"status": "error", "message": "metric_list must contain at least one metric"}
+        
+        # Validate instance name if we have the instance list
+        if instance_list and instance_name not in instance_list:
+            return {
+                "status": "error",
+                "message": f"Invalid instance_name '{instance_name}'. This instance is not available in project '{project_name}'.",
+                "invalidInstance": instance_name,
+                "availableInstances": instance_list[:50],  # Show first 50 available instances
+                "totalAvailableInstances": len(instance_list),
+                "hint": f"Use list_available_instances_for_project tool to see all {len(instance_list)} available instances for this project."
+            }
         
         if end_time_ms - start_time_ms > 365 * 24 * 60 * 60 * 1000:  # Max 1 year
             return {"status": "error", "message": "Time range too large (max 1 year)"}
@@ -661,12 +692,13 @@ class InsightFinderAPIClient:
         # Get the correct customer name and actual project name for this project
         project_info = await self.get_customer_name_for_project(project_name)
         if project_info:
-            customer_name, actual_project_name = project_info
+            customer_name, actual_project_name, instance_list, system_id = project_info
             # Use the actual project name returned from the API (not the display name)
             project_name = actual_project_name
         else:
             logger.warning(f"Could not find owner for project '{project_name}', falling back to self.user_name")
             customer_name = self.user_name
+            instance_list = []
             # Keep the provided project_name as fallback
         
         params = {
