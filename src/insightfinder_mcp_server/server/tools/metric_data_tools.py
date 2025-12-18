@@ -13,6 +13,7 @@ import json
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+from urllib.parse import quote
 
 
 from ..server import mcp_server
@@ -35,11 +36,13 @@ async def get_metric_data(
     end_time_ms: Optional[int] = None
 ) -> Dict[str, Any]:
     """
-    Get the API URL for fetching metric line chart data for specified metrics and instance.
-    
-    This tool validates the request by making an API call to InsightFinder, then returns 
-    the API URL that users can click to directly access the JSON metric data in their browser.
-    
+    Get the API URL and UI URL for fetching metric line chart data for specified metrics and instance.
+    This tool validates the request by making an API call to InsightFinder, then returns
+    the API URL and UI URL that users can click to directly access the JSON metric data in their browser.
+
+    IMPORTANT: Always show both API URL and UI URL in the response for user. Both are crucial for
+    accessing and visualizing the metric data.
+
     **Important Time Range Requirements:**
     - start_time_ms and end_time_ms must be valid timestamps in milliseconds (13-digit epoch time)
     - start_time_ms must be LESS than end_time_ms (start time must come before end time)
@@ -76,7 +79,7 @@ async def get_metric_data(
     Returns:
         A dictionary containing:
         - status: "success" or "error"
-        - url: Direct API URL to access the metric data JSON (click to view in browser)
+        - api-url: Direct API URL to access the metric data JSON (click to view in browser)
         - ui-url: Direct URL to view the metric data in InsightFinder UI
         - metadata: Query parameters and time range information
         
@@ -253,11 +256,19 @@ async def get_metric_data(
 
         # extract base url like https://api.insightfinder.com --- IGNORE ---
         base_api_url = api_url.split("/api/")[0]  # e.g., https://api.insightfinder.com --- IGNORE ---
-        ui_url = f"{base_api_url}/ui/metric/linecharts?e=All&s={system_id}&customerName={customer_name}&projectName={actual_project_name}@{customer_name}&startTimestamp={start_time_ms}&endTimestamp={end_time_ms}&justSelectMetric={','.join(metric_list)}&sessionMetric=&justInstanceList={instance_name}&withBaseline=true&incidentInfo=&sourceInfo=&metricAnomalyMap="
+        
+        # URL encode parameters to handle spaces and special characters
+        encoded_system_id = quote(system_id, safe='')
+        encoded_customer_name = quote(customer_name, safe='')
+        encoded_project_name = quote(actual_project_name, safe='')
+        encoded_instance_name = quote(instance_name, safe='')
+        encoded_metrics = quote(','.join(metric_list), safe='')
+        
+        ui_url = f"{base_api_url}/ui/metric/linecharts?e=All&s={encoded_system_id}&customerName={encoded_customer_name}&projectName={encoded_project_name}@{encoded_customer_name}&startTimestamp={start_time_ms}&endTimestamp={end_time_ms}&justSelectMetric={encoded_metrics}&sessionMetric=&justInstanceList={encoded_instance_name}&withBaseline=true&incidentInfo=&sourceInfo=&metricAnomalyMap="
 
         return {
             "status": "success",
-            "url": api_url+f"&projectDisplayName={project_name}",
+            "api-url": api_url+f"&projectDisplayName={project_name}",
             "ui-url": ui_url,
             "message": "Click the URL to view the metric data JSON in your browser",
             "metadata": {
