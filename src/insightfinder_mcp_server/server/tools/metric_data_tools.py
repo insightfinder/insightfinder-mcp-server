@@ -13,6 +13,8 @@ import json
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+from urllib.parse import quote
+
 
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
@@ -34,15 +36,23 @@ async def get_metric_data(
     end_time_ms: Optional[int] = None
 ) -> Dict[str, Any]:
     """
-    Get the API URL for fetching metric line chart data for specified metrics and instance.
-    
-    This tool validates the request by making an API call to InsightFinder, then returns 
-    the API URL that users can click to directly access the JSON metric data in their browser.
-    
+    Get the API URL and UI URL for fetching metric line chart data for specified metrics and instance.
+    This tool validates the request by making an API call to InsightFinder, then returns
+    the API URL and UI URL that users can click to directly access the JSON metric data in their browser.
+
+    IMPORTANT: Always show both API URL and UI URL in the response for user. Both are crucial for
+    accessing and visualizing the metric data.
+
     **Important Time Range Requirements:**
     - start_time_ms and end_time_ms must be valid timestamps in milliseconds (13-digit epoch time)
     - start_time_ms must be LESS than end_time_ms (start time must come before end time)
     - start_time_ms and end_time_ms cannot be the same value
+    
+    **Instance Validation:**
+    - The instance_name must be a valid instance available in the project
+    - The tool automatically validates the instance against the project's available instances
+    - If an invalid instance is requested, an error is returned with the list of available instances
+    - Use list_available_instances_for_project tool to see what instances are available
     
     **Metric Validation:**
     - All requested metrics in metric_list must be available in the project
@@ -60,6 +70,7 @@ async def get_metric_data(
     Args:
         project_name: Name of the project to query (required)
         instance_name: Name of the specific instance/host to query (required)
+                      - Must be a valid instance available in the project
         metric_list: List of metric names to fetch data for (e.g., ["Availability", "CPU", "Memory"])
                     - Must be valid metrics available in the project
         start_time_ms: Start timestamp in milliseconds (13-digit epoch time, must be before end_time_ms)
@@ -68,7 +79,8 @@ async def get_metric_data(
     Returns:
         A dictionary containing:
         - status: "success" or "error"
-        - url: Direct API URL to access the metric data JSON (click to view in browser)
+        - api-url: Direct API URL to access the metric data JSON (click to view in browser)
+        - ui-url: Direct URL to view the metric data in InsightFinder UI
         - metadata: Query parameters and time range information
         
     Example:
@@ -135,9 +147,33 @@ async def get_metric_data(
                 "message": "metric_list must contain at least one metric name"
             }
         
+        # Get project info to validate both metrics and instances
+        logger.info(f"Validating project info for project={project_name}")
+        
+        # Get project information including instance list
+        project_info = await api_client.get_customer_name_for_project(project_name)
+        if not project_info:
+            return {
+                "status": "error",
+                "message": f"Project '{project_name}' not found. Please verify the project name or use list_all_systems_and_projects to see available projects."
+            }
+        
+        customer_name, actual_project_name, instance_list, system_id = project_info
+        
+        # Validate instance name if we have the instance list
+        if instance_list and instance_name not in instance_list:
+            return {
+                "status": "error",
+                "message": f"Invalid instance_name '{instance_name}'. This instance is not available in project '{actual_project_name}'.",
+                "invalidInstance": instance_name,
+                "availableInstances": instance_list[:50],  # Show first 50 available instances
+                "totalAvailableInstances": len(instance_list),
+                "hint": f"Use list_available_instances_for_project tool to see all {len(instance_list)} available instances for this project."
+            }
+        
         # Validate that requested metrics are available in the project
         logger.info(f"Validating metrics for project={project_name}")
-        metadata_result = await api_client.get_metric_metadata(project_name=project_name)
+        metadata_result = await api_client.get_metric_metadata(project_name=actual_project_name)
         
         if metadata_result.get("status") == "error":
             return {
@@ -167,13 +203,13 @@ async def get_metric_data(
                 "totalAvailableMetrics": len(available_metrics),
                 "hint": f"Use list_available_metrics tool to see all {len(available_metrics)} available metrics for this project."
             }
-        
+
         logger.info(f"Fetching metric data URL for project={project_name}, instance={instance_name}, "
-                   f"metrics={metric_list}")
-        
+              f"metrics={metric_list}")
+
         # Fetch metric data using the API client to validate the request works
         result = await api_client.get_metric_data(
-            project_name=project_name,
+            project_name=actual_project_name,
             instance_name=instance_name,
             metric_list=metric_list,
             start_time_ms=start_time_ms,
@@ -217,10 +253,23 @@ async def get_metric_data(
         # Format timestamps for display
         start_time_formatted = format_timestamp_in_user_timezone(start_time_ms)
         end_time_formatted = format_timestamp_in_user_timezone(end_time_ms)
+
+        # extract base url like https://api.insightfinder.com --- IGNORE ---
+        base_api_url = api_url.split("/api/")[0]  # e.g., https://api.insightfinder.com --- IGNORE ---
         
+        # URL encode parameters to handle spaces and special characters
+        encoded_system_id = quote(system_id, safe='')
+        encoded_customer_name = quote(customer_name, safe='')
+        encoded_project_name = quote(actual_project_name, safe='')
+        encoded_instance_name = quote(instance_name, safe='')
+        encoded_metrics = quote(','.join(metric_list), safe='')
+        
+        ui_url = f"{base_api_url}/ui/metric/linecharts?e=All&s={encoded_system_id}&customerName={encoded_customer_name}&projectName={encoded_project_name}@{encoded_customer_name}&startTimestamp={start_time_ms}&endTimestamp={end_time_ms}&justSelectMetric={encoded_metrics}&sessionMetric=&justInstanceList={encoded_instance_name}&withBaseline=true&incidentInfo=&sourceInfo=&metricAnomalyMap="
+
         return {
             "status": "success",
-            "url": api_url,
+            "api-url": api_url+f"&projectDisplayName={project_name}",
+            "ui-url": ui_url,
             "message": "Click the URL to view the metric data JSON in your browser",
             "metadata": {
                 "projectName": project_name,
