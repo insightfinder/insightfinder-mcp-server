@@ -130,10 +130,12 @@ def get_timezone_aware_time_range_ms(days_back: int = 1) -> tuple[int, int]:
     
     # Calculate start time: midnight of the day N days back
     start_day = now_user_tz - timedelta(days=days_back)
-    start_time_user_tz = start_day.replace(hour=0, minute=0, second=0, microsecond=0)
+    # start_time_user_tz = start_day.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_time_user_tz = start_day
     
     # Calculate end time: end of current day (23:59:59.999)
-    end_time_user_tz = now_user_tz.replace(hour=23, minute=59, second=59, microsecond=999000)
+    # end_time_user_tz = now_user_tz.replace(hour=23, minute=59, second=59, microsecond=999000)
+    end_time_user_tz = now_user_tz
     
     # Convert both times to UTC timestamps in milliseconds (rounded to nearest second)
     start_time_ms = int(start_time_user_tz.timestamp()) * 1000
