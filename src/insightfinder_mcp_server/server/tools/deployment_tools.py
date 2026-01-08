@@ -635,12 +635,12 @@ async def get_project_deployments(
     data representing system changes like code deployments, configuration changes, etc.
     
     Example usage:
-    - "show me deployments for project demo-kpi-metrics-2 in system Citizen Cane Demo System (STG)"
+    - "show me deployments for project demo-kpi-metrics-2 in system InsightFinder Demo System (APP)"
     - "get deployments before incident for project X in system Y"
     - "what change events happened in project ABC"
 
     Args:
-        system_name (str): The name of the system (e.g., "Citizen Cane Demo System (STG)")
+        system_name (str): The name of the system (e.g., "InsightFinder Demo System (APP)")
         project_name (str): The name of the project (e.g., "demo-kpi-metrics-2")
         start_time_ms (int): Start time in UTC milliseconds
         end_time_ms (int): End time in UTC milliseconds  

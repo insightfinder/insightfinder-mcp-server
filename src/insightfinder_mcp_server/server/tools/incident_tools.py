@@ -1117,11 +1117,11 @@ async def get_project_incidents(
     Use this tool when the user specifies both a system name and project name.
     
     Example usage:
-    - "show me incidents for project demo-kpi-metrics-2 in system Citizen Cane Demo System (STG)"
+    - "show me incidents for project demo-kpi-metrics-2 in system InsightFinder Demo System (APP)"
     - "get incidents after timestamp for project X in system Y"
 
     Args:
-        system_name (str): The name of the system (e.g., "Citizen Cane Demo System (STG)")
+        system_name (str): The name of the system (e.g., "InsightFinder Demo System (APP)")
         project_name (str): The name of the project (e.g., "demo-kpi-metrics-2")
         start_time_ms (int): Start time in UTC milliseconds
         end_time_ms (int): End time in UTC milliseconds  
