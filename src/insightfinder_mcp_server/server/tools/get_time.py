@@ -62,6 +62,113 @@ def get_current_datetime() -> str:
     return json.dumps(result, indent=2)
 
 @mcp_server.tool()
+def verify_13_digit_timestamp(timestamp: int) -> str:
+    """Verify and convert a 13-digit timestamp (milliseconds) to human-readable format.
+    
+    ⚠️ CRITICAL: Always use this tool to verify timestamps before passing them to other tools!
+    
+    This tool validates that a timestamp is:
+    1. A 13-digit number (milliseconds since Unix epoch)
+    2. Within a reasonable range (year 1970-2286)
+    3. Converts it to human-readable UTC format
+    
+    Args:
+        timestamp: A 13-digit timestamp in milliseconds (e.g., 1736294400000)
+    
+    Returns:
+        JSON with validation status, human-readable datetime, and timestamp details.
+        If invalid, returns error message with suggested fixes.
+    
+    Example:
+        Input: 1736294400000
+        Output: {
+            "valid": true,
+            "timestamp_ms": 1736294400000,
+            "datetime_utc": "2025-01-08 00:00:00 UTC",
+            "iso_format": "2025-01-08T00:00:00+00:00",
+            "date": "2025-01-08",
+            "time": "00:00:00",
+            "year": 2025,
+            "month": 1,
+            "day": 8,
+            "hour": 0,
+            "minute": 0,
+            "second": 0
+        }
+    """
+    try:
+        # Validate timestamp is an integer
+        if not isinstance(timestamp, int):
+            try:
+                timestamp = int(timestamp)
+            except (ValueError, TypeError):
+                return json.dumps({
+                    'valid': False,
+                    'error': 'Timestamp must be an integer',
+                    'provided_value': str(timestamp),
+                    'suggestion': 'Provide a 13-digit integer timestamp in milliseconds'
+                }, indent=2)
+        
+        # Check if it's a 13-digit number
+        timestamp_str = str(timestamp)
+        if len(timestamp_str) != 13:
+            suggestion = ""
+            if len(timestamp_str) == 10:
+                suggestion = f"This looks like a 10-digit timestamp (seconds). Convert to milliseconds: {timestamp * 1000}"
+            elif len(timestamp_str) > 13:
+                suggestion = f"Timestamp is too large. Divide by appropriate power of 10."
+            else:
+                suggestion = f"Timestamp is too small. This should be a 13-digit millisecond timestamp."
+            
+            return json.dumps({
+                'valid': False,
+                'error': f'Timestamp must be exactly 13 digits, got {len(timestamp_str)} digits',
+                'provided_value': timestamp,
+                'suggestion': suggestion
+            }, indent=2)
+        
+        # Convert to datetime
+        dt_utc = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
+        
+        # Validate reasonable date range (1970-2286)
+        if dt_utc.year < 1970 or dt_utc.year > 2286:
+            return json.dumps({
+                'valid': False,
+                'error': f'Timestamp represents an unrealistic date: {dt_utc.year}',
+                'provided_value': timestamp,
+                'parsed_year': dt_utc.year,
+                'suggestion': 'Check if timestamp is in milliseconds since Unix epoch (Jan 1, 1970)'
+            }, indent=2)
+        
+        # Successfully validated - return detailed information
+        result = {
+            'valid': True,
+            'timestamp_ms': timestamp,
+            'datetime_utc': dt_utc.strftime('%Y-%m-%d %H:%M:%S UTC'),
+            'iso_format': dt_utc.isoformat(),
+            'date': dt_utc.strftime('%Y-%m-%d'),
+            'time': dt_utc.strftime('%H:%M:%S'),
+            'year': dt_utc.year,
+            'month': dt_utc.month,
+            'day': dt_utc.day,
+            'hour': dt_utc.hour,
+            'minute': dt_utc.minute,
+            'second': dt_utc.second,
+            'weekday': dt_utc.strftime('%A'),
+            'timezone': 'UTC'
+        }
+        
+        return json.dumps(result, indent=2)
+        
+    except (ValueError, OSError) as e:
+        return json.dumps({
+            'valid': False,
+            'error': f'Failed to parse timestamp: {str(e)}',
+            'provided_value': timestamp,
+            'suggestion': 'Ensure timestamp is a valid 13-digit millisecond timestamp since Unix epoch'
+        }, indent=2)
+
+@mcp_server.tool()
 def get_time_range(hours_back: int = 24) -> str:
     """Get start and end time range in milliseconds for queries.
     
