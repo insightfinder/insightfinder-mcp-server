@@ -73,22 +73,22 @@ def verify_13_digit_timestamp(timestamp: int) -> str:
     3. Converts it to human-readable UTC format
     
     Args:
-        timestamp: A 13-digit timestamp in milliseconds (e.g., 1736294400000)
+        timestamp: A 13-digit timestamp in milliseconds (e.g., 1767830400000)
     
     Returns:
         JSON with validation status, human-readable datetime, and timestamp details.
         If invalid, returns error message with suggested fixes.
     
     Example:
-        Input: 1736294400000
+        Input: 1767830400000
         Output: {
             "valid": true,
-            "timestamp_ms": 1736294400000,
-            "datetime_utc": "2025-01-08 00:00:00 UTC",
-            "iso_format": "2025-01-08T00:00:00+00:00",
-            "date": "2025-01-08",
+            "timestamp_ms": 1767830400000,
+            "datetime_utc": "2026-01-08 00:00:00 UTC",
+            "iso_format": "2026-01-08T00:00:00+00:00",
+            "date": "2026-01-08",
             "time": "00:00:00",
-            "year": 2025,
+            "year": 2026,
             "month": 1,
             "day": 8,
             "hour": 0,
@@ -166,6 +166,146 @@ def verify_13_digit_timestamp(timestamp: int) -> str:
             'error': f'Failed to parse timestamp: {str(e)}',
             'provided_value': timestamp,
             'suggestion': 'Ensure timestamp is a valid 13-digit millisecond timestamp since Unix epoch'
+        }, indent=2)
+
+@mcp_server.tool()
+def convert_iso8601_to_timestamp(iso_timestamp: str) -> str:
+    """Convert an ISO 8601 timestamp to 13-digit milliseconds timestamp.
+    
+    This tool accepts various ISO 8601 formats and converts them to the 13-digit
+    millisecond timestamp format required by the incident tools.
+    
+    Args:
+        iso_timestamp: ISO 8601 formatted timestamp. Supported formats:
+                      - "2026-01-08T21:45:30Z" (UTC with Z suffix)
+                      - "2026-01-08T21:45:30+00:00" (UTC with explicit offset)
+                      - "2026-01-08T21:45:30" (assumed UTC if no timezone)
+                      - "2026-01-08 21:45:30" (space separator, assumed UTC)
+                      - With milliseconds: "2026-01-08T21:45:30.123Z"
+    
+    Returns:
+        JSON with the converted timestamp in milliseconds and human-readable formats.
+    
+    Example:
+        Input: "2026-01-08T21:45:30Z"
+        Output: {
+            "valid": true,
+            "input": "2026-01-08T21:45:30Z",
+            "timestamp_ms": 1736372730000,
+            "datetime_utc": "2026-01-08 21:45:30 UTC",
+            "iso_format": "2026-01-08T21:45:30+00:00",
+            "date": "2026-01-08",
+            "time": "21:45:30",
+            "year": 2026,
+            "month": 1,
+            "day": 8,
+            "hour": 21,
+            "minute": 45,
+            "second": 30
+        }
+    """
+    try:
+        if not isinstance(iso_timestamp, str):
+            return json.dumps({
+                'valid': False,
+                'error': 'Input must be a string',
+                'provided_value': str(iso_timestamp),
+                'suggestion': 'Provide an ISO 8601 formatted timestamp string (e.g., "2026-01-08T21:45:30Z")'
+            }, indent=2)
+        
+        iso_timestamp = iso_timestamp.strip()
+        
+        if not iso_timestamp:
+            return json.dumps({
+                'valid': False,
+                'error': 'Input cannot be empty',
+                'suggestion': 'Provide an ISO 8601 formatted timestamp string (e.g., "2026-01-08T21:45:30Z")'
+            }, indent=2)
+        
+        # Try to parse the ISO 8601 timestamp
+        dt = None
+        parse_error = None
+        
+        try:
+            # Handle 'Z' suffix (UTC indicator)
+            if iso_timestamp.endswith('Z'):
+                iso_timestamp_parsed = iso_timestamp[:-1] + '+00:00'
+            else:
+                iso_timestamp_parsed = iso_timestamp
+            
+            # Handle space separator (replace with T)
+            if ' ' in iso_timestamp_parsed and 'T' not in iso_timestamp_parsed:
+                iso_timestamp_parsed = iso_timestamp_parsed.replace(' ', 'T', 1)
+            
+            # Parse the timestamp
+            dt = datetime.fromisoformat(iso_timestamp_parsed)
+            
+            # If no timezone info, assume UTC
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            
+        except ValueError as e:
+            parse_error = str(e)
+        
+        if dt is None:
+            return json.dumps({
+                'valid': False,
+                'error': f'Failed to parse ISO 8601 timestamp: {parse_error}',
+                'provided_value': iso_timestamp,
+                'supported_formats': [
+                    '2026-01-08T21:45:30Z',
+                    '2026-01-08T21:45:30+00:00',
+                    '2026-01-08T21:45:30',
+                    '2026-01-08 21:45:30',
+                    '2026-01-08T21:45:30.123Z'
+                ],
+                'suggestion': 'Ensure the timestamp follows ISO 8601 format'
+            }, indent=2)
+        
+        # Convert to UTC if not already
+        dt_utc = dt.astimezone(timezone.utc)
+        
+        # Convert to milliseconds timestamp
+        timestamp_ms = int(dt_utc.timestamp() * 1000)
+        timestamp_seconds = int(dt_utc.timestamp())
+        
+        # Validate reasonable date range (1970-2286)
+        if dt_utc.year < 1970 or dt_utc.year > 2286:
+            return json.dumps({
+                'valid': False,
+                'error': f'Timestamp represents an unrealistic date: {dt_utc.year}',
+                'provided_value': iso_timestamp,
+                'parsed_year': dt_utc.year,
+                'suggestion': 'Check the year in your ISO 8601 timestamp'
+            }, indent=2)
+        
+        # Successfully converted - return detailed information
+        result = {
+            'valid': True,
+            'input': iso_timestamp,
+            'timestamp_ms': timestamp_ms,
+            'datetime_utc': dt_utc.strftime('%Y-%m-%d %H:%M:%S UTC'),
+            'iso_format': dt_utc.isoformat(),
+            'date': dt_utc.strftime('%Y-%m-%d'),
+            'time': dt_utc.strftime('%H:%M:%S'),
+            'year': dt_utc.year,
+            'month': dt_utc.month,
+            'day': dt_utc.day,
+            'hour': dt_utc.hour,
+            'minute': dt_utc.minute,
+            'second': dt_utc.second,
+            'weekday': dt_utc.strftime('%A'),
+            'timezone': 'UTC'
+        }
+        
+        return json.dumps(result, indent=2)
+        
+    except Exception as e:
+        return json.dumps({
+            'valid': False,
+            'error': f'Unexpected error: {str(e)}',
+            'provided_value': iso_timestamp,
+            'suggestion': 'Ensure the timestamp follows ISO 8601 format (e.g., "2026-01-08T21:45:30Z")'
         }, indent=2)
 
 @mcp_server.tool()
@@ -335,10 +475,10 @@ def get_date_range_utc(date_input: str) -> str:
     
     Args:
         date_input: Date in supported formats:
-                   - "2024-08-21" (ISO format)
-                   - "2024-08-21T10:30:00" (ISO datetime - time ignored)
-                   - "08/21/2024" or "8/21/2024" (US format MM/DD/YYYY)
-                   - "Aug 21, 2024" or "August 21, 2024" (US written format)
+                   - "2026-08-21" (ISO format)
+                   - "2026-08-21T10:30:00" (ISO datetime - time ignored)
+                   - "08/21/2026" or "8/21/2026" (US format MM/DD/YYYY)
+                   - "Aug 21, 2026" or "August 21, 2026" (US written format)
     
     Returns:
         JSON with start_time (00:00:00 UTC) and end_time (23:59:59.999 UTC) 
@@ -359,20 +499,20 @@ def get_date_range_utc(date_input: str) -> str:
         # Parse different date formats
         target_date = None
         
-        # 1. ISO format: 2024-08-21 or 2024-08-21T10:30:00 (ignore year, use current)
+        # 1. ISO format: 2026-08-21 or 2026-08-21T10:30:00 (ignore year, use current)
         iso_match = re.match(r'^(\d{4})-(\d{2})-(\d{2})', date_input)
         if iso_match:
             _, month, day = map(int, iso_match.groups())  # Ignore year
             target_date = datetime(current_year, month, day).date()
         
-        # 2. US format: MM/DD/YYYY (08/21/2024 or 8/21/2024) (ignore year, use current)
+        # 2. US format: MM/DD/YYYY (08/21/2026 or 8/21/2026) (ignore year, use current)
         elif re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', date_input):
             us_match = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', date_input)
             if us_match:
                 month, day, _ = map(int, us_match.groups())  # Ignore year
                 target_date = datetime(current_year, month, day).date()
         
-        # 3. US written format: Aug 21, 2024 or August 21, 2024 (ignore year, use current)
+        # 3. US written format: Aug 21, 2026 or August 21, 2026 (ignore year, use current)
         else:
             # Month name mapping
             month_names = {
@@ -399,12 +539,12 @@ def get_date_range_utc(date_input: str) -> str:
             return json.dumps({
                 'error': f"Invalid date format: {date_input}",
                 'supported_formats': [
-                    "2024-08-21 (ISO format)",
-                    "2024-08-21T10:30:00 (ISO datetime)",
-                    "08/21/2024 (US format MM/DD/YYYY)", 
-                    "8/21/2024 (US format M/D/YYYY)",
-                    "Aug 21, 2024 (US written format)",
-                    "August 21, 2024 (US written format)"
+                    "2026-08-21 (ISO format)",
+                    "2026-08-21T10:30:00 (ISO datetime)",
+                    "08/21/2026 (US format MM/DD/YYYY)", 
+                    "8/21/2026 (US format M/D/YYYY)",
+                    "Aug 21, 2026 (US written format)",
+                    "August 21, 2026 (US written format)"
                 ],
                 'parse_error': str(e)
             }, indent=2)
@@ -414,12 +554,12 @@ def get_date_range_utc(date_input: str) -> str:
         return json.dumps({
             'error': f"Failed to parse date: {date_input}",
             'supported_formats': [
-                "2024-08-21 (ISO format)",
-                "2024-08-21T10:30:00 (ISO datetime)",
-                "08/21/2024 (US format MM/DD/YYYY)", 
-                "8/21/2024 (US format M/D/YYYY)",
-                "Aug 21, 2024 (US written format)",
-                "August 21, 2024 (US written format)"
+                "2026-08-21 (ISO format)",
+                "2026-08-21T10:30:00 (ISO datetime)",
+                "08/21/2026 (US format MM/DD/YYYY)", 
+                "8/21/2026 (US format M/D/YYYY)",
+                "Aug 21, 2026 (US written format)",
+                "August 21, 2026 (US written format)"
             ]
         }, indent=2)
     
