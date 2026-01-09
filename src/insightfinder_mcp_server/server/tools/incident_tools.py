@@ -10,6 +10,34 @@ from ...api_client.client_factory import get_current_api_client
 from ...config.settings import settings
 from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, format_api_timestamp_corrected
 
+def _convert_timestamp_to_int(timestamp: Optional[Any], param_name: str) -> Optional[int]:
+    """
+    Convert a timestamp parameter to integer if it's a string.
+    
+    Args:
+        timestamp: The timestamp value (int, str, or None)
+        param_name: The name of the parameter (for error messages)
+    
+    Returns:
+        int or None: The timestamp as an integer, or None if input was None
+        
+    Raises:
+        ValueError: If the timestamp cannot be converted to int
+    """
+    if timestamp is None:
+        return None
+    
+    if isinstance(timestamp, str):
+        try:
+            return int(timestamp)
+        except ValueError:
+            raise ValueError(f"Invalid {param_name}: must be an integer, got '{timestamp}'")
+    
+    if isinstance(timestamp, int):
+        return timestamp
+    
+    raise ValueError(f"Invalid {param_name}: must be an integer or string, got {type(timestamp).__name__}")
+
 """
 === INCIDENT INVESTIGATION TOOLS - LLM USAGE GUIDELINES ===
 
@@ -57,7 +85,7 @@ Layer 5 - ANALYTICS (Pattern analysis):
 🎯 QUERY PARAMETER GUIDELINES:
 
 Time Ranges:
-- start_time_ms: UTC midnight of start date (e.g., for Aug 7, 2025: start of day UTC)
+- start_time_ms: UTC midnight of start date (e.g., for Aug 7, 2026: start of day UTC)
 - end_time_ms: UTC end of period or current time
 - If omitted: Tools default to last 24 hours automatically
 
@@ -137,10 +165,10 @@ async def get_incidents_overview(
         system_name (str): The name of the system to query for incidents.
         start_time_ms (int): Optional. The start of the time window in UTC milliseconds.
                          If not provided, defaults to 24 hours ago.
-                         Example: For Aug 7, 2025 00:00 UTC = 1723075200000
+                         Example: For Aug 7, 2026 00:00 UTC = 1754438400000
         end_time_ms (int): Optional. The end of the time window in UTC milliseconds.
                        If not provided, defaults to the current time.
-                       Example: For Aug 7, 2025 23:59 UTC = 1723161540000
+                       Example: For Aug 7, 2026 23:59 UTC = 1754524740000
         project_name (str): Optional. Filter results to only include incidents from this specific project.
 
     Time Conversion Examples:
@@ -154,6 +182,13 @@ async def get_incidents_overview(
         return {"status": "error", "message": "Invalid system_name"}
     
     try:
+        # Convert string timestamps to integers if needed
+        try:
+            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
+            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+        
         # print(f"[DEBUG] get_incidents_overview called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}", file=sys.stderr)
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
@@ -263,19 +298,25 @@ async def get_incidents_list(
 
     Args:
         system_name (str): The name of the system to query for incidents.
-        start_time_ms (int): Optional. The start of the time window in UTC milliseconds.
-                          Example: For midnight Aug 7, 2025 UTC = 1723075200000
-        end_time_ms (int): Optional. The end of the time window in UTC milliseconds.
-                        Example: For end of Aug 7, 2025 UTC = 1723161599000
+        start_time_ms (int): The start of the time window in UTC milliseconds.
+                          Example: For midnight Aug 7, 2026 UTC = 1754438400000
+        end_time_ms (int): The end of the time window in UTC milliseconds.
+                        Example: For end of Aug 7, 2026 UTC = 1754524799000
         limit (int): Maximum number of incidents to return (default: 10).
         only_true_incidents (bool): If True, only return events marked as true incidents. default is True.
     
     UTC Conversion Notes:
         - Always provide timestamps in UTC milliseconds format
         - Use tools like get_current_datetime() or get_time_range_query() for conversion
-        - Default range is last 24 hours if parameters omitted
     """
     try:
+        # Convert string timestamps to integers if needed
+        try:
+            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
+            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+        
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
             default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
@@ -366,6 +407,13 @@ async def get_incidents_summary(
         include_root_cause_info (bool): If True, include information about root cause availability (default: True).
     """
     try:
+        # Convert string timestamps to integers if needed
+        try:
+            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
+            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+        
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
             default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
@@ -481,7 +529,10 @@ async def get_incidents_summary(
 @mcp_server.tool()
 async def get_incident_details(
     system_name: str,
-    incident_timestamp: int,
+    incident_timestamp: str,
+    instance_name: Optional[str] = None,
+    pattern_id: Optional[str] = None,
+    pattern_name: Optional[str] = None,
     include_root_cause: bool = True,
     fetch_rca_chain: bool = False,
     include_recommendations: bool = False
@@ -506,16 +557,41 @@ async def get_incident_details(
 
     Args:
         system_name (str): The name of the system to query.
-        incident_timestamp (int): The timestamp of the specific incident to get details for.
+        incident_timestamp (str): The timestamp in ISO 8601 format (e.g., "2026-01-08T21:45:30Z") or 13-digit milliseconds.
+        instance_name (str): Optional. Filter by specific instance name.
+        pattern_id (str): Optional. Filter by specific pattern ID.
+        pattern_name (str): Optional. Filter by specific pattern name.
         include_root_cause (bool): Whether to include detailed root cause information.
         fetch_rca_chain (bool): Whether to fetch the full root cause analysis chain (always set to True when user requests root cause or causal chain).
         include_recommendations (bool): Whether to include recommendations or remediation steps if available.
     """
     try:
-        # Use a 5-minute window around the incident timestamp
-        window_ms = 5 * 60 * 1000  # 5 minutes in milliseconds
-        start_time = incident_timestamp - window_ms
-        end_time = incident_timestamp + window_ms
+        # Convert ISO 8601 timestamp to milliseconds or parse 13-digit timestamp
+        timestamp_ms = None
+        if isinstance(incident_timestamp, str):
+            # Try ISO 8601 format first
+            if 'T' in incident_timestamp or '-' in incident_timestamp:
+                try:
+                    # Parse ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
+                    dt = datetime.fromisoformat(incident_timestamp.replace('Z', '+00:00'))
+                    timestamp_ms = int(dt.timestamp() * 1000)
+                except ValueError:
+                    return {"status": "error", "message": f"Invalid ISO 8601 timestamp format: '{incident_timestamp}'. Expected format: '2026-01-08T21:45:30Z'"}
+            else:
+                # Try to parse as 13-digit milliseconds string
+                try:
+                    timestamp_ms = int(incident_timestamp)
+                except ValueError:
+                    return {"status": "error", "message": f"Invalid timestamp: must be ISO 8601 format or 13-digit milliseconds, got '{incident_timestamp}'"}
+        elif isinstance(incident_timestamp, int):
+            timestamp_ms = incident_timestamp
+        else:
+            return {"status": "error", "message": f"Invalid timestamp type: {type(incident_timestamp).__name__}"}
+        
+        # Use a 1-minute window around the incident timestamp
+        window_ms = 1 * 60 * 1000  # 1 minute in milliseconds
+        start_time = timestamp_ms - window_ms
+        end_time = timestamp_ms + window_ms
         
         client = _get_api_client()
         incidents_response = await client._fetch_timeline_data(
@@ -528,10 +604,37 @@ async def get_incident_details(
         # Find the specific incident in the response
         incidents = incidents_response.get('data', [])
         incident_data = None
-        for inc in incidents:
-            if inc.get('timestamp') == incident_timestamp:
-                incident_data = inc
-                break
+        
+        # Check if all optional filters are None
+        if instance_name is None and pattern_id is None and pattern_name is None:
+            # Exact timestamp match
+            for inc in incidents:
+                if inc.get('timestamp') == timestamp_ms:
+                    incident_data = inc
+                    break
+        else:
+            # Filter by optional parameters within time window
+            for inc in incidents:
+                if inc.get('timestamp') >= start_time and inc.get('timestamp') <= end_time:
+                    # Check all provided filters
+                    match = True
+                    
+                    if instance_name is not None and inc.get('instanceName') != instance_name:
+                        match = False
+                    
+                    if pattern_id is not None and inc.get('patternId') != pattern_id:
+                        match = False
+                    
+                    if pattern_name is not None and inc.get('patternName') != pattern_name:
+                        match = False
+                    
+                    if match:
+                        incident_data = inc
+                        break
+            
+            # If no match found with filters, return the first incident in the time window
+            if incident_data is None and incidents:
+                incident_data = incidents[0]
                 
         if not incident_data:
             return {"status": "error", "message": "No incident found with the specified timestamp"}
@@ -699,6 +802,13 @@ async def get_incident_raw_data(
     max_length = min(max_length, 10000)
     
     try:
+        # Convert string timestamp to integer if needed
+        if isinstance(incident_timestamp, str):
+            try:
+                incident_timestamp = int(incident_timestamp)
+            except ValueError:
+                return {"status": "error", "message": f"Invalid incident_timestamp: must be an integer, got '{incident_timestamp}'"}
+        
         # Get incidents for a small time window around the specific timestamp
         start_time = incident_timestamp - (5 * 60 * 1000)  # 5 minutes before
         end_time = incident_timestamp + (5 * 60 * 1000)    # 5 minutes after
@@ -766,6 +876,13 @@ async def get_incidents_statistics(
         end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
     """
     try:
+        # Convert string timestamps to integers if needed
+        try:
+            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
+            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+        
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
             default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
@@ -856,6 +973,13 @@ async def fetch_traces(
                        If not provided, defaults to the current time.
     """
     try:
+        # Convert string timestamps to integers if needed
+        try:
+            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
+            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+        
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
             default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
@@ -898,6 +1022,13 @@ async def fetch_log_anomalies(
                        If not provided, defaults to the current time.
     """
     try:
+        # Convert string timestamps to integers if needed
+        try:
+            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
+            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+        
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
             default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
@@ -940,6 +1071,13 @@ async def fetch_deployments(
                        If not provided, defaults to the current time.
     """
     try:
+        # Convert string timestamps to integers if needed
+        try:
+            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
+            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+        
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
             default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
@@ -979,11 +1117,11 @@ async def get_project_incidents(
     Use this tool when the user specifies both a system name and project name.
     
     Example usage:
-    - "show me incidents for project demo-kpi-metrics-2 in system Citizen Cane Demo System (STG)"
+    - "show me incidents for project demo-kpi-metrics-2 in system InsightFinder Demo System (APP)"
     - "get incidents after timestamp for project X in system Y"
 
     Args:
-        system_name (str): The name of the system (e.g., "Citizen Cane Demo System (STG)")
+        system_name (str): The name of the system (e.g., "InsightFinder Demo System (APP)")
         project_name (str): The name of the project (e.g., "demo-kpi-metrics-2")
         start_time_ms (int): Start time in UTC milliseconds
         end_time_ms (int): End time in UTC milliseconds  
@@ -991,6 +1129,13 @@ async def get_project_incidents(
         limit (int): Maximum number of incidents to return (default: 20)
     """
     try:
+        # Convert string timestamps to integers if needed
+        try:
+            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
+            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+        
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
             default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
@@ -1104,6 +1249,19 @@ async def predict_incidents(
         # Security checks
         if not system_name or len(system_name) > 100:
             return {"status": "error", "message": "Invalid system_name"}
+
+        # Convert string timestamps to integers if needed
+        if isinstance(start_time_ms, str):
+            try:
+                start_time_ms = int(start_time_ms)
+            except ValueError:
+                return {"status": "error", "message": f"Invalid start_time_ms: must be an integer, got '{start_time_ms}'"}
+        
+        if isinstance(end_time_ms, str):
+            try:
+                end_time_ms = int(end_time_ms)
+            except ValueError:
+                return {"status": "error", "message": f"Invalid end_time_ms: must be an integer, got '{end_time_ms}'"}
 
         # Call the InsightFinder API client
         api_client = _get_api_client()

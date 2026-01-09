@@ -806,11 +806,11 @@ async def get_project_metric_anomalies(
     for identifying which project the anomaly belongs to.
     
     Example usage:
-    - "show me metric anomalies for project demo-kpi-metrics-2 in system Citizen Cane Demo System (STG)"
+    - "show me metric anomalies for project demo-kpi-metrics-2 in system InsightFinder Demo System (APP)"
     - "get metric anomalies before incident for project X in system Y"
 
     Args:
-        system_name (str): The name of the system (e.g., "Citizen Cane Demo System (STG)")
+        system_name (str): The name of the system (e.g., "InsightFinder Demo System (APP)")
         project_name (str): The name of the project (e.g., "demo-kpi-metrics-2")
         start_time_ms (int): Start time in UTC milliseconds
         end_time_ms (int): End time in UTC milliseconds  

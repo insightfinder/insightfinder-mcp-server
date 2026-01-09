@@ -709,7 +709,6 @@ async def find_system_by_name(
     **When to use this tool:**
     - When user mentions a system name that might be incorrect
     - Before calling other tools that require exact system names
-    - When user says "show me incidents in citizen cane" but means "Citizen Cane Demo System"
     - To help users discover the correct system name
     
     Args:
@@ -724,14 +723,14 @@ async def find_system_by_name(
         
     Example:
         # Find system with fuzzy name
-        result = await find_system_by_name(search_term="citizen cane")
+        result = await find_system_by_name(search_term="insightfinder demo")
         
         # Result includes best matches:
         {
             "status": "success",
             "matches": [
                 {
-                    "systemDisplayName": "Citizen Cane Demo System (STG)",
+                    "systemDisplayName": "InsightFinder Demo System (APP)",
                     "matchScore": 0.85,
                     "userName": "admin",
                     ...
