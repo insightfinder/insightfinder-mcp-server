@@ -607,9 +607,11 @@ async def get_incident_details(
         
         # Check if all optional filters are None
         if instance_name is None and pattern_id is None and pattern_name is None:
-            # Exact timestamp match
+            # Timestamp match at minute granularity (ignoring seconds and milliseconds)
+            target_timestamp_minutes = timestamp_ms // 60000  # Convert to minutes
             for inc in incidents:
-                if inc.get('timestamp') == timestamp_ms:
+                incident_timestamp_minutes = inc.get('timestamp', 0) // 60000  # Convert to minutes
+                if incident_timestamp_minutes == target_timestamp_minutes:
                     incident_data = inc
                     break
         else:
