@@ -96,8 +96,8 @@ async def get_metric_data(
             project_name="my-project",
             instance_name="server-01",
             metric_list=["Availability"],
-            start_time_ms=1734307200000,  # Must be valid and before end_time_ms
-            end_time_ms=1734393600000     # Must be valid and after start_time_ms
+            start_time_ms=1797379200000,  # Must be valid and before end_time_ms
+            end_time_ms=1797465600000     # Must be valid and after start_time_ms
         )
     """
     try:
@@ -112,6 +112,10 @@ async def get_metric_data(
         # Get time range with timezone awareness
         if start_time_ms is None or end_time_ms is None:
             start_time_ms, end_time_ms = get_timezone_aware_time_range_ms(days_back=1)
+        
+        # Ensure timestamps are integers (they might come in as strings from JSON/API)
+        start_time_ms = int(start_time_ms) if isinstance(start_time_ms, str) else start_time_ms
+        end_time_ms = int(end_time_ms) if isinstance(end_time_ms, str) else end_time_ms
         
         # Ensure timestamps are not None after assignment
         if start_time_ms is None or end_time_ms is None:
@@ -363,6 +367,7 @@ async def list_available_metrics(
         # Extract and structure the response
         raw_data = result.get("data", {})
         metric_list = raw_data.get("possibleMetricList", [])
+        print(metric_list)
         
         return {
             "status": "success",
