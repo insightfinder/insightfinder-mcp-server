@@ -671,7 +671,13 @@ async def get_incident_details(
         result_incident.pop('rootCauseInfoKey', None)  # Remove root cause info key to avoid confusion
         result_incident.pop('incidentLLMKey', None)  # Remove incidentLLMKey to avoid confusion
 
+        # Extract metric name if available in rootCause
+        metric_name = None
+        if "rootCause" in incident_data and incident_data["rootCause"] and "metricName" in incident_data["rootCause"]:
+            metric_name = incident_data["rootCause"]["metricName"]
+
         result = {
+            "metricName": metric_name,
             "incident": result_incident,
             "raw_data_available": True,  # Indicate that raw data can be fetched separately
             "root_cause_available": False,
@@ -685,10 +691,6 @@ async def get_incident_details(
             "projectDisplayName": incident_data.get("projectDisplayName", "Unknown"),
             "realProjectName": incident_data.get("projectName", "Unknown")
         }
-        
-        # Add metric name only if available in rootCause
-        if "rootCause" in incident_data and incident_data["rootCause"] and "metricName" in incident_data["rootCause"]:
-            result["metricName"] = incident_data["rootCause"]["metricName"]
 
         # Check if root cause analysis is available and requested
         root_cause_info = incident_data.get('rootCauseInfoKey')
