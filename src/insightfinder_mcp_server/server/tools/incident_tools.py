@@ -360,6 +360,11 @@ async def get_incidents_list(
                 "is_incident": incident.get("isIncident", False),
                 "status": incident.get("status", "unknown")
             }
+            
+            # Add metric name if available in rootCause
+            if "rootCause" in incident and incident["rootCause"] and "metricName" in incident["rootCause"]:
+                incident_info["metric_name"] = incident["rootCause"]["metricName"]
+            
             incident_list.append(incident_info)
 
         return {
@@ -664,6 +669,10 @@ async def get_incident_details(
             "isIncident": incident_data.get("isIncident"),
             "active": incident_data.get("active")
         }
+        
+        # Add metric name if available in rootCause
+        if "rootCause" in incident_data and incident_data["rootCause"] and "metricName" in incident_data["rootCause"]:
+            result["metric_name"] = incident_data["rootCause"]["metricName"]
 
         # Check if root cause analysis is available and requested
         root_cause_info = incident_data.get('rootCauseInfoKey')
