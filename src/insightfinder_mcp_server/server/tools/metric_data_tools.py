@@ -43,46 +43,31 @@ async def get_metric_data(
     IMPORTANT: Always show both API URL and UI URL in the response for user. Both are crucial for
     accessing and visualizing the metric data.
 
+    **TIP: Fetching Metrics Related to Incidents**
+    - If you are trying to fetch metric line chart data related to an incident, use the instance
+      and metric_name from the incident details (obtained from incident-related tools).
+    - This ensures you're viewing the exact metrics that triggered or are associated with the incident.
+
     **Important Time Range Requirements:**
     - start_time and end_time accept ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
     - start_time must be LESS than end_time (start time must come before end time)
     - start_time and end_time cannot be the same value
     
-    **IMPORTANT - When Fetching Metrics for Incidents:**
-    - When investigating incidents or working with incident data, ALWAYS use the metric_name and 
-      instance_name directly from the incident response (from tools like get_incident_details, 
-      get_incidents_list, get_incidents_summary, etc.)
-    - DO NOT call validate_instance_name or validate_metric_name unnecessarily when you already 
-      have validated data from incident tools
-    - DO NOT call list_available_instances_for_project or list_available_metrics when working 
-      with incident data - the incident already contains the correct metric and instance names
-    - Only call validation tools if the metric/instance is NOT coming from an incident response,
-      or if you get an error indicating invalid metric/instance
-    
-    **Instance Validation (for non-incident queries):**
-    - If you already know the instance_name (and it's NOT from an incident), validate it FIRST 
-      using validate_instance_name tool by passing project_name and instance_name before calling this tool.
+    **Instance Validation (IMPORTANT - Follow this workflow):**
+    - If you already know the instance_name, validate it FIRST using validate_instance_name tool
+      by passing project_name and instance_name before calling this tool.
     - If validation fails or you don't know the instance name, use list_available_instances_for_project
       to see all available instances for the project.
     - Only call get_metric_data after confirming the instance exists.
     
-    **Metric Validation (for non-incident queries):**
-    - If you already know the metric names (and they're NOT from an incident), validate them FIRST 
-      using validate_metric_name tool by passing project_name and metric_list before calling this tool.
+    **Metric Validation (IMPORTANT - Follow this workflow):**
+    - If you already know the metric names, validate them FIRST using validate_metric_name tool
+      by passing project_name and metric_list before calling this tool.
     - If validation fails or you don't know the metric names, use list_available_metrics
       to see all available metrics for the project.
     - Only call get_metric_data after confirming the metrics exist.
     
     **Recommended Workflow:**
-    
-    FOR INCIDENT-RELATED METRICS (Most Common):
-    1. Get incident data using incident tools (get_incident_details, get_incidents_list, etc.)
-    2. Extract metric_name and instance_name directly from the incident response
-    3. Call get_metric_data DIRECTLY with the incident's metric and instance
-       - The function will automatically validate the data internally
-       - NO need to call validate_instance_name or validate_metric_name tools separately
-    
-    FOR GENERAL METRIC QUERIES (Non-incident):
     1. Use validate_instance_name to check if instance exists (if you know the instance name)
        OR use list_available_instances_for_project to discover instances
     2. Use validate_metric_name to check if metrics exist (if you know the metric names)
@@ -95,16 +80,13 @@ async def get_metric_data(
     - To visualize metric performance and patterns
     - To analyze historical metric values for a specific instance
     - To compare multiple metrics side-by-side
-    - To investigate incident root causes by viewing related metrics
     
     Args:
         project_name: Name of the project to query (required)
         instance_name: Name of the specific instance/host to query (required)
-                      - Can be taken directly from incident data (recommended for incident investigation)
-                      - Should be validated with validate_instance_name tool for non-incident queries
+                      - Should be validated with validate_instance_name tool first
         metric_list: List of metric names to fetch data for (e.g., ["Availability", "CPU", "Memory"])
-                    - Can be taken directly from incident data (recommended for incident investigation)
-                    - Should be validated with validate_metric_name tool for non-incident queries
+                    - Should be validated with validate_metric_name tool first
         start_time: Start timestamp in ISO 8601 format (e.g., "2026-01-08T21:45:30Z") 
         end_time: End timestamp in ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
 
@@ -116,28 +98,7 @@ async def get_metric_data(
         - metadata: Query parameters and time range information
         
     Example:
-        # RECOMMENDED: For incident investigation (NO validation needed)
-        # Step 1: Get incident details
-        incident = await get_incident_details(
-            system_name="my-system",
-            incident_timestamp="1768522080000"
-        )
-        
-        # Step 2: Extract metric and instance from incident
-        metric_name = incident.get("metric_name")  # e.g., "cron-globalView"
-        instance_name = incident["incident"]["instanceName"]  # e.g., "bitnami-rabbitmq-0"
-        project_name = incident.get("projectDisplayName")  # e.g., "Prod RMQ Queue Length"
-        
-        # Step 3: Fetch metric data DIRECTLY (validation happens automatically inside the function)
-        result = await get_metric_data(
-            project_name=project_name,
-            instance_name=instance_name,
-            metric_list=[metric_name],
-            start_time="2026-01-08T21:45:30Z",
-            end_time="2026-01-09T21:45:30Z"
-        )
-        
-        # For general metric queries (WITH validation)
+        # Recommended workflow with validation
         # Step 1: Validate instance
         instance_check = await validate_instance_name(
             project_name="my-project",
@@ -155,6 +116,15 @@ async def get_metric_data(
             project_name="my-project",
             instance_name="server-01",
             metric_list=["CPU", "Memory"]
+        )
+        
+        # Get Availability metric URL for a specific time range (ISO 8601 format)
+        result = await get_metric_data(
+            project_name="my-project",
+            instance_name="server-01",
+            metric_list=["Availability"],
+            start_time="2026-01-08T21:45:30Z",
+            end_time="2026-01-09T21:45:30Z"
         )
     """
     try:
