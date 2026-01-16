@@ -26,6 +26,88 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # METRIC DATA TOOLS
 # ============================================================================
+@mcp_server.tool()
+async def get_metric_data_with_single_metric_name(
+    project_name: str,
+    instance_name: str,
+    metric_name: str,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Get API URL and UI URL for fetching metric line chart data for a single metric.
+    This is a convenience wrapper around get_metric_data that accepts a single metric name string
+    instead of a list of metrics.
+
+    **CRITICAL WORKFLOW - Follow this exact sequence:**
+    
+    **For Incident-Related Metrics:**
+    1. Get incident details first (get_incidents_list or get_incident_details) to obtain instance_name and metric_name
+    2. Call validate_instance_and_metrics(project_name, instance_name, [metric_name]) 
+    3. If validation passes (valid=True), IMMEDIATELY call this function - SKIP all other validation steps
+    
+    **For General Metric Queries:**
+    1. If you know instance_name and metric name: Call validate_instance_and_metrics FIRST
+    2. If validation passes (valid=True), IMMEDIATELY call this function - SKIP all other validation steps
+    3. If validation fails OR you don't know instance/metrics: Use list_available_instances_for_project or list_available_metrics
+    
+    **Time Range:**
+    - Accepts ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
+    - start_time must be < end_time (cannot be equal)
+    
+    Args:
+        project_name: Project name (required)
+        instance_name: Instance/host name (required)
+        metric_name: Single metric name (required, e.g., "CPU")
+        start_time: Start time in ISO 8601 format (optional, defaults to 1 day ago)
+        end_time: End time in ISO 8601 format (optional, defaults to now)
+
+    Returns:
+        - status: "success" or "error"
+        - api-url: Direct URL to JSON data
+        - ui-url: Direct URL to InsightFinder UI visualization
+        - metadata: Query parameters and time range
+        
+    Example:
+        # Validate first, then fetch (ALWAYS use this pattern)
+        validation = await validate_instance_and_metrics(
+            project_name="my-project",
+            instance_name="server-01",
+            metric_list=["CPU"]
+        )
+        
+        # If validation passed, get metric data
+        if validation.get("valid"):
+            result = await get_metric_data_with_metric_name(
+                project_name="my-project",
+                instance_name="server-01",
+                metric_name="CPU"
+            )
+    """
+    try:
+        # Validate that metric_name is provided
+        if not metric_name or not isinstance(metric_name, str):
+            return {
+                "status": "error",
+                "message": "metric_name must be a non-empty string"
+            }
+        
+        # Convert single metric name to list and call get_metric_data
+        return await get_metric_data(
+            project_name=project_name,
+            instance_name=instance_name,
+            metric_list=[metric_name],
+            start_time=start_time,
+            end_time=end_time
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in get_metric_data_with_metric_name: {str(e)}", exc_info=True)
+        return {
+            "status": "error",
+            "message": f"Error fetching metric data: {str(e)}"
+        }
+
 
 @mcp_server.tool()
 async def get_metric_data(
