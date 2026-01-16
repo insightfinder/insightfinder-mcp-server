@@ -356,15 +356,19 @@ async def get_incidents_list(
                 "realProjectName": incident.get("projectName", "Unknown"),
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
+            }
+            
+            # Add metric name right after instance only if available
+            if "rootCause" in incident and incident["rootCause"] and "metricName" in incident["rootCause"]:
+                incident_info["metricName"] = incident["rootCause"]["metricName"]
+            
+            # Add remaining fields
+            incident_info.update({
                 "pattern": incident.get("patternName", "Unknown"),
                 "anomaly_score": round(incident.get("anomalyScore", 0), 2),
                 "is_incident": incident.get("isIncident", False),
                 "status": incident.get("status", "unknown")
-            }
-            
-            # Add metric name if available in rootCause
-            if "rootCause" in incident and incident["rootCause"] and "metricName" in incident["rootCause"]:
-                incident_info["metric_name"] = incident["rootCause"]["metricName"]
+            })
             
             incident_list.append(incident_info)
 
@@ -461,6 +465,14 @@ async def get_incidents_summary(
                 "projectDisplayName": incident.get("projectDisplayName", "Unknown"),
                 "realProjectName": incident.get("projectName", "Unknown"),
                 "instanceName": incident.get("instanceName", "Unknown"),
+            }
+            
+            # Add metric name right after instanceName only if available
+            if "rootCause" in incident and incident["rootCause"] and "metricName" in incident["rootCause"]:
+                summary["metricName"] = incident["rootCause"]["metricName"]
+            
+            # Add remaining fields
+            summary.update({
                 "componentName": incident.get("componentName", "Unknown"),
                 "patternName": incident.get("patternName", "Unknown"),
                 "anomalyScore": incident.get("anomalyScore", 0),
@@ -468,11 +480,7 @@ async def get_incidents_summary(
                 "isIncident": incident.get("isIncident", False),
                 "has_raw_data": "rawData" in incident and incident["rawData"] is not None,
                 "has_root_cause": incident.get('rootCauseResultInfo', {}).get('hasPrecedingEvent', False) or ("rootCause" in incident and incident["rootCause"] is not None),
-            }
-            
-            # Add metric name if available in rootCause
-            if "rootCause" in incident and incident["rootCause"] and "metricName" in incident["rootCause"]:
-                summary["metric_name"] = incident["rootCause"]["metricName"]
+            })
             
             # Add root cause information if available
             if include_root_cause_info:
@@ -678,9 +686,9 @@ async def get_incident_details(
             "realProjectName": incident_data.get("projectName", "Unknown")
         }
         
-        # Add metric name if available in rootCause
+        # Add metric name only if available in rootCause
         if "rootCause" in incident_data and incident_data["rootCause"] and "metricName" in incident_data["rootCause"]:
-            result["metric_name"] = incident_data["rootCause"]["metricName"]
+            result["metricName"] = incident_data["rootCause"]["metricName"]
 
         # Check if root cause analysis is available and requested
         root_cause_info = incident_data.get('rootCauseInfoKey')
@@ -864,17 +872,27 @@ async def get_incident_raw_data(
         if len(raw_data) > max_length:
             raw_data = raw_data[:max_length] + f"\n... [TRUNCATED - Full length: {len(target_incident['rawData'])} characters]"
 
-        return {
+        result = {
             "status": "success",
             "incident_timestamp": incident_timestamp,
             "timestamp_human": format_api_timestamp_corrected(incident_timestamp),
             "projectName": target_incident.get("projectDisplayName"),
             "instanceName": target_incident.get("instanceName"),
+        }
+        
+        # Add metric name right after instanceName only if available
+        if "rootCause" in target_incident and target_incident["rootCause"] and "metricName" in target_incident["rootCause"]:
+            result["metricName"] = target_incident["rootCause"]["metricName"]
+        
+        # Add remaining fields
+        result.update({
             "componentName": target_incident.get("componentName"),
             "raw_data": raw_data,
             "raw_data_length": len(target_incident.get("rawData", "")),
             "truncated": len(target_incident.get("rawData", "")) > max_length
-        }
+        })
+        
+        return result
         
     except Exception as e:
         error_message = f"Error in get_incident_raw_data: {str(e)}"
@@ -1201,12 +1219,21 @@ async def get_project_incidents(
                 "project": incident.get("projectDisplayName", "Unknown"),
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
+            }
+            
+            # Add metric name right after instance only if available
+            if "rootCause" in incident and incident["rootCause"] and "metricName" in incident["rootCause"]:
+                incident_info["metricName"] = incident["rootCause"]["metricName"]
+            
+            # Add remaining fields
+            incident_info.update({
                 "pattern": incident.get("patternName", "Unknown"),
                 "anomaly_score": round(incident.get("anomalyScore", 0), 2),
                 "is_incident": incident.get("isIncident", False),
                 "status": incident.get("status", "unknown"),
                 "active": incident.get("active", False)
-            }
+            })
+
             
             # Add root cause summary if available
             if "rootCause" in incident and incident["rootCause"]:
@@ -1328,12 +1355,20 @@ async def predict_incidents(
                 "project": incident.get("projectDisplayName", "Unknown"),
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
+            }
+            
+            # Add metric name right after instance only if available
+            if "rootCause" in incident and incident["rootCause"] and "metricName" in incident["rootCause"]:
+                incident_info["metricName"] = incident["rootCause"]["metricName"]
+            
+            # Add remaining fields
+            incident_info.update({
                 "pattern": incident.get("patternName", "Unknown"),
                 # "anomaly_score": round(incident.get("anomalyScore", 0), 2),
                 "is_incident": incident.get("isIncident", False),
                 "status": incident.get("status", "unknown"),
                 "active": incident.get("active", False)
-            }
+            })
 
             incident_llm_key = incident.get("incidentLLMKey")
             user_name = incident.get("userName", "")

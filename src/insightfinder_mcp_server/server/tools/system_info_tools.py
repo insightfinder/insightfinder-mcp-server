@@ -846,7 +846,7 @@ async def list_available_instances_for_project(
     Args:
         project_name: Name or display name of the project to query (required)
         page: Page number to retrieve (1-indexed, default: 1)
-        page_size: Number of instances per page (default: 50, max: 500)
+        page_size: Number of instances per page (default: 50, max: 5000)
         
     Returns:
         A dictionary containing:
@@ -901,10 +901,10 @@ async def list_available_instances_for_project(
                 "message": "Page number must be >= 1"
             }
         
-        if page_size < 1 or page_size > 500:
+        if page_size < 1 or page_size > 5000:
             return {
                 "status": "error",
-                "message": "Page size must be between 1 and 500"
+                "message": "Page size must be between 1 and 5000"
             }
         
         # Validate input
