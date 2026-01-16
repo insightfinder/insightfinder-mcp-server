@@ -36,70 +36,40 @@ async def get_metric_data(
     end_time: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Get the API URL and UI URL for fetching metric line chart data for specified metrics and instance.
-    This tool validates the request by making an API call to InsightFinder, then returns
-    the API URL and UI URL that users can click to directly access the JSON metric data in their browser.
+    Get API URL and UI URL for fetching metric line chart data. Returns URLs that users can click
+    to directly access the JSON metric data and visualize it in the InsightFinder UI.
 
-    IMPORTANT: Always show both API URL and UI URL in the response for user. Both are crucial for
-    accessing and visualizing the metric data.
-
-    **TIP: Fetching Metrics Related to Incidents**
-    - CRITICAL: If you are trying to fetch metric line chart data related to an incident, you need to first
-      obtain the incident details by calling incident-related tools (e.g., get_incidents_list,
-      get_incident_details) where you can get the **instance name** and **metric name**.
-    - Once you have the instance name and metric name from the incident, use them with this tool
-      to view the exact metrics that triggered or are associated with the incident.
-
-    **Important Time Range Requirements:**
-    - start_time and end_time accept ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
-    - start_time must be LESS than end_time (start time must come before end time)
-    - start_time and end_time cannot be the same value
+    **CRITICAL WORKFLOW - Follow this exact sequence:**
     
-    **Instance Validation (IMPORTANT - Follow this workflow):**
-    - If you already know the instance_name, validate it FIRST using validate_instance_and_metrics tool
-      by passing project_name and instance_name before calling this tool.
-    - If validation fails or you don't know the instance name, use list_available_instances_for_project
-      to see all available instances for the project.
-    - Only call get_metric_data after confirming the instance exists.
+    **For Incident-Related Metrics:**
+    1. Get incident details first (get_incidents_list or get_incident_details) to obtain instance_name and metric_name
+    2. Call validate_instance_and_metrics(project_name, instance_name, metric_list) 
+    3. If validation passes (valid=True), IMMEDIATELY call get_metric_data - SKIP all other validation steps
     
-    **Metric Validation (IMPORTANT - Follow this workflow):**
-    - If you already know the metric names, validate them FIRST using validate_instance_and_metrics tool
-      by passing project_name and metric_list before calling this tool.
-    - If validation fails or you don't know the metric names, use list_available_metrics
-      to see all available metrics for the project.
-    - Only call get_metric_data after confirming the metrics exist.
+    **For General Metric Queries:**
+    1. If you know instance_name and metric names: Call validate_instance_and_metrics FIRST
+    2. If validation passes (valid=True), IMMEDIATELY call get_metric_data - SKIP all other validation steps
+    3. If validation fails OR you don't know instance/metrics: Use list_available_instances_for_project or list_available_metrics
     
-    **Recommended Workflow:**
-    1. Use validate_instance_and_metrics to check if both instance and metrics exist
-       OR use list_available_instances_for_project and list_available_metrics to discover them
-    2. Call get_metric_data with validated instance and metrics
-    
-    **When to use this tool:**
-    - When user wants to see metric trends over time
-    - To get a direct link to metric data JSON
-    - To visualize metric performance and patterns
-    - To analyze historical metric values for a specific instance
-    - To compare multiple metrics side-by-side
+    **Time Range:**
+    - Accepts ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
+    - start_time must be < end_time (cannot be equal)
     
     Args:
-        project_name: Name of the project to query (required)
-        instance_name: Name of the specific instance/host to query (required)
-                      - Should be validated with validate_instance_name tool first
-        metric_list: List of metric names to fetch data for (e.g., ["Availability", "CPU", "Memory"])
-                    - Should be validated with validate_metric_name tool first
-        start_time: Start timestamp in ISO 8601 format (e.g., "2026-01-08T21:45:30Z") 
-        end_time: End timestamp in ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
+        project_name: Project name (required)
+        instance_name: Instance/host name (required)
+        metric_list: List of metric names (required, e.g., ["CPU", "Memory"])
+        start_time: Start time in ISO 8601 format (optional, defaults to 1 day ago)
+        end_time: End time in ISO 8601 format (optional, defaults to now)
 
     Returns:
-        A dictionary containing:
         - status: "success" or "error"
-        - api-url: Direct API URL to access the metric data JSON (click to view in browser)
-        - ui-url: Direct URL to view the metric data in InsightFinder UI
-        - metadata: Query parameters and time range information
+        - api-url: Direct URL to JSON data
+        - ui-url: Direct URL to InsightFinder UI visualization
+        - metadata: Query parameters and time range
         
     Example:
-        # Recommended workflow with validation
-        # Validate both instance and metrics in one call
+        # Validate first, then fetch (ALWAYS use this pattern)
         validation = await validate_instance_and_metrics(
             project_name="my-project",
             instance_name="server-01",
@@ -108,20 +78,12 @@ async def get_metric_data(
         
         # If validation passed, get metric data
         if validation.get("valid"):
+            # Validation passed - call get_metric_data immediately
             result = await get_metric_data(
                 project_name="my-project",
                 instance_name="server-01",
                 metric_list=["CPU", "Memory"]
             )
-        
-        # Get Availability metric URL for a specific time range (ISO 8601 format)
-        result = await get_metric_data(
-            project_name="my-project",
-            instance_name="server-01",
-            metric_list=["Availability"],
-            start_time="2026-01-08T21:45:30Z",
-            end_time="2026-01-09T21:45:30Z"
-        )
     """
     try:
         # Get current API client
@@ -528,6 +490,21 @@ async def validate_instance_and_metrics(
             }
         
         logger.info(f"Validating for project='{project_name}', instance='{instance_name}', metrics={metric_list}")
+        logger.info(f"Parameter types: instance_name type={type(instance_name).__name__}, metric_list type={type(metric_list).__name__}")
+        
+        # Fix: If metric_list is a string that looks like a JSON array, parse it
+        if metric_list and isinstance(metric_list, str):
+            import json
+            try:
+                # Try to parse as JSON array
+                parsed_list = json.loads(metric_list)
+                if isinstance(parsed_list, list):
+                    logger.info(f"Parsed metric_list from string to list: {parsed_list}")
+                    metric_list = parsed_list
+            except (json.JSONDecodeError, ValueError):
+                # Not a JSON string, treat as a single metric name
+                logger.info(f"Treating metric_list string as single metric: [{metric_list}]")
+                metric_list = [metric_list]
         
         # Get API client
         api_client = get_current_api_client()
@@ -546,6 +523,19 @@ async def validate_instance_and_metrics(
         all_validations_passed = True
         errors: List[str] = []
         
+        # Check if only instance_name is provided without metrics
+        if instance_name and not metric_list:
+            logger.info(f"Instance validated but no metrics provided for project='{project_name}', instance='{instance_name}'")
+            return {
+                "status": "partial",
+                "valid": False,
+                "projectName": project_name,
+                "message": "Instance name provided but metric_list is missing. Please specify which metrics you want to query.",
+                "nextAction": "get_metrics_from_incident_or_ask_user",
+                "instruction": "The instance name is provided but no metrics were specified. NEXT STEPS: 1) If this is incident-related: Use get_incident_details or get_incidents_list to get the metric names from incident data, then call this validation again with the metrics. 2) If not incident-related: Ask the user which metrics they want to query OR suggest calling list_available_metrics to see all available options.",
+                "instanceName": instance_name
+            }
+        
         # STEP 1: Validate instance if provided
         if instance_name:
             logger.info(f"Step 1: Validating instance_name='{instance_name}'")
@@ -560,6 +550,10 @@ async def validate_instance_and_metrics(
             
             customer_name, actual_project_name, available_instances, system_id = project_info
             result["projectName"] = actual_project_name
+            
+            logger.info(f"Available instances for project: {available_instances}")
+            logger.info(f"Looking for instance: '{instance_name}' (type: {type(instance_name).__name__})")
+            logger.info(f"Instance in list check: {instance_name in available_instances}")
             
             instance_validation: Dict[str, Any] = {
                 "instanceName": instance_name
@@ -613,6 +607,8 @@ async def validate_instance_and_metrics(
             valid_metrics = [m for m in metric_list if m in available_metrics]
             invalid_metrics = [m for m in metric_list if m not in available_metrics]
             
+            logger.info(f"Metric validation results: requested={metric_list}, valid={valid_metrics}, invalid={invalid_metrics}")
+            
             metrics_validation: Dict[str, Any] = {
                 "requestedMetrics": metric_list,
                 "validMetrics": valid_metrics
@@ -633,7 +629,10 @@ async def validate_instance_and_metrics(
         # Set final status and next action
         result["valid"] = all_validations_passed
         
+        logger.info(f"Final validation check: all_validations_passed={all_validations_passed}, errors={errors}")
+        
         if all_validations_passed:
+            logger.info(f"Validation passed for project='{project_name}', instance='{instance_name}', metrics={metric_list}")
             result["status"] = "success"
             result["message"] = "All validations passed"
             result["nextAction"] = "call_get_metric_data"
