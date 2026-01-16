@@ -48,17 +48,46 @@ async def get_metric_data(
     - start_time must be LESS than end_time (start time must come before end time)
     - start_time and end_time cannot be the same value
     
-    **Instance Validation:**
-    - The instance_name must be a valid instance available in the project
-    - The tool automatically validates the instance against the project's available instances
-    - If an invalid instance is requested, an error is returned with the list of available instances
-    - Use list_available_instances_for_project tool to see what instances are available
+    **IMPORTANT - When Fetching Metrics for Incidents:**
+    - When investigating incidents or working with incident data, ALWAYS use the metric_name and 
+      instance_name directly from the incident response (from tools like get_incident_details, 
+      get_incidents_list, get_incidents_summary, etc.)
+    - DO NOT call validate_instance_name or validate_metric_name unnecessarily when you already 
+      have validated data from incident tools
+    - DO NOT call list_available_instances_for_project or list_available_metrics when working 
+      with incident data - the incident already contains the correct metric and instance names
+    - Only call validation tools if the metric/instance is NOT coming from an incident response,
+      or if you get an error indicating invalid metric/instance
     
-    **Metric Validation:**
-    - All requested metrics in metric_list must be available in the project
-    - The tool automatically validates metrics against the project's available metrics
-    - If invalid metrics are requested, an error is returned with the list of available metrics
-    - Use list_available_metrics tool first to see what metrics are available
+    **Instance Validation (for non-incident queries):**
+    - If you already know the instance_name (and it's NOT from an incident), validate it FIRST 
+      using validate_instance_name tool by passing project_name and instance_name before calling this tool.
+    - If validation fails or you don't know the instance name, use list_available_instances_for_project
+      to see all available instances for the project.
+    - Only call get_metric_data after confirming the instance exists.
+    
+    **Metric Validation (for non-incident queries):**
+    - If you already know the metric names (and they're NOT from an incident), validate them FIRST 
+      using validate_metric_name tool by passing project_name and metric_list before calling this tool.
+    - If validation fails or you don't know the metric names, use list_available_metrics
+      to see all available metrics for the project.
+    - Only call get_metric_data after confirming the metrics exist.
+    
+    **Recommended Workflow:**
+    
+    FOR INCIDENT-RELATED METRICS (Most Common):
+    1. Get incident data using incident tools (get_incident_details, get_incidents_list, etc.)
+    2. Extract metric_name and instance_name directly from the incident response
+    3. Call get_metric_data DIRECTLY with the incident's metric and instance
+       - The function will automatically validate the data internally
+       - NO need to call validate_instance_name or validate_metric_name tools separately
+    
+    FOR GENERAL METRIC QUERIES (Non-incident):
+    1. Use validate_instance_name to check if instance exists (if you know the instance name)
+       OR use list_available_instances_for_project to discover instances
+    2. Use validate_metric_name to check if metrics exist (if you know the metric names)
+       OR use list_available_metrics to discover available metrics
+    3. Call get_metric_data with validated instance and metrics
     
     **When to use this tool:**
     - When user wants to see metric trends over time
@@ -66,13 +95,16 @@ async def get_metric_data(
     - To visualize metric performance and patterns
     - To analyze historical metric values for a specific instance
     - To compare multiple metrics side-by-side
+    - To investigate incident root causes by viewing related metrics
     
     Args:
         project_name: Name of the project to query (required)
         instance_name: Name of the specific instance/host to query (required)
-                      - Must be a valid instance available in the project
+                      - Can be taken directly from incident data (recommended for incident investigation)
+                      - Should be validated with validate_instance_name tool for non-incident queries
         metric_list: List of metric names to fetch data for (e.g., ["Availability", "CPU", "Memory"])
-                    - Must be valid metrics available in the project
+                    - Can be taken directly from incident data (recommended for incident investigation)
+                    - Should be validated with validate_metric_name tool for non-incident queries
         start_time: Start timestamp in ISO 8601 format (e.g., "2026-01-08T21:45:30Z") 
         end_time: End timestamp in ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
 
@@ -84,20 +116,45 @@ async def get_metric_data(
         - metadata: Query parameters and time range information
         
     Example:
-        # Get CPU and Memory metrics URL for the last 24 hours
+        # RECOMMENDED: For incident investigation (NO validation needed)
+        # Step 1: Get incident details
+        incident = await get_incident_details(
+            system_name="my-system",
+            incident_timestamp="1768522080000"
+        )
+        
+        # Step 2: Extract metric and instance from incident
+        metric_name = incident.get("metric_name")  # e.g., "cron-globalView"
+        instance_name = incident["incident"]["instanceName"]  # e.g., "bitnami-rabbitmq-0"
+        project_name = incident.get("projectDisplayName")  # e.g., "Prod RMQ Queue Length"
+        
+        # Step 3: Fetch metric data DIRECTLY (validation happens automatically inside the function)
+        result = await get_metric_data(
+            project_name=project_name,
+            instance_name=instance_name,
+            metric_list=[metric_name],
+            start_time="2026-01-08T21:45:30Z",
+            end_time="2026-01-09T21:45:30Z"
+        )
+        
+        # For general metric queries (WITH validation)
+        # Step 1: Validate instance
+        instance_check = await validate_instance_name(
+            project_name="my-project",
+            instance_name="server-01"
+        )
+        
+        # Step 2: Validate metrics
+        metrics_check = await validate_metric_name(
+            project_name="my-project",
+            metric_list=["CPU", "Memory"]
+        )
+        
+        # Step 3: Get metric data (if validations passed)
         result = await get_metric_data(
             project_name="my-project",
             instance_name="server-01",
             metric_list=["CPU", "Memory"]
-        )
-        
-        # Get Availability metric URL for a specific time range (ISO 8601 format)
-        result = await get_metric_data(
-            project_name="my-project",
-            instance_name="server-01",
-            metric_list=["Availability"],
-            start_time="2026-01-08T21:45:30Z",
-            end_time="2026-01-09T21:45:30Z"
         )
     """
     try:
@@ -442,4 +499,259 @@ async def list_available_metrics(
         return {
             "status": "error",
             "message": f"Failed to fetch metric metadata: {str(e)}"
+        }
+
+
+@mcp_server.tool()
+async def validate_instance_name(
+    project_name: str,
+    instance_name: str
+) -> Dict[str, Any]:
+    """
+    Validate if an instance name exists in a project.
+    
+    This tool checks if the provided instance_name is available in the specified project
+    by querying the list of available instances. Use this before calling get_metric_data
+    to ensure the instance exists and avoid errors.
+    
+    **When to use this tool:**
+    - Before calling get_metric_data to validate the instance_name
+    - When user specifies an instance and you want to confirm it exists
+    - To get helpful error messages with available instances if validation fails
+    
+    **Workflow:**
+    1. User specifies project_name and instance_name
+    2. Call this tool to validate the instance
+    3. If valid, proceed with get_metric_data
+    4. If invalid, the response includes available instances to choose from
+    
+    Args:
+        project_name: Name of the project to check (required)
+        instance_name: Name of the instance to validate (required)
+        
+    Returns:
+        A dictionary containing:
+        - status: "success" (if valid) or "error" (if invalid)
+        - valid: Boolean indicating if the instance is valid
+        - projectName: Name of the queried project
+        - instanceName: The instance name that was validated
+        - availableInstances: List of available instances (if invalid, first 50 shown)
+        - totalAvailableInstances: Total count of available instances
+        
+    Example:
+        # Validate an instance before getting metric data
+        result = await validate_instance_name(
+            project_name="my-project",
+            instance_name="server-01"
+        )
+        
+        # If valid:
+        {
+            "status": "success",
+            "valid": true,
+            "projectName": "my-project",
+            "instanceName": "server-01",
+            "message": "Instance 'server-01' is valid for project 'my-project'"
+        }
+        
+        # If invalid:
+        {
+            "status": "error",
+            "valid": false,
+            "projectName": "my-project",
+            "instanceName": "invalid-server",
+            "availableInstances": ["server-01", "server-02", ...],
+            "totalAvailableInstances": 25,
+            "message": "Instance 'invalid-server' not found in project 'my-project'"
+        }
+    """
+    try:
+        # Validate inputs
+        if not project_name:
+            return {
+                "status": "error",
+                "message": "project_name is a required parameter"
+            }
+        
+        if not instance_name:
+            return {
+                "status": "error",
+                "message": "instance_name is a required parameter"
+            }
+        
+        logger.info(f"Validating instance_name='{instance_name}' for project='{project_name}'")
+        
+        # Use list_available_instances_for_project to get all instances
+        # Import the function from system_info_tools
+        from .system_info_tools import list_available_instances_for_project
+        
+        instances_result = await list_available_instances_for_project(
+            project_name=project_name,
+            page=1,
+            page_size=5000  # Get a large page to check all instances
+        )
+        
+        if instances_result.get("status") == "error":
+            return instances_result
+        
+        available_instances = instances_result.get("availableInstances", [])
+        total_count = instances_result.get("pagination", {}).get("totalCount", 0)
+        actual_project_name = instances_result.get("projectName", project_name)
+        
+        # Check if the instance exists
+        if instance_name in available_instances:
+            return {
+                "status": "success",
+                "valid": True,
+                "projectName": actual_project_name,
+                "instanceName": instance_name,
+                "message": f"Instance '{instance_name}' is valid for project '{actual_project_name}'"
+            }
+        else:
+            return {
+                "status": "error",
+                "valid": False,
+                "projectName": actual_project_name,
+                "instanceName": instance_name,
+                "availableInstances": available_instances[:50],  # Show first 50
+                "totalAvailableInstances": total_count,
+                "message": f"Instance '{instance_name}' not found in project '{actual_project_name}'. Please use one of the available instances or call list_available_instances_for_project to see all {total_count} instances.",
+                "hint": "Use list_available_instances_for_project tool to see all available instances"
+            }
+        
+    except Exception as e:
+        logger.error(f"Error validating instance: {str(e)}", exc_info=True)
+        return {
+            "status": "error",
+            "message": f"Failed to validate instance: {str(e)}"
+        }
+
+
+@mcp_server.tool()
+async def validate_metric_name(
+    project_name: str,
+    metric_list: List[str]
+) -> Dict[str, Any]:
+    """
+    Validate if metric names exist in a project.
+    
+    This tool checks if all provided metric names are available in the specified project
+    by querying the list of available metrics. Use this before calling get_metric_data
+    to ensure the metrics exist and avoid errors.
+    
+    **When to use this tool:**
+    - Before calling get_metric_data to validate the metric_list
+    - When user specifies metrics and you want to confirm they exist
+    - To get helpful error messages with available metrics if validation fails
+    
+    **Workflow:**
+    1. User specifies project_name and metric_list
+    2. Call this tool to validate the metrics
+    3. If all valid, proceed with get_metric_data
+    4. If any invalid, the response includes available metrics to choose from
+    
+    Args:
+        project_name: Name of the project to check (required)
+        metric_list: List of metric names to validate (required)
+        
+    Returns:
+        A dictionary containing:
+        - status: "success" (if all valid) or "error" (if any invalid)
+        - valid: Boolean indicating if all metrics are valid
+        - projectName: Name of the queried project
+        - requestedMetrics: The metrics that were validated
+        - validMetrics: List of metrics that are valid
+        - invalidMetrics: List of metrics that are invalid (if any)
+        - availableMetrics: List of available metrics (if any invalid, first 20 shown)
+        - totalAvailableMetrics: Total count of available metrics
+        
+    Example:
+        # Validate metrics before getting metric data
+        result = await validate_metric_name(
+            project_name="my-project",
+            metric_list=["CPU", "Memory", "Availability"]
+        )
+        
+        # If all valid:
+        {
+            "status": "success",
+            "valid": true,
+            "projectName": "my-project",
+            "requestedMetrics": ["CPU", "Memory", "Availability"],
+            "validMetrics": ["CPU", "Memory", "Availability"],
+            "message": "All 3 metrics are valid for project 'my-project'"
+        }
+        
+        # If some invalid:
+        {
+            "status": "error",
+            "valid": false,
+            "projectName": "my-project",
+            "requestedMetrics": ["CPU", "InvalidMetric"],
+            "validMetrics": ["CPU"],
+            "invalidMetrics": ["InvalidMetric"],
+            "availableMetrics": ["CPU", "Memory", "Availability", ...],
+            "totalAvailableMetrics": 15,
+            "message": "1 invalid metric(s) found: ['InvalidMetric']"
+        }
+    """
+    try:
+        # Validate inputs
+        if not project_name:
+            return {
+                "status": "error",
+                "message": "project_name is a required parameter"
+            }
+        
+        if not metric_list or len(metric_list) == 0:
+            return {
+                "status": "error",
+                "message": "metric_list is required and must contain at least one metric name"
+            }
+        
+        logger.info(f"Validating metric_list={metric_list} for project='{project_name}'")
+        
+        # Use list_available_metrics to get all available metrics
+        metrics_result = await list_available_metrics(project_name=project_name)
+        
+        if metrics_result.get("status") == "error":
+            return metrics_result
+        
+        available_metrics = metrics_result.get("availableMetrics", [])
+        total_count = metrics_result.get("metricCount", 0)
+        actual_project_name = metrics_result.get("projectName", project_name)
+        
+        # Check which metrics are valid and which are invalid
+        valid_metrics = [m for m in metric_list if m in available_metrics]
+        invalid_metrics = [m for m in metric_list if m not in available_metrics]
+        
+        # All metrics are valid
+        if not invalid_metrics:
+            return {
+                "status": "success",
+                "valid": True,
+                "projectName": actual_project_name,
+                "requestedMetrics": metric_list,
+                "validMetrics": valid_metrics,
+                "message": f"All {len(metric_list)} metric(s) are valid for project '{actual_project_name}'"
+            }
+        else:
+            return {
+                "status": "error",
+                "valid": False,
+                "projectName": actual_project_name,
+                "requestedMetrics": metric_list,
+                "validMetrics": valid_metrics,
+                "invalidMetrics": invalid_metrics,
+                "availableMetrics": available_metrics[:20],  # Show first 20
+                "totalAvailableMetrics": total_count,
+                "message": f"{len(invalid_metrics)} invalid metric(s) found: {invalid_metrics}. Please use valid metrics or call list_available_metrics to see all {total_count} available metrics.",
+                "hint": "Use list_available_metrics tool to see all available metrics"
+            }
+        
+    except Exception as e:
+        logger.error(f"Error validating metrics: {str(e)}", exc_info=True)
+        return {
+            "status": "error",
+            "message": f"Failed to validate metrics: {str(e)}"
         }

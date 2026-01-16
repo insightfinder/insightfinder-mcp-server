@@ -767,18 +767,23 @@ async def find_system_by_name(
         scored_systems = []
         for system in all_systems:
             display_name = system.get('systemDisplayName', '')
-            system_name = system.get('systemName', '')
             
-            score_display = calculate_similarity(search_term, display_name)
-            score_system = calculate_similarity(search_term, system_name)
+            # Only compare with systemDisplayName (not systemName as it's a hash)
+            match_score = calculate_similarity(search_term, display_name)
             
-            best_score = max(score_display, score_system)
+            # Create result without systemName (hash value)
+            result_system = {
+                'systemDisplayName': system.get('systemDisplayName'),
+                'userName': system.get('userName'),
+                'environmentName': system.get('environmentName'),
+                'timezone': system.get('timezone'),
+                'projectCount': system.get('projectCount'),
+                'isShared': system.get('isShared'),
+                'matchScore': match_score,
+                'matchedField': 'systemDisplayName'
+            }
             
-            scored_systems.append({
-                **system,
-                'matchScore': best_score,
-                'matchedField': 'systemDisplayName' if score_display > score_system else 'systemName'
-            })
+            scored_systems.append(result_system)
         
         # Sort by score (descending) and limit results
         scored_systems.sort(key=lambda x: x['matchScore'], reverse=True)
