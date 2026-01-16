@@ -603,6 +603,10 @@ async def get_incident_details(
 
         # Find the specific incident in the response
         incidents = incidents_response.get('data', [])
+        
+        # Filter only true incidents
+        incidents = [i for i in incidents if i.get('isIncident', False)]
+        
         incident_data = None
         
         # Check if all optional filters are None
