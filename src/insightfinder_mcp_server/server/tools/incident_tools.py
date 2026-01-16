@@ -352,7 +352,8 @@ async def get_incidents_list(
                 "id": i + 1,
                 "timestamp": incident["timestamp"],
                 "timestamp_human": format_api_timestamp_corrected(incident["timestamp"]),
-                "project": incident.get("projectDisplayName", "Unknown"),
+                "projectDisplayName": incident.get("projectDisplayName", "Unknown"),
+                "realProjectName": incident.get("projectName", "Unknown"),
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
                 "pattern": incident.get("patternName", "Unknown"),
@@ -457,7 +458,8 @@ async def get_incidents_summary(
                 "incident_id": len(incidents_summary) + 1,  # Simple ID for reference
                 "timestamp": incident["timestamp"],
                 "timestamp_human": timestamp_str,
-                "projectName": incident.get("projectDisplayName", "Unknown"),
+                "projectDisplayName": incident.get("projectDisplayName", "Unknown"),
+                "realProjectName": incident.get("projectName", "Unknown"),
                 "instanceName": incident.get("instanceName", "Unknown"),
                 "componentName": incident.get("componentName", "Unknown"),
                 "patternName": incident.get("patternName", "Unknown"),
@@ -671,7 +673,9 @@ async def get_incident_details(
             "anomalyScore": incident_data.get("anomalyScore"),
             "status": incident_data.get("status"),
             "isIncident": incident_data.get("isIncident"),
-            "active": incident_data.get("active")
+            "active": incident_data.get("active"),
+            "projectDisplayName": incident_data.get("projectDisplayName", "Unknown"),
+            "realProjectName": incident_data.get("projectName", "Unknown")
         }
         
         # Add metric name if available in rootCause
