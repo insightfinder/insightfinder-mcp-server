@@ -73,25 +73,25 @@ def verify_13_digit_timestamp(timestamp: int) -> str:
     3. Converts it to human-readable UTC format
     
     Args:
-        timestamp: A 13-digit timestamp in milliseconds (e.g., 1767830400000)
+        timestamp: A 13-digit timestamp in milliseconds (e.g., 1767787200000)
     
     Returns:
         JSON with validation status, human-readable datetime, and timestamp details.
         If invalid, returns error message with suggested fixes.
     
     Example:
-        Input: 1767830400000
+        Input: 1767787200000
         Output: {
             "valid": true,
-            "timestamp_ms": 1767830400000,
-            "datetime_utc": "2026-01-08 00:00:00 UTC",
-            "iso_format": "2026-01-08T00:00:00+00:00",
-            "date": "2026-01-08",
-            "time": "00:00:00",
+            "timestamp_ms": 1767787200000,
+            "datetime_utc": "2026-01-07 12:00:00 UTC",
+            "iso_format": "2026-01-07T12:00:00+00:00",
+            "date": "2026-01-07",
+            "time": "12:00:00",
             "year": 2026,
             "month": 1,
-            "day": 8,
-            "hour": 0,
+            "day": 7,
+            "hour": 12,
             "minute": 0,
             "second": 0
         }
@@ -187,15 +187,15 @@ def convert_iso8601_to_timestamp(iso_timestamp: str) -> str:
         JSON with the converted timestamp in milliseconds and human-readable formats.
     
     Example:
-        Input: "2026-01-08T21:45:30Z"
+        Input: "2026-01-09T00:00:00Z"
         Output: {
             "valid": true,
-            "input": "2026-01-08T21:45:30Z",
-            "timestamp_ms": 1736372730000,
-            "datetime_utc": "2026-01-08 21:45:30 UTC",
-            "iso_format": "2026-01-08T21:45:30+00:00",
-            "date": "2026-01-08",
-            "time": "21:45:30",
+            "input": "2026-01-09T00:00:00Z",
+            "timestamp_ms": 1767916800000,
+            "datetime_utc": "2026-01-09 00:00:00 UTC",
+            "iso_format": "2026-01-09T00:00:00+00:00",
+            "date": "2026-01-09",
+            "time": "00:00:00",
             "year": 2026,
             "month": 1,
             "day": 8,
@@ -406,9 +406,12 @@ def format_timestamp_in_user_timezone(timestamp_ms: int, assume_utc: bool = True
     """Format a timestamp in UTC only to avoid timezone conversion confusion.
     
     Args:
-        timestamp_ms: Timestamp in milliseconds
+        timestamp_ms: Timestamp in milliseconds (can be int or string)
         assume_utc: Ignored - always treats timestamp as UTC
     """
+    # Ensure timestamp is an integer (it might come in as a string from JSON/API)
+    timestamp_ms = int(timestamp_ms) if isinstance(timestamp_ms, str) else timestamp_ms
+    
     # Always use UTC
     tz_name = 'UTC'
     user_timezone = timezone.utc
@@ -442,7 +445,12 @@ def format_api_timestamp_corrected(timestamp_ms: int) -> str:
     """Format an API timestamp in UTC (no correction needed).
     
     Since we're using UTC only now, no timezone correction is needed.
+    Args:
+        timestamp_ms: Timestamp in milliseconds (can be int or string)
     """
+    # Ensure timestamp is an integer (it might come in as a string from JSON/API)
+    timestamp_ms = int(timestamp_ms) if isinstance(timestamp_ms, str) else timestamp_ms
+    
     # No correction - just use UTC
     corrected_timestamp = timestamp_ms
     

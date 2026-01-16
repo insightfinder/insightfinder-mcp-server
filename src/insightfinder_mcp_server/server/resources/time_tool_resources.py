@@ -24,21 +24,21 @@ get_time_range(hours_back=24)  # Gets LAST 24 HOURS, not yesterday's FULL DAY
 
 ### ✅ CORRECT: "Show yesterday's incidents"
 ```
-1. get_current_datetime() → Get current date (e.g., "2025-10-06")
-2. Calculate: yesterday = 2025-10-05
-3. get_date_range_utc("2025-10-05") → Returns full day in milliseconds
+1. get_current_datetime() → Get current date (e.g., "2026-10-06")
+2. Calculate: yesterday = 2026-10-05
+3. get_date_range_utc("2026-10-05") → Returns full day in milliseconds
 4. Use returned start_time_ms and end_time_ms for query
 ```
 
 ### ❌ WRONG: "Compare last month vs this month"
 ```
-get_date_range_utc("2025-09-01")  # Only gets FIRST DAY of Sept
-get_date_range_utc("2025-10-01")  # Only gets FIRST DAY of Oct
+get_date_range_utc("2026-09-01")  # Only gets FIRST DAY of Sept
+get_date_range_utc("2026-10-01")  # Only gets FIRST DAY of Oct
 ```
 
 ### ✅ CORRECT: "Compare last month vs this month"
 ```
-1. get_current_datetime() → "2025-10-06"
+1. get_current_datetime() → "2026-10-06"
 2. Calculate ranges:
    - This month: Oct 1 00:00:00 to Oct 6 23:59:59 (or current time)
    - Last month: Sept 1 00:00:00 to Sept 30 23:59:59
@@ -68,7 +68,7 @@ get_date_range_utc("2025-10-01")  # Only gets FIRST DAY of Oct
 - **Use:** ALWAYS call this FIRST
 
 ### get_date_range_utc(date_input: str)  
-- **Input:** "2025-10-05" or "Oct 5, 2025" or "10/05/2025"
+- **Input:** "2026-10-05" or "Oct 5, 2026" or "10/05/2026"
 - **Returns:** Full day (00:00:00 to 23:59:59.999) in milliseconds
 - **Use:** For complete calendar days
 
@@ -81,8 +81,8 @@ get_date_range_utc("2025-10-01")  # Only gets FIRST DAY of Oct
 
 **"Show me today's incidents"**
 ```
-1. get_current_datetime() → "2025-10-06", current_time_ms: 1728259200000
-2. get_date_range_utc("2025-10-06") → {start_time_ms, end_time_ms}
+1. get_current_datetime() → "2026-10-06", current_time_ms: 1791244800000
+2. get_date_range_utc("2026-10-06") → {start_time_ms, end_time_ms}
 3. fetch_incidents(start_time_ms, end_time_ms)
 ```
 
@@ -94,7 +94,7 @@ get_date_range_utc("2025-10-01")  # Only gets FIRST DAY of Oct
 
 **"This week vs last week"**
 ```
-1. get_current_datetime() → "2025-10-06"
+1. get_current_datetime() → "2026-10-06"
 2. This week: Oct 1 00:00 to Oct 6 23:59 (in ms)
 3. Last week: Sept 24 00:00 to Sept 30 23:59 (in ms)
 4. Two separate queries with respective ranges
@@ -121,28 +121,28 @@ get_current_datetime()
 Returns:
 ```json
 {
-  "date_only": "2025-10-06",
-  "current_time_milliseconds": 1728259200000
+  "date_only": "2026-10-06",
+  "current_time_milliseconds": 1791244800000
 }
 ```
 
-**Step 2:** Calculate yesterday = 2025-10-05
+**Step 2:** Calculate yesterday = 2026-10-05
 
 **Step 3:** Get full day range
 ```
-get_date_range_utc("2025-10-05")
+get_date_range_utc("2026-10-05")
 ```
 Returns:
 ```json
 {
-  "start_time": {"milliseconds": 1728086400000},
-  "end_time": {"milliseconds": 1728172799999}
+  "start_time": {"milliseconds": 1791158400000},
+  "end_time": {"milliseconds": 1791244799999}
 }
 ```
 
 **Step 4:** Query with full day range
 ```
-fetch_incidents(startTime=1728086400000, endTime=1728172799999)
+fetch_incidents(startTime=1791158400000, endTime=1791244799999)
 ```
 
 ## Example 2: "Compare last month with this month"
@@ -154,8 +154,8 @@ get_current_datetime()
 Returns:
 ```json
 {
-  "date_only": "2025-10-06",
-  "current_time_milliseconds": 1728259200000
+  "date_only": "2026-10-06",
+  "current_time_milliseconds": 1791244800000
 }
 ```
 
@@ -165,19 +165,19 @@ Returns:
 
 **Step 3:** Convert to milliseconds (13 digits)
 ```python
-# This month (October 2025)
-this_start_ms = 1727740800000  # Oct 1, 2025 00:00:00 UTC
-this_end_ms = 1728259200000    # Current time from step 1
+# This month (October 2026)
+this_start_ms = 1790812800000  # Oct 1, 2026 00:00:00 UTC
+this_end_ms = 1791244800000    # Current time from step 1
 
-# Last month (September 2025)  
-last_start_ms = 1725148800000  # Sept 1, 2025 00:00:00 UTC
-last_end_ms = 1727740799000    # Sept 30, 2025 23:59:59 UTC
+# Last month (September 2026)  
+last_start_ms = 1788220800000  # Sept 1, 2026 00:00:00 UTC
+last_end_ms = 1790812799000    # Sept 30, 2026 23:59:59 UTC
 ```
 
 **Step 4:** Query BOTH full periods
 ```
-Query 1: fetch_incidents(startTime=1727740800000, endTime=1728259200000)
-Query 2: fetch_incidents(startTime=1725148800000, endTime=1727740799000)
+Query 1: fetch_incidents(startTime=1790812800000, endTime=1791244800000)
+Query 2: fetch_incidents(startTime=1788220800000, endTime=1790812799000)
 ```
 
 **Step 5:** Compare the results
@@ -191,26 +191,26 @@ get_current_datetime()
 Returns:
 ```json
 {
-  "date_only": "2025-10-06",
-  "current_time_milliseconds": 1728259200000
+  "date_only": "2026-10-06",
+  "current_time_milliseconds": 1791244800000
 }
 ```
 
 **Step 2:** Get today's full day range
 ```
-get_date_range_utc("2025-10-06")
+get_date_range_utc("2026-10-06")
 ```
 Returns:
 ```json
 {
-  "start_time": {"milliseconds": 1728172800000},
-  "end_time": {"milliseconds": 1728259199999}
+  "start_time": {"milliseconds": 1791244800000},
+  "end_time": {"milliseconds": 1791331199999}
 }
 ```
 
 **Step 3:** Query
 ```
-fetch_incidents(startTime=1728172800000, endTime=1728259199999)
+fetch_incidents(startTime=1791244800000, endTime=1791331199999)
 ```
 
 ## Example 4: "Last 6 hours of metric anomalies"
@@ -222,14 +222,14 @@ get_time_range(hours_back=6)
 Returns:
 ```json
 {
-  "start_time": {"milliseconds": 1728237600000},
-  "end_time": {"milliseconds": 1728259200000}
+  "start_time": {"milliseconds": 1791223200000},
+  "end_time": {"milliseconds": 1791244800000}
 }
 ```
 
 **Step 2:** Query
 ```
-fetch_metric_anomalies(startTime=1728237600000, endTime=1728259200000)
+fetch_metric_anomalies(startTime=1791223200000, endTime=1791244800000)
 ```
 
 ## 🔑 KEY REMINDERS
@@ -252,7 +252,7 @@ timestamp_ms = timestamp_seconds * 1000
 
 # Python datetime to milliseconds
 from datetime import datetime, timezone
-dt = datetime(2025, 10, 6, 0, 0, 0, tzinfo=timezone.utc)
+dt = datetime(2026, 10, 6, 0, 0, 0, tzinfo=timezone.utc)
 timestamp_ms = int(dt.timestamp()) * 1000
 ```
 
@@ -262,7 +262,7 @@ from datetime import datetime, timedelta, timezone
 
 current = datetime.now(timezone.utc)
 yesterday = current - timedelta(days=1)
-yesterday_str = yesterday.strftime('%Y-%m-%d')  # "2025-10-05"
+yesterday_str = yesterday.strftime('%Y-%m-%d')  # "2026-10-05"
 ```
 
 ## Calculate Month Ranges
@@ -270,7 +270,7 @@ yesterday_str = yesterday.strftime('%Y-%m-%d')  # "2025-10-05"
 from datetime import datetime, timezone
 import calendar
 
-current = datetime.now(timezone.utc)  # 2025-10-06
+current = datetime.now(timezone.utc)  # 2026-10-06
 
 # This month: Oct 1 00:00 to Oct 6 (current)
 this_month_start = current.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -289,8 +289,8 @@ last_end_ms = int(last_month_end.timestamp()) * 1000
 ```
 
 ## Date Formats Supported by get_date_range_utc()
-- "2025-10-06" (ISO)
-- "10/06/2025" (US format)
-- "Oct 6, 2025" (Written)
-- "October 6, 2025" (Full written)
+- "2026-10-06" (ISO)
+- "10/06/2026" (US format)
+- "Oct 6, 2026" (Written)
+- "October 6, 2026" (Full written)
 """

@@ -137,13 +137,13 @@ Step 1: Convert time range
 → get_utc_time_range_for_query("yesterday 9 AM to 5 PM")
 
 Step 2: Get overview
-→ get_incidents_overview(system_name="prod-web", start_time_ms=1723114800000, end_time_ms=1723143600000)
+→ get_incidents_overview(system_name="prod-web", start_time_ms=1786147200000, end_time_ms=1786176000000)
 
 Step 3: Get details if incidents found
-→ get_incidents_list(system_name="prod-web", start_time_ms=1723114800000, end_time_ms=1723143600000)
+→ get_incidents_list(system_name="prod-web", start_time_ms=1786147200000, end_time_ms=1786176000000)
 
 Step 4: Investigate specific incident
-→ get_incident_details(system_name="prod-web", incident_timestamp=1723125400000)
+→ get_incident_details(system_name="prod-web", incident_timestamp=1786158000000)
 
 Remember: Always start with overview tools and progressively drill down!
 """
@@ -165,10 +165,10 @@ async def get_incidents_overview(
         system_name (str): The name of the system to query for incidents.
         start_time_ms (int): Optional. The start of the time window in UTC milliseconds.
                          If not provided, defaults to 24 hours ago.
-                         Example: For Aug 7, 2026 00:00 UTC = 1754438400000
+                         Example: For Aug 7, 2026 00:00 UTC = 1786060800000
         end_time_ms (int): Optional. The end of the time window in UTC milliseconds.
                        If not provided, defaults to the current time.
-                       Example: For Aug 7, 2026 23:59 UTC = 1754524740000
+                       Example: For Aug 7, 2026 23:59 UTC = 1786147140000
         project_name (str): Optional. Filter results to only include incidents from this specific project.
 
     Time Conversion Examples:
@@ -299,9 +299,9 @@ async def get_incidents_list(
     Args:
         system_name (str): The name of the system to query for incidents.
         start_time_ms (int): The start of the time window in UTC milliseconds.
-                          Example: For midnight Aug 7, 2026 UTC = 1754438400000
+                          Example: For midnight Aug 7, 2026 UTC = 1786060800000
         end_time_ms (int): The end of the time window in UTC milliseconds.
-                        Example: For end of Aug 7, 2026 UTC = 1754524799000
+                        Example: For end of Aug 7, 2026 UTC = 1786147199000
         limit (int): Maximum number of incidents to return (default: 10).
         only_true_incidents (bool): If True, only return events marked as true incidents. default is True.
     
@@ -607,9 +607,11 @@ async def get_incident_details(
         
         # Check if all optional filters are None
         if instance_name is None and pattern_id is None and pattern_name is None:
-            # Exact timestamp match
+            # Timestamp match at minute granularity (ignoring seconds and milliseconds)
+            target_timestamp_minutes = timestamp_ms // 60000  # Convert to minutes
             for inc in incidents:
-                if inc.get('timestamp') == timestamp_ms:
+                incident_timestamp_minutes = inc.get('timestamp', 0) // 60000  # Convert to minutes
+                if incident_timestamp_minutes == target_timestamp_minutes:
                     incident_data = inc
                     break
         else:

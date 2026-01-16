@@ -566,6 +566,10 @@ class InsightFinderAPIClient:
         Returns:
             A dictionary containing the API response with metric data
         """
+        # Ensure timestamps are integers (they might come in as strings from JSON)
+        start_time_ms = int(start_time_ms) if isinstance(start_time_ms, str) else start_time_ms
+        end_time_ms = int(end_time_ms) if isinstance(end_time_ms, str) else end_time_ms
+        
         api_path = "/api/v1/metricdataquery-external"
         url = f"{self.base_url}{api_path}"
         

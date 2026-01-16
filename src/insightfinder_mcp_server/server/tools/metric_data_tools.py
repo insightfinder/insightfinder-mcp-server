@@ -32,8 +32,8 @@ async def get_metric_data(
     project_name: str,
     instance_name: str,
     metric_list: List[str],
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Get the API URL and UI URL for fetching metric line chart data for specified metrics and instance.
@@ -44,9 +44,9 @@ async def get_metric_data(
     accessing and visualizing the metric data.
 
     **Important Time Range Requirements:**
-    - start_time_ms and end_time_ms must be valid timestamps in milliseconds (13-digit epoch time)
-    - start_time_ms must be LESS than end_time_ms (start time must come before end time)
-    - start_time_ms and end_time_ms cannot be the same value
+    - start_time and end_time accept ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
+    - start_time must be LESS than end_time (start time must come before end time)
+    - start_time and end_time cannot be the same value
     
     **Instance Validation:**
     - The instance_name must be a valid instance available in the project
@@ -73,9 +73,9 @@ async def get_metric_data(
                       - Must be a valid instance available in the project
         metric_list: List of metric names to fetch data for (e.g., ["Availability", "CPU", "Memory"])
                     - Must be valid metrics available in the project
-        start_time_ms: Start timestamp in milliseconds (13-digit epoch time, must be before end_time_ms)
-        end_time_ms: End timestamp in milliseconds (13-digit epoch time, must be after start_time_ms)
-        
+        start_time: Start timestamp in ISO 8601 format (e.g., "2026-01-08T21:45:30Z") 
+        end_time: End timestamp in ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
+
     Returns:
         A dictionary containing:
         - status: "success" or "error"
@@ -91,13 +91,13 @@ async def get_metric_data(
             metric_list=["CPU", "Memory"]
         )
         
-        # Get Availability metric URL for a specific time range
+        # Get Availability metric URL for a specific time range (ISO 8601 format)
         result = await get_metric_data(
             project_name="my-project",
             instance_name="server-01",
             metric_list=["Availability"],
-            start_time_ms=1734307200000,  # Must be valid and before end_time_ms
-            end_time_ms=1734393600000     # Must be valid and after start_time_ms
+            start_time="2026-01-08T21:45:30Z",
+            end_time="2026-01-09T21:45:30Z"
         )
     """
     try:
@@ -109,9 +109,74 @@ async def get_metric_data(
                 "message": "No API client configured. Please configure your InsightFinder credentials."
             }
         
-        # Get time range with timezone awareness
-        if start_time_ms is None or end_time_ms is None:
+        # Convert timestamps to milliseconds
+        start_time_ms = None
+        end_time_ms = None
+        
+        # Get time range with timezone awareness if not provided
+        if start_time is None or end_time is None:
             start_time_ms, end_time_ms = get_timezone_aware_time_range_ms(days_back=1)
+        else:
+            # Convert start_time
+            if isinstance(start_time, str):
+                # Try ISO 8601 format first
+                if 'T' in start_time or '-' in start_time:
+                    try:
+                        # Parse ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
+                        dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                        start_time_ms = int(dt.timestamp() * 1000)
+                    except ValueError:
+                        return {
+                            "status": "error",
+                            "message": f"Invalid ISO 8601 timestamp format for start_time: '{start_time}'. Expected format: '2026-01-08T21:45:30Z'"
+                        }
+                else:
+                    # Try to parse as 13-digit milliseconds string
+                    try:
+                        start_time_ms = int(start_time)
+                    except ValueError:
+                        return {
+                            "status": "error",
+                            "message": f"Invalid start_time: must be ISO 8601 format or 13-digit milliseconds, got '{start_time}'"
+                        }
+            elif isinstance(start_time, int):
+                start_time_ms = start_time
+            else:
+                return {
+                    "status": "error",
+                    "message": f"Invalid start_time type: {type(start_time).__name__}"
+                }
+            
+            # Convert end_time
+            if isinstance(end_time, str):
+                # Try ISO 8601 format first
+                if 'T' in end_time or '-' in end_time:
+                    try:
+                        # Parse ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
+                        dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+                        end_time_ms = int(dt.timestamp() * 1000)
+                    except ValueError:
+                        return {
+                            "status": "error",
+                            "message": f"Invalid ISO 8601 timestamp format for end_time: '{end_time}'. Expected format: '2026-01-08T21:45:30Z'"
+                        }
+                else:
+                    # Try to parse as 13-digit milliseconds string
+                    try:
+                        end_time_ms = int(end_time)
+                    except ValueError:
+                        return {
+                            "status": "error",
+                            "message": f"Invalid end_time: must be ISO 8601 format or 13-digit milliseconds, got '{end_time}'"
+                        }
+            elif isinstance(end_time, int):
+                end_time_ms = end_time
+            else:
+                return {
+                    "status": "error",
+                    "message": f"Invalid end_time type: {type(end_time).__name__}"
+                }
+        
         
         # Ensure timestamps are not None after assignment
         if start_time_ms is None or end_time_ms is None:
@@ -363,6 +428,7 @@ async def list_available_metrics(
         # Extract and structure the response
         raw_data = result.get("data", {})
         metric_list = raw_data.get("possibleMetricList", [])
+        print(metric_list)
         
         return {
             "status": "success",
