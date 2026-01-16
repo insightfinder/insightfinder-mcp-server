@@ -468,6 +468,10 @@ async def get_incidents_summary(
                 "has_root_cause": incident.get('rootCauseResultInfo', {}).get('hasPrecedingEvent', False) or ("rootCause" in incident and incident["rootCause"] is not None),
             }
             
+            # Add metric name if available in rootCause
+            if "rootCause" in incident and incident["rootCause"] and "metricName" in incident["rootCause"]:
+                summary["metric_name"] = incident["rootCause"]["metricName"]
+            
             # Add root cause information if available
             if include_root_cause_info:
                 root_cause_info = {}
