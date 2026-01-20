@@ -13,6 +13,7 @@ from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user
 def _convert_timestamp_to_int(timestamp: Optional[Any], param_name: str) -> Optional[int]:
     """
     Convert a timestamp parameter to integer if it's a string.
+    Supports both ISO 8601 format and millisecond timestamp strings.
     
     Args:
         timestamp: The timestamp value (int, str, or None)
@@ -28,10 +29,20 @@ def _convert_timestamp_to_int(timestamp: Optional[Any], param_name: str) -> Opti
         return None
     
     if isinstance(timestamp, str):
-        try:
-            return int(timestamp)
-        except ValueError:
-            raise ValueError(f"Invalid {param_name}: must be an integer, got '{timestamp}'")
+        # Try ISO 8601 format first (contains 'T' or '-')
+        if 'T' in timestamp or '-' in timestamp:
+            try:
+                # Parse ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
+                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                return int(dt.timestamp() * 1000)
+            except ValueError:
+                raise ValueError(f"Invalid {param_name}: invalid ISO 8601 format '{timestamp}'. Expected format: '2026-01-08T21:45:30Z'")
+        else:
+            # Try to parse as milliseconds string
+            try:
+                return int(timestamp)
+            except ValueError:
+                raise ValueError(f"Invalid {param_name}: must be ISO 8601 format or integer milliseconds, got '{timestamp}'")
     
     if isinstance(timestamp, int):
         return timestamp
@@ -137,13 +148,13 @@ Step 1: Convert time range
 → get_utc_time_range_for_query("yesterday 9 AM to 5 PM")
 
 Step 2: Get overview
-→ get_incidents_overview(system_name="prod-web", start_time_ms=1723114800000, end_time_ms=1723143600000)
+→ get_incidents_overview(system_name="prod-web", start_time_ms=1786147200000, end_time_ms=1786176000000)
 
 Step 3: Get details if incidents found
-→ get_incidents_list(system_name="prod-web", start_time_ms=1723114800000, end_time_ms=1723143600000)
+→ get_incidents_list(system_name="prod-web", start_time_ms=1786147200000, end_time_ms=1786176000000)
 
 Step 4: Investigate specific incident
-→ get_incident_details(system_name="prod-web", incident_timestamp=1723125400000)
+→ get_incident_details(system_name="prod-web", incident_timestamp=1786158000000)
 
 Remember: Always start with overview tools and progressively drill down!
 """
@@ -152,8 +163,8 @@ Remember: Always start with overview tools and progressively drill down!
 @mcp_server.tool()
 async def get_incidents_overview(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
     project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
@@ -163,12 +174,12 @@ async def get_incidents_overview(
 
     Args:
         system_name (str): The name of the system to query for incidents.
-        start_time_ms (int): Optional. The start of the time window in UTC milliseconds.
+        start_time_ms (int or str): Optional. The start of the time window.
+                         Accepts ISO 8601 format (e.g., "2026-08-07T00:00:00Z") or UTC milliseconds (e.g., 1786060800000).
                          If not provided, defaults to 24 hours ago.
-                         Example: For Aug 7, 2026 00:00 UTC = 1754438400000
-        end_time_ms (int): Optional. The end of the time window in UTC milliseconds.
+        end_time_ms (int or str): Optional. The end of the time window.
+                       Accepts ISO 8601 format (e.g., "2026-08-07T23:59:00Z") or UTC milliseconds (e.g., 1786147140000).
                        If not provided, defaults to the current time.
-                       Example: For Aug 7, 2026 23:59 UTC = 1754524740000
         project_name (str): Optional. Filter results to only include incidents from this specific project.
 
     Time Conversion Examples:
@@ -287,8 +298,8 @@ async def get_incidents_overview(
 @mcp_server.tool()
 async def get_incidents_list(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
     limit: int = 10,
     only_true_incidents: bool = True
 ) -> Dict[str, Any]:
@@ -298,15 +309,17 @@ async def get_incidents_list(
 
     Args:
         system_name (str): The name of the system to query for incidents.
-        start_time_ms (int): The start of the time window in UTC milliseconds.
-                          Example: For midnight Aug 7, 2026 UTC = 1754438400000
-        end_time_ms (int): The end of the time window in UTC milliseconds.
-                        Example: For end of Aug 7, 2026 UTC = 1754524799000
+        start_time_ms (int or str): Optional. The start of the time window.
+                          Accepts ISO 8601 format (e.g., "2026-08-07T00:00:00Z") or UTC milliseconds (e.g., 1786060800000).
+                          If not provided, defaults to 24 hours ago.
+        end_time_ms (int or str): Optional. The end of the time window.
+                        Accepts ISO 8601 format (e.g., "2026-08-07T23:59:00Z") or UTC milliseconds (e.g., 1786147199000).
+                        If not provided, defaults to the current time.
         limit (int): Maximum number of incidents to return (default: 10).
         only_true_incidents (bool): If True, only return events marked as true incidents. default is True.
     
     UTC Conversion Notes:
-        - Always provide timestamps in UTC milliseconds format
+        - Always provide timestamps in UTC format (either ISO 8601 or milliseconds)
         - Use tools like get_current_datetime() or get_time_range_query() for conversion
     """
     try:
@@ -352,14 +365,24 @@ async def get_incidents_list(
                 "id": i + 1,
                 "timestamp": incident["timestamp"],
                 "timestamp_human": format_api_timestamp_corrected(incident["timestamp"]),
-                "project": incident.get("projectDisplayName", "Unknown"),
+                "projectDisplayName": incident.get("projectDisplayName", "Unknown"),
+                "realProjectName": incident.get("projectName", "Unknown"),
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
+            }
+            
+            # Add metric name right after instance only if available
+            if "rootCause" in incident and incident["rootCause"] and "metricName" in incident["rootCause"]:
+                incident_info["metricName"] = incident["rootCause"]["metricName"]
+            
+            # Add remaining fields
+            incident_info.update({
                 "pattern": incident.get("patternName", "Unknown"),
                 "anomaly_score": round(incident.get("anomalyScore", 0), 2),
                 "is_incident": incident.get("isIncident", False),
                 "status": incident.get("status", "unknown")
-            }
+            })
+            
             incident_list.append(incident_info)
 
         return {
@@ -388,8 +411,8 @@ async def get_incidents_list(
 @mcp_server.tool()
 async def get_incidents_summary(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
     limit: int = 5,
     only_true_incidents: bool = True,
     include_root_cause_info: bool = True
@@ -400,8 +423,12 @@ async def get_incidents_summary(
 
     Args:
         system_name (str): The name of the system to query for incidents.
-        start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
-        end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
+        start_time_ms (int or str): Optional. The start of the time window.
+                         Accepts ISO 8601 format (e.g., "2026-08-07T00:00:00Z") or UTC milliseconds (e.g., 1786060800000).
+                         If not provided, defaults to 24 hours ago.
+        end_time_ms (int or str): Optional. The end of the time window.
+                       Accepts ISO 8601 format (e.g., "2026-08-07T23:59:00Z") or UTC milliseconds (e.g., 1786147140000).
+                       If not provided, defaults to the current time.
         limit (int): Maximum number of incidents to return (default: 5).
         only_true_incidents (bool): If True, only return events marked as true incidents (default: True).
         include_root_cause_info (bool): If True, include information about root cause availability (default: True).
@@ -452,8 +479,17 @@ async def get_incidents_summary(
                 "incident_id": len(incidents_summary) + 1,  # Simple ID for reference
                 "timestamp": incident["timestamp"],
                 "timestamp_human": timestamp_str,
-                "projectName": incident.get("projectDisplayName", "Unknown"),
+                "projectDisplayName": incident.get("projectDisplayName", "Unknown"),
+                "realProjectName": incident.get("projectName", "Unknown"),
                 "instanceName": incident.get("instanceName", "Unknown"),
+            }
+            
+            # Add metric name right after instanceName only if available
+            if "rootCause" in incident and incident["rootCause"] and "metricName" in incident["rootCause"]:
+                summary["metricName"] = incident["rootCause"]["metricName"]
+            
+            # Add remaining fields
+            summary.update({
                 "componentName": incident.get("componentName", "Unknown"),
                 "patternName": incident.get("patternName", "Unknown"),
                 "anomalyScore": incident.get("anomalyScore", 0),
@@ -461,7 +497,7 @@ async def get_incidents_summary(
                 "isIncident": incident.get("isIncident", False),
                 "has_raw_data": "rawData" in incident and incident["rawData"] is not None,
                 "has_root_cause": incident.get('rootCauseResultInfo', {}).get('hasPrecedingEvent', False) or ("rootCause" in incident and incident["rootCause"] is not None),
-            }
+            })
             
             # Add root cause information if available
             if include_root_cause_info:
@@ -603,13 +639,19 @@ async def get_incident_details(
 
         # Find the specific incident in the response
         incidents = incidents_response.get('data', [])
+        
+        # Filter only true incidents
+        incidents = [i for i in incidents if i.get('isIncident', False)]
+        
         incident_data = None
         
         # Check if all optional filters are None
         if instance_name is None and pattern_id is None and pattern_name is None:
-            # Exact timestamp match
+            # Timestamp match at minute granularity (ignoring seconds and milliseconds)
+            target_timestamp_minutes = timestamp_ms // 60000  # Convert to minutes
             for inc in incidents:
-                if inc.get('timestamp') == timestamp_ms:
+                incident_timestamp_minutes = inc.get('timestamp', 0) // 60000  # Convert to minutes
+                if incident_timestamp_minutes == target_timestamp_minutes:
                     incident_data = inc
                     break
         else:
@@ -646,7 +688,13 @@ async def get_incident_details(
         result_incident.pop('rootCauseInfoKey', None)  # Remove root cause info key to avoid confusion
         result_incident.pop('incidentLLMKey', None)  # Remove incidentLLMKey to avoid confusion
 
+        # Extract metric name if available in rootCause
+        metric_name = None
+        if "rootCause" in incident_data and incident_data["rootCause"] and "metricName" in incident_data["rootCause"]:
+            metric_name = incident_data["rootCause"]["metricName"]
+
         result = {
+            "metricName": metric_name,
             "incident": result_incident,
             "raw_data_available": True,  # Indicate that raw data can be fetched separately
             "root_cause_available": False,
@@ -656,7 +704,9 @@ async def get_incident_details(
             "anomalyScore": incident_data.get("anomalyScore"),
             "status": incident_data.get("status"),
             "isIncident": incident_data.get("isIncident"),
-            "active": incident_data.get("active")
+            "active": incident_data.get("active"),
+            "projectDisplayName": incident_data.get("projectDisplayName", "Unknown"),
+            "realProjectName": incident_data.get("projectName", "Unknown")
         }
 
         # Check if root cause analysis is available and requested
@@ -841,17 +891,27 @@ async def get_incident_raw_data(
         if len(raw_data) > max_length:
             raw_data = raw_data[:max_length] + f"\n... [TRUNCATED - Full length: {len(target_incident['rawData'])} characters]"
 
-        return {
+        result = {
             "status": "success",
             "incident_timestamp": incident_timestamp,
             "timestamp_human": format_api_timestamp_corrected(incident_timestamp),
             "projectName": target_incident.get("projectDisplayName"),
             "instanceName": target_incident.get("instanceName"),
+        }
+        
+        # Add metric name right after instanceName only if available
+        if "rootCause" in target_incident and target_incident["rootCause"] and "metricName" in target_incident["rootCause"]:
+            result["metricName"] = target_incident["rootCause"]["metricName"]
+        
+        # Add remaining fields
+        result.update({
             "componentName": target_incident.get("componentName"),
             "raw_data": raw_data,
             "raw_data_length": len(target_incident.get("rawData", "")),
             "truncated": len(target_incident.get("rawData", "")) > max_length
-        }
+        })
+        
+        return result
         
     except Exception as e:
         error_message = f"Error in get_incident_raw_data: {str(e)}"
@@ -863,8 +923,8 @@ async def get_incident_raw_data(
 @mcp_server.tool()
 async def get_incidents_statistics(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Provides statistical analysis of incidents for a system over a time period.
@@ -958,8 +1018,8 @@ async def get_incidents_statistics(
 @mcp_server.tool()
 async def fetch_traces(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Fetches trace timeline data from InsightFinder for a specific system within a given time range.
@@ -1007,8 +1067,8 @@ async def fetch_traces(
 @mcp_server.tool()
 async def fetch_log_anomalies(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Fetches log anomaly timeline data from InsightFinder for a specific system within a given time range.
@@ -1056,8 +1116,8 @@ async def fetch_log_anomalies(
 @mcp_server.tool()
 async def fetch_deployments(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Fetches deployment timeline data from InsightFinder for a specific system within a given time range.
@@ -1107,8 +1167,8 @@ async def fetch_deployments(
 async def get_project_incidents(
     system_name: str,
     project_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
     only_true_incidents: bool = True,
     limit: int = 20
 ) -> Dict[str, Any]:
@@ -1178,12 +1238,21 @@ async def get_project_incidents(
                 "project": incident.get("projectDisplayName", "Unknown"),
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
+            }
+            
+            # Add metric name right after instance only if available
+            if "rootCause" in incident and incident["rootCause"] and "metricName" in incident["rootCause"]:
+                incident_info["metricName"] = incident["rootCause"]["metricName"]
+            
+            # Add remaining fields
+            incident_info.update({
                 "pattern": incident.get("patternName", "Unknown"),
                 "anomaly_score": round(incident.get("anomalyScore", 0), 2),
                 "is_incident": incident.get("isIncident", False),
                 "status": incident.get("status", "unknown"),
                 "active": incident.get("active", False)
-            }
+            })
+
             
             # Add root cause summary if available
             if "rootCause" in incident and incident["rootCause"]:
@@ -1305,12 +1374,20 @@ async def predict_incidents(
                 "project": incident.get("projectDisplayName", "Unknown"),
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
+            }
+            
+            # Add metric name right after instance only if available
+            if "rootCause" in incident and incident["rootCause"] and "metricName" in incident["rootCause"]:
+                incident_info["metricName"] = incident["rootCause"]["metricName"]
+            
+            # Add remaining fields
+            incident_info.update({
                 "pattern": incident.get("patternName", "Unknown"),
                 # "anomaly_score": round(incident.get("anomalyScore", 0), 2),
                 "is_incident": incident.get("isIncident", False),
                 "status": incident.get("status", "unknown"),
                 "active": incident.get("active", False)
-            }
+            })
 
             incident_llm_key = incident.get("incidentLLMKey")
             user_name = incident.get("userName", "")
