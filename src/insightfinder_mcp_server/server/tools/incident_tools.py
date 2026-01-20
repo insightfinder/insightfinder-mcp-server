@@ -13,6 +13,7 @@ from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user
 def _convert_timestamp_to_int(timestamp: Optional[Any], param_name: str) -> Optional[int]:
     """
     Convert a timestamp parameter to integer if it's a string.
+    Supports both ISO 8601 format and millisecond timestamp strings.
     
     Args:
         timestamp: The timestamp value (int, str, or None)
@@ -28,10 +29,20 @@ def _convert_timestamp_to_int(timestamp: Optional[Any], param_name: str) -> Opti
         return None
     
     if isinstance(timestamp, str):
-        try:
-            return int(timestamp)
-        except ValueError:
-            raise ValueError(f"Invalid {param_name}: must be an integer, got '{timestamp}'")
+        # Try ISO 8601 format first (contains 'T' or '-')
+        if 'T' in timestamp or '-' in timestamp:
+            try:
+                # Parse ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
+                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                return int(dt.timestamp() * 1000)
+            except ValueError:
+                raise ValueError(f"Invalid {param_name}: invalid ISO 8601 format '{timestamp}'. Expected format: '2026-01-08T21:45:30Z'")
+        else:
+            # Try to parse as milliseconds string
+            try:
+                return int(timestamp)
+            except ValueError:
+                raise ValueError(f"Invalid {param_name}: must be ISO 8601 format or integer milliseconds, got '{timestamp}'")
     
     if isinstance(timestamp, int):
         return timestamp
@@ -152,8 +163,8 @@ Remember: Always start with overview tools and progressively drill down!
 @mcp_server.tool()
 async def get_incidents_overview(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
     project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
@@ -163,12 +174,12 @@ async def get_incidents_overview(
 
     Args:
         system_name (str): The name of the system to query for incidents.
-        start_time_ms (int): Optional. The start of the time window in UTC milliseconds.
+        start_time_ms (int or str): Optional. The start of the time window.
+                         Accepts ISO 8601 format (e.g., "2026-08-07T00:00:00Z") or UTC milliseconds (e.g., 1786060800000).
                          If not provided, defaults to 24 hours ago.
-                         Example: For Aug 7, 2026 00:00 UTC = 1786060800000
-        end_time_ms (int): Optional. The end of the time window in UTC milliseconds.
+        end_time_ms (int or str): Optional. The end of the time window.
+                       Accepts ISO 8601 format (e.g., "2026-08-07T23:59:00Z") or UTC milliseconds (e.g., 1786147140000).
                        If not provided, defaults to the current time.
-                       Example: For Aug 7, 2026 23:59 UTC = 1786147140000
         project_name (str): Optional. Filter results to only include incidents from this specific project.
 
     Time Conversion Examples:
@@ -287,8 +298,8 @@ async def get_incidents_overview(
 @mcp_server.tool()
 async def get_incidents_list(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
     limit: int = 10,
     only_true_incidents: bool = True
 ) -> Dict[str, Any]:
@@ -298,15 +309,17 @@ async def get_incidents_list(
 
     Args:
         system_name (str): The name of the system to query for incidents.
-        start_time_ms (int): The start of the time window in UTC milliseconds.
-                          Example: For midnight Aug 7, 2026 UTC = 1786060800000
-        end_time_ms (int): The end of the time window in UTC milliseconds.
-                        Example: For end of Aug 7, 2026 UTC = 1786147199000
+        start_time_ms (int or str): Optional. The start of the time window.
+                          Accepts ISO 8601 format (e.g., "2026-08-07T00:00:00Z") or UTC milliseconds (e.g., 1786060800000).
+                          If not provided, defaults to 24 hours ago.
+        end_time_ms (int or str): Optional. The end of the time window.
+                        Accepts ISO 8601 format (e.g., "2026-08-07T23:59:00Z") or UTC milliseconds (e.g., 1786147199000).
+                        If not provided, defaults to the current time.
         limit (int): Maximum number of incidents to return (default: 10).
         only_true_incidents (bool): If True, only return events marked as true incidents. default is True.
     
     UTC Conversion Notes:
-        - Always provide timestamps in UTC milliseconds format
+        - Always provide timestamps in UTC format (either ISO 8601 or milliseconds)
         - Use tools like get_current_datetime() or get_time_range_query() for conversion
     """
     try:
@@ -398,8 +411,8 @@ async def get_incidents_list(
 @mcp_server.tool()
 async def get_incidents_summary(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
     limit: int = 5,
     only_true_incidents: bool = True,
     include_root_cause_info: bool = True
@@ -410,8 +423,12 @@ async def get_incidents_summary(
 
     Args:
         system_name (str): The name of the system to query for incidents.
-        start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
-        end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
+        start_time_ms (int or str): Optional. The start of the time window.
+                         Accepts ISO 8601 format (e.g., "2026-08-07T00:00:00Z") or UTC milliseconds (e.g., 1786060800000).
+                         If not provided, defaults to 24 hours ago.
+        end_time_ms (int or str): Optional. The end of the time window.
+                       Accepts ISO 8601 format (e.g., "2026-08-07T23:59:00Z") or UTC milliseconds (e.g., 1786147140000).
+                       If not provided, defaults to the current time.
         limit (int): Maximum number of incidents to return (default: 5).
         only_true_incidents (bool): If True, only return events marked as true incidents (default: True).
         include_root_cause_info (bool): If True, include information about root cause availability (default: True).
@@ -906,8 +923,8 @@ async def get_incident_raw_data(
 @mcp_server.tool()
 async def get_incidents_statistics(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Provides statistical analysis of incidents for a system over a time period.
@@ -1001,8 +1018,8 @@ async def get_incidents_statistics(
 @mcp_server.tool()
 async def fetch_traces(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Fetches trace timeline data from InsightFinder for a specific system within a given time range.
@@ -1050,8 +1067,8 @@ async def fetch_traces(
 @mcp_server.tool()
 async def fetch_log_anomalies(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Fetches log anomaly timeline data from InsightFinder for a specific system within a given time range.
@@ -1099,8 +1116,8 @@ async def fetch_log_anomalies(
 @mcp_server.tool()
 async def fetch_deployments(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Fetches deployment timeline data from InsightFinder for a specific system within a given time range.
@@ -1150,8 +1167,8 @@ async def fetch_deployments(
 async def get_project_incidents(
     system_name: str,
     project_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Any] = None,
+    end_time_ms: Optional[Any] = None,
     only_true_incidents: bool = True,
     limit: int = 20
 ) -> Dict[str, Any]:
