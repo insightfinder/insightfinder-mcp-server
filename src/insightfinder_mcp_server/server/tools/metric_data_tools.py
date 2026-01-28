@@ -2,10 +2,10 @@
 Metric data tools for the InsightFinder MCP server.
 
 This module provides tools for fetching and analyzing metric time-series data:
-- get_metric_data: Fetch metric line chart data for specified metrics and instances
+- get_metric_data: Fetch metric line chart UI URL for specified metrics and instances
 - list_available_metrics: List all available metrics for a project
 
-These tools help users analyze metric trends, patterns, and historical data points.
+These tools help users visualize and analyze metric trends, patterns, and historical data points.
 """
 
 import asyncio
@@ -35,7 +35,7 @@ async def get_metric_data_with_single_metric_name(
     end_time: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Get API URL and UI URL for fetching metric line chart data for a single metric.
+    Get UI URL for fetching metric line chart data for a single metric.
     This is a convenience wrapper around get_metric_data that accepts a single metric name string
     instead of a list of metrics.
 
@@ -64,7 +64,6 @@ async def get_metric_data_with_single_metric_name(
 
     Returns:
         - status: "success" or "error"
-        - api-url: Direct URL to JSON data
         - ui-url: Direct URL to InsightFinder UI visualization
         - metadata: Query parameters and time range
         
@@ -118,8 +117,8 @@ async def get_metric_data(
     end_time: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Get API URL and UI URL for fetching metric line chart data. Returns URLs that users can click
-    to directly access the JSON metric data and visualize it in the InsightFinder UI.
+    Get UI URL for fetching metric line chart data. Returns a URL that users can click
+    to visualize metric data in the InsightFinder UI.
 
     **CRITICAL WORKFLOW - Follow this exact sequence:**
     
@@ -146,7 +145,6 @@ async def get_metric_data(
 
     Returns:
         - status: "success" or "error"
-        - api-url: Direct URL to JSON data
         - ui-url: Direct URL to InsightFinder UI visualization
         - metadata: Query parameters and time range
         
@@ -374,20 +372,12 @@ async def get_metric_data(
                 }
             }
         
-        # Extract the URL from the result
-        api_url = result.get("url")
-        if not api_url:
-            return {
-                "status": "error",
-                "message": "Failed to generate API URL"
-            }
-        
         # Format timestamps for display
         start_time_formatted = format_timestamp_in_user_timezone(start_time_ms)
         end_time_formatted = format_timestamp_in_user_timezone(end_time_ms)
 
-        # extract base url like https://api.insightfinder.com --- IGNORE ---
-        base_api_url = api_url.split("/api/")[0]  # e.g., https://api.insightfinder.com --- IGNORE ---
+        # Get base URL from API client
+        base_api_url = api_client.base_url
         
         # URL encode parameters to handle spaces and special characters
         encoded_system_id = quote(system_id, safe='')
@@ -410,13 +400,13 @@ async def get_metric_data(
             f"&customerName={encoded_customer_name}&{project_name_param}"
             f"&startTimestamp={start_time_ms}&endTimestamp={end_time_ms}&justSelectMetric={encoded_metrics}"
             f"&sessionMetric=&justInstanceList={encoded_instance_name}&withBaseline=true&incidentInfo=&sourceInfo=&metricAnomalyMap="
+            f"&projectDisplayName={encoded_display_project_name}"
         )
 
         return {
             "status": "success",
-            "api-url": api_url+f"&projectDisplayName={encoded_display_project_name}",
-            "ui-url": ui_url+f"&projectDisplayName={encoded_display_project_name}",
-            "message": "Click the URL to view the metric data JSON in your browser",
+            "ui-url": ui_url,
+            "message": "Click the URL to visualize metric data in the InsightFinder UI",
             "metadata": {
                 "projectName": project_name,
                 "instanceName": instance_name,
