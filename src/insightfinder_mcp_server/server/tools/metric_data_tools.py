@@ -290,7 +290,7 @@ async def get_metric_data(
                 "message": f"Project '{project_name}' not found. Please verify the project name or use list_all_systems_and_projects to see available projects."
             }
         
-        customer_name, actual_project_name, instance_list, system_id = project_info
+        customer_name, actual_project_name, display_project_name, instance_list, system_id = project_info
         
         # Validate instance name if we have the instance list
         if instance_list and instance_name not in instance_list:
@@ -394,6 +394,7 @@ async def get_metric_data(
         encoded_customer_name = quote(customer_name, safe='')
         encoded_username = quote(api_client.user_name, safe='')
         encoded_project_name = quote(actual_project_name, safe='')
+        encoded_display_project_name = quote(display_project_name, safe='')
         encoded_instance_name = quote(instance_name, safe='')
         encoded_metrics = quote(','.join(metric_list), safe='')
         
@@ -413,8 +414,8 @@ async def get_metric_data(
 
         return {
             "status": "success",
-            "api-url": api_url+f"&projectDisplayName={project_name}",
-            "ui-url": ui_url+f"&projectDisplayName={project_name}",
+            "api-url": api_url+f"&projectDisplayName={encoded_display_project_name}",
+            "ui-url": ui_url+f"&projectDisplayName={encoded_display_project_name}",
             "message": "Click the URL to view the metric data JSON in your browser",
             "metadata": {
                 "projectName": project_name,
@@ -643,7 +644,7 @@ async def validate_instance_and_metrics(
                     "message": f"Project '{project_name}' not found. Please verify the project name or use list_all_systems_and_projects to see available projects."
                 }
             
-            customer_name, actual_project_name, available_instances, system_id = project_info
+            customer_name, actual_project_name, display_project_name, available_instances, system_id = project_info
             result["projectName"] = actual_project_name
             
             logger.info(f"Available instances for project: {available_instances}")
@@ -684,7 +685,7 @@ async def validate_instance_and_metrics(
                         "status": "error",
                         "message": f"Project '{project_name}' not found. Please verify the project name or use list_all_systems_and_projects to see available projects."
                     }
-                customer_name, actual_project_name, available_instances, system_id = project_info
+                customer_name, actual_project_name, display_project_name, available_instances, system_id = project_info
                 result["projectName"] = actual_project_name
             else:
                 actual_project_name = result["projectName"]
