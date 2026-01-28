@@ -392,16 +392,29 @@ async def get_metric_data(
         # URL encode parameters to handle spaces and special characters
         encoded_system_id = quote(system_id, safe='')
         encoded_customer_name = quote(customer_name, safe='')
+        encoded_username = quote(api_client.user_name, safe='')
         encoded_project_name = quote(actual_project_name, safe='')
         encoded_instance_name = quote(instance_name, safe='')
         encoded_metrics = quote(','.join(metric_list), safe='')
         
-        ui_url = f"{base_api_url}/ui/metric/linecharts?e=All&s={encoded_system_id}&customerName={encoded_customer_name}&projectName={encoded_project_name}@{encoded_customer_name}&startTimestamp={start_time_ms}&endTimestamp={end_time_ms}&justSelectMetric={encoded_metrics}&sessionMetric=&justInstanceList={encoded_instance_name}&withBaseline=true&incidentInfo=&sourceInfo=&metricAnomalyMap="
+        # When the logged-in username matches the customer name, the UI expects projectName without the @customer suffix.
+        # Otherwise include the customer (projectName=project@customer)
+        if encoded_username == encoded_customer_name:
+            project_name_param = f"projectName={encoded_project_name}"
+        else:
+            project_name_param = f"projectName={encoded_project_name}@{encoded_customer_name}"
+
+        ui_url = (
+            f"{base_api_url}/ui/metric/linecharts?e=All&s={encoded_system_id}"
+            f"&customerName={encoded_customer_name}&{project_name_param}"
+            f"&startTimestamp={start_time_ms}&endTimestamp={end_time_ms}&justSelectMetric={encoded_metrics}"
+            f"&sessionMetric=&justInstanceList={encoded_instance_name}&withBaseline=true&incidentInfo=&sourceInfo=&metricAnomalyMap="
+        )
 
         return {
             "status": "success",
             "api-url": api_url+f"&projectDisplayName={project_name}",
-            "ui-url": ui_url,
+            "ui-url": ui_url+f"&projectDisplayName={project_name}",
             "message": "Click the URL to view the metric data JSON in your browser",
             "metadata": {
                 "projectName": project_name,
