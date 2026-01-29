@@ -1204,6 +1204,14 @@ async def get_project_incidents(
             if start_time_ms is None:
                 start_time_ms = default_start_ms
 
+        # Log input parameters for debugging
+        logger.debug(
+            "get_project_incidents called with system_name=%s, project_name=%s, start_time_ms=%s, end_time_ms=%s, only_true_incidents=%s, limit=%s",
+            system_name, project_name, start_time_ms, end_time_ms, only_true_incidents, limit
+        )
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(f"[DEBUG] get_project_incidents params: system_name={system_name}, project_name={project_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}, only_true_incidents={only_true_incidents}, limit={limit}", file=sys.stderr)
+
         # Call the InsightFinder API client with ONLY the system name
         api_client = _get_api_client()
         result = await api_client.get_incidents(
