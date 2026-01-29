@@ -925,7 +925,7 @@ async def list_available_instances_for_project(
                 "message": f"Project '{project_name}' not found. Please verify the project name or use list_all_systems_and_projects to see available projects."
             }
         
-        customer_name, actual_project_name, instance_list, system_id = project_info
+        customer_name, actual_project_name, display_project_name, instance_list, system_id = project_info
         
         if not instance_list:
             return {
@@ -972,6 +972,7 @@ async def list_available_instances_for_project(
             "status": "success",
             "message": pagination_msg,
             "projectName": actual_project_name,
+            "projectDisplayName": display_project_name,
             "customerName": customer_name,
             "availableInstances": paginated_instances,
             "instanceCount": len(paginated_instances),
