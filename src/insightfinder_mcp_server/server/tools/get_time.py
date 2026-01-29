@@ -500,25 +500,24 @@ def get_date_range_utc(date_input: str) -> str:
     
     date_input = date_input.strip()
     
-    # Get current year
-    current_year = datetime.now().year
+    # Note: use the year provided in the input date when available
     
     try:
         # Parse different date formats
         target_date = None
         
-        # 1. ISO format: 2026-08-21 or 2026-08-21T10:30:00 (ignore year, use current)
+        # 1. ISO format: 2026-08-21 or 2026-08-21T10:30:00 (use provided year)
         iso_match = re.match(r'^(\d{4})-(\d{2})-(\d{2})', date_input)
         if iso_match:
-            _, month, day = map(int, iso_match.groups())  # Ignore year
-            target_date = datetime(current_year, month, day).date()
+            year, month, day = map(int, iso_match.groups())
+            target_date = datetime(year, month, day).date()
         
         # 2. US format: MM/DD/YYYY (08/21/2026 or 8/21/2026) (ignore year, use current)
         elif re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', date_input):
             us_match = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', date_input)
             if us_match:
-                month, day, _ = map(int, us_match.groups())  # Ignore year
-                target_date = datetime(current_year, month, day).date()
+                month, day, year = map(int, us_match.groups())
+                target_date = datetime(year, month, day).date()
         
         # 3. US written format: Aug 21, 2026 or August 21, 2026 (ignore year, use current)
         else:
@@ -533,11 +532,12 @@ def get_date_range_utc(date_input: str) -> str:
             # Try US written format: Month DD, YYYY (ignore year, use current)
             written_match = re.match(r'^([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})$', date_input)
             if written_match:
-                month_name, day, _ = written_match.groups()  # Ignore year
+                month_name, day, year_str = written_match.groups()
                 month_name = month_name.lower()
                 if month_name in month_names:
                     month = month_names[month_name]
-                    target_date = datetime(current_year, month, int(day)).date()
+                    year = int(year_str)
+                    target_date = datetime(year, month, int(day)).date()
                 else:
                     raise ValueError(f"Unknown month name: {month_name}")
             else:
