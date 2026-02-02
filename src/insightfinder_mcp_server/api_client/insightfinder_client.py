@@ -420,7 +420,7 @@ class InsightFinderAPIClient:
     async def get_customer_name_for_project(
         self,
         project_name: str
-    ) -> Optional[tuple[str, str, List[str], str]]:
+    ) -> Optional[tuple[str, str, str, List[str], str]]:
         """
         Get the customer/user name, actual project name, and instance list for a specific project by querying the system framework.
         
@@ -495,7 +495,7 @@ class InsightFinderAPIClient:
                                 customer_name = project.get("userName")
                                 actual_project_name = proj_name  # Always use the actual projectName, not display name
                                 logger.info(f"Found project '{project_name}' (actual: '{actual_project_name}') owned by customer '{customer_name}' with {len(instance_list)} instances")
-                                return (customer_name, actual_project_name, instance_list, system_id)
+                                return (customer_name, actual_project_name, proj_display_name, instance_list, system_id)
                     except (json.JSONDecodeError, KeyError) as e:
                         logger.warning(f"Error parsing owned system data: {e}")
                         continue
@@ -527,7 +527,7 @@ class InsightFinderAPIClient:
                                 customer_name = project.get("userName")
                                 actual_project_name = proj_name  # Always use the actual projectName, not display name
                                 logger.info(f"Found project '{project_name}' (actual: '{actual_project_name}') shared from customer '{customer_name}' with {len(instance_list)} instances")
-                                return (customer_name, actual_project_name, instance_list, system_id)
+                                return (customer_name, actual_project_name, proj_display_name, instance_list, system_id)
                     except (json.JSONDecodeError, KeyError) as e:
                         logger.warning(f"Error parsing shared system data: {e}")
                         continue
@@ -576,7 +576,7 @@ class InsightFinderAPIClient:
         # Get the correct customer name and actual project name for this project
         project_info = await self.get_customer_name_for_project(project_name)
         if project_info:
-            customer_name, actual_project_name, instance_list, system_id = project_info
+            customer_name, actual_project_name, display_project_name, instance_list, system_id = project_info
             # Use the actual project name returned from the API (not the display name)
             project_name = actual_project_name
         else:
@@ -696,7 +696,7 @@ class InsightFinderAPIClient:
         # Get the correct customer name and actual project name for this project
         project_info = await self.get_customer_name_for_project(project_name)
         if project_info:
-            customer_name, actual_project_name, instance_list, system_id = project_info
+            customer_name, actual_project_name, display_project_name, instance_list, system_id = project_info
             # Use the actual project name returned from the API (not the display name)
             project_name = actual_project_name
         else:
