@@ -116,18 +116,6 @@ async def get_metric_anomalies_overview(
         # Extract key metrics
         total_anomalies = len(anomalies)
         
-        # Severity analysis based on anomaly score
-        severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-        for anomaly in anomalies:
-            score = anomaly.get("anomalyScore", 0)
-            if score >= 10:
-                severity_counts["critical"] += 1
-            elif score >= 5:
-                severity_counts["high"] += 1
-            elif score >= 1:
-                severity_counts["medium"] += 1
-            else:
-                severity_counts["low"] += 1
         
         # Component and pattern analysis
         components = set()
@@ -173,7 +161,6 @@ async def get_metric_anomalies_overview(
             "status": "success",
             "summary": {
                 "total_anomalies": total_anomalies,
-                "severity_distribution": severity_counts,
                 "unique_components": len(components),
                 "unique_instances": len(instances),
                 "unique_patterns": len(patterns),
@@ -187,12 +174,6 @@ async def get_metric_anomalies_overview(
                     "end": format_timestamp_in_user_timezone(end_time_ms),
                     "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                 }
-            },
-            "insights": {
-                "most_critical_severity": next((k for k, v in severity_counts.items() if v > 0), "none"),
-                "pattern_diversity": "high" if len(patterns) > 5 else "low" if len(patterns) <= 2 else "medium",
-                "geographic_spread": "multi-zone" if len(zones) > 1 else "single-zone",
-                "metric_type_diversity": "high" if len(metric_types) > 3 else "low" if len(metric_types) <= 1 else "medium"
             }
         }
         
@@ -346,14 +327,6 @@ async def get_metric_anomalies_list(
             
             # Determine severity level
             score = anomaly.get("anomalyScore", 0)
-            if score >= 10:
-                severity = "critical"
-            elif score >= 5:
-                severity = "high"
-            elif score >= 1:
-                severity = "medium"
-            else:
-                severity = "low"
             
             # Calculate duration
             time_pairs = root_cause.get("timePairList", [])
@@ -409,10 +382,6 @@ async def get_metric_anomalies_list(
                     "instance_down": root_cause.get("instanceDown", False)
                 }
             }
-            
-            # Add analysis if requested
-            if include_analysis:
-                enhanced_anomaly["analysis"] = _analyze_metric_anomaly(anomaly)
             
             # Add raw data if requested and available
             if include_raw_data:
@@ -542,22 +511,6 @@ async def get_metric_anomalies_statistics(
         # Basic statistics
         total_anomalies = len(anomalies)
         
-        # Severity distribution
-        severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-        severity_scores = []
-        
-        for anomaly in anomalies:
-            score = anomaly.get("anomalyScore", 0)
-            severity_scores.append(score)
-            
-            if score >= 10:
-                severity_counts["critical"] += 1
-            elif score >= 5:
-                severity_counts["high"] += 1
-            elif score >= 1:
-                severity_counts["medium"] += 1
-            else:
-                severity_counts["low"] += 1
         
         # Component analysis
         component_counts = {}
@@ -632,9 +585,6 @@ async def get_metric_anomalies_statistics(
             }
         
         # Statistical calculations
-        avg_score = sum(severity_scores) / len(severity_scores) if severity_scores else 0
-        max_score = max(severity_scores) if severity_scores else 0
-        min_score = min(severity_scores) if severity_scores else 0
         
         # Time analysis
         timestamps = [anomaly.get("timestamp", 0) for anomaly in anomalies if anomaly.get("timestamp")]
@@ -651,13 +601,6 @@ async def get_metric_anomalies_statistics(
                 "actual_span_hours": time_span_hours
             },
             
-            "severity_analysis": {
-                "distribution": severity_counts,
-                "percentages": {k: round(v / total_anomalies * 100, 1) for k, v in severity_counts.items()},
-                "average_score": round(avg_score, 2),
-                "max_score": max_score,
-                "min_score": min_score
-            },
             
             "infrastructure_analysis": {
                 "unique_components": len(component_counts),
@@ -695,8 +638,7 @@ async def get_metric_anomalies_statistics(
         
         return {
             "status": "success",
-            "statistics": statistics,
-            "insights": _generate_insights(statistics)
+            "statistics": statistics
         }
         
     except Exception as e:
@@ -858,17 +800,6 @@ async def get_project_metric_anomalies(
         for i, anomaly in enumerate(project_anomalies):
             root_cause = anomaly.get("rootCause", {})
             
-            # Determine severity category
-            score = anomaly.get("anomalyScore", 0)
-            if score >= 10:
-                severity = "critical"
-            elif score >= 5:
-                severity = "high"
-            elif score >= 1:
-                severity = "medium"
-            else:
-                severity = "low"
-                
             # Calculate duration
             time_pairs = root_cause.get("timePairList", [])
             duration_minutes = _calculate_duration_minutes(time_pairs)
@@ -913,20 +844,8 @@ async def get_project_metric_anomalies(
 
         # Summary statistics
         total_anomalies = len(project_anomalies)
-        severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
         active_count = 0
-        
         for anomaly in project_anomalies:
-            score = anomaly.get("anomalyScore", 0)
-            if score >= 10:
-                severity_counts["critical"] += 1
-            elif score >= 5:
-                severity_counts["high"] += 1
-            elif score >= 1:
-                severity_counts["medium"] += 1
-            else:
-                severity_counts["low"] += 1
-                
             if anomaly.get("active", 0) == 1:
                 active_count += 1
 
@@ -936,7 +855,6 @@ async def get_project_metric_anomalies(
             "summary": {
                 "total_anomalies": total_anomalies,
                 "active_anomalies": active_count,
-                "severity_distribution": severity_counts,
                 "project_name": project_name,
                 "system_name": system_name,
                 "time_range": {
@@ -971,67 +889,6 @@ def _calculate_duration_minutes(time_pairs: List[Dict[str, int]]) -> float:
     
     return round(total_duration_ms / (1000 * 60), 2)
 
-def _analyze_metric_anomaly(anomaly: Dict[str, Any]) -> Dict[str, Any]:
-    """Analyze a single metric anomaly and provide insights."""
-    root_cause = anomaly.get("rootCause", {})
-    result_info = anomaly.get("rootCauseResultInfo", {})
-    
-    analysis = {
-        "severity_assessment": "low",
-        "impact_level": "minimal",
-        "urgency": "low",
-        "characteristics": [],
-        "recommendations": []
-    }
-    
-    # Severity assessment
-    score = anomaly.get("anomalyScore", 0)
-    if score >= 10:
-        analysis["severity_assessment"] = "critical"
-        analysis["impact_level"] = "severe"
-        analysis["urgency"] = "immediate"
-    elif score >= 5:
-        analysis["severity_assessment"] = "high"
-        analysis["impact_level"] = "significant"
-        analysis["urgency"] = "high"
-    elif score >= 1:
-        analysis["severity_assessment"] = "medium"
-        analysis["impact_level"] = "moderate"
-        analysis["urgency"] = "medium"
-    
-    # Characteristic analysis
-    if root_cause.get("isFlapping"):
-        analysis["characteristics"].append("flapping behavior")
-        analysis["recommendations"].append("investigate metric stability")
-    
-    if root_cause.get("processCrash"):
-        analysis["characteristics"].append("process crash detected")
-        analysis["recommendations"].append("check process health and logs")
-    
-    if root_cause.get("instanceDown"):
-        analysis["characteristics"].append("instance down")
-        analysis["recommendations"].append("verify instance availability")
-    
-    if result_info.get("causedByChangeEvent"):
-        analysis["characteristics"].append("related to change event")
-        analysis["recommendations"].append("review recent changes")
-    
-    if result_info.get("leadToIncident"):
-        analysis["characteristics"].append("led to incident")
-        analysis["recommendations"].append("assess incident impact")
-    
-    # Metric type specific insights
-    metric_type = root_cause.get("metricType", "Unknown")
-    if metric_type == "Storage Utilization":
-        analysis["recommendations"].append("monitor disk space and I/O patterns")
-    elif metric_type == "Network Utilization":
-        analysis["recommendations"].append("check network bandwidth and connectivity")
-    elif "CPU" in metric_type or "Processor" in metric_type:
-        analysis["recommendations"].append("analyze CPU usage patterns and load")
-    elif "Memory" in metric_type:
-        analysis["recommendations"].append("review memory allocation and usage")
-    
-    return analysis
 
 def _calculate_trends(anomalies: List[Dict[str, Any]], start_time_ms: int, end_time_ms: int) -> Dict[str, Any]:
     """Calculate trend analysis for anomalies over time."""
@@ -1088,52 +945,6 @@ def _calculate_trends(anomalies: List[Dict[str, Any]], start_time_ms: int, end_t
         }
     }
 
-def _generate_insights(statistics: Dict[str, Any]) -> List[str]:
-    """Generate actionable insights from statistics."""
-    insights = []
-    
-    total = statistics.get("total_anomalies", 0)
-    if total == 0:
-        return ["No metric anomalies detected in the specified time range"]
-    
-    severity = statistics.get("severity_analysis", {})
-    infrastructure = statistics.get("infrastructure_analysis", {})
-    metric_analysis = statistics.get("metric_analysis", {})
-    flags = statistics.get("behavioral_flags", {})
-    
-    # Severity insights
-    critical_pct = severity.get("percentages", {}).get("critical", 0)
-    high_pct = severity.get("percentages", {}).get("high", 0)
-    
-    if critical_pct > 20:
-        insights.append(f"High concentration of critical anomalies ({critical_pct}%) indicates severe system issues")
-    elif critical_pct + high_pct > 50:
-        insights.append(f"Majority of anomalies ({critical_pct + high_pct}%) are high severity, requiring immediate attention")
-    
-    # Infrastructure insights
-    unique_components = infrastructure.get("unique_components", 0)
-    if unique_components == 1:
-        insights.append("Anomalies concentrated in a single component - potential component-specific issue")
-    elif unique_components > 10:
-        insights.append("Anomalies spread across many components - potential system-wide issue")
-    
-    # Metric type insights
-    top_metric_types = metric_analysis.get("top_metric_types", {})
-    if "Storage Utilization" in top_metric_types:
-        insights.append("Storage utilization anomalies detected - monitor disk space and I/O")
-    if "Network Utilization" in top_metric_types:
-        insights.append("Network utilization anomalies detected - check bandwidth and connectivity")
-    
-    # Behavioral insights
-    flapping_pct = flags.get("flapping_anomalies", {}).get("percentage", 0)
-    if flapping_pct > 30:
-        insights.append(f"High rate of flapping anomalies ({flapping_pct}%) indicates unstable metrics")
-    
-    incident_pct = flags.get("incident_anomalies", {}).get("percentage", 0)
-    if incident_pct > 20:
-        insights.append(f"Significant portion of anomalies ({incident_pct}%) led to incidents")
-    
-    return insights
 
 def _get_api_client():
     """

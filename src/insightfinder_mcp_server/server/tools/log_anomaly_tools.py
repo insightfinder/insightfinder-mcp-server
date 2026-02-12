@@ -79,11 +79,6 @@ async def get_log_anomalies_overview(
         # Basic counts and metrics
         total_anomalies = len(log_anomalies)
         
-        # Severity analysis based on anomaly scores
-        high_severity = len([la for la in log_anomalies if la.get("anomalyScore", 0) > 100])
-        medium_severity = len([la for la in log_anomalies if 10 <= la.get("anomalyScore", 0) <= 100])
-        low_severity = len([la for la in log_anomalies if la.get("anomalyScore", 0) < 10])
-        
         # Time range analysis
         if log_anomalies:
             timestamps = [anomaly["timestamp"] for anomaly in log_anomalies]
@@ -117,11 +112,6 @@ async def get_log_anomalies_overview(
             },
             "summary": {
                 "total_anomalies": total_anomalies,
-                "severity_distribution": {
-                    "high": high_severity,
-                    "medium": medium_severity,
-                    "low": low_severity
-                },
                 "unique_components": unique_components,
                 "unique_instances": unique_instances,
                 "unique_patterns": unique_patterns,
@@ -211,12 +201,6 @@ async def get_log_anomalies_list(
         for i, anomaly in enumerate(log_anomalies):
             # Determine severity category
             score = anomaly.get("anomalyScore", 0)
-            if score > 100:
-                severity = "high"
-            elif score >= 10:
-                severity = "medium"
-            else:
-                severity = "low"
                 
             anomaly_info = {
                 "id": i + 1,
@@ -371,11 +355,6 @@ async def get_log_anomalies_statistics(
         # Calculate statistics
         total_anomalies = len(log_anomalies)
         
-        # Severity distribution
-        high_severity = len([la for la in log_anomalies if la.get("anomalyScore", 0) > 100])
-        medium_severity = len([la for la in log_anomalies if 10 <= la.get("anomalyScore", 0) <= 100])
-        low_severity = len([la for la in log_anomalies if la.get("anomalyScore", 0) < 10])
-        
         # Group by component, instance, pattern, zone, and project
         components = {}
         instances = {}
@@ -423,11 +402,6 @@ async def get_log_anomalies_statistics(
             },
             "statistics": {
                 "total_anomalies": total_anomalies,
-                "severity_distribution": {
-                    "high": high_severity,
-                    "medium": medium_severity,
-                    "low": low_severity
-                },
                 "score_statistics": {
                     "max_score": round(max_score, 2),
                     "min_score": round(min_score, 2),
@@ -492,6 +466,32 @@ async def get_project_log_anomalies(
             if start_time_ms is None:
                 start_time_ms = default_start_ms
 
+        # Validate timestamps
+        current_time_ms = int(datetime.now().timestamp() * 1000)
+        two_days_ms = 2 * 24 * 60 * 60 * 1000
+        
+        # Check for future timestamps > 2 days
+        if start_time_ms > current_time_ms + two_days_ms or end_time_ms > current_time_ms + two_days_ms:
+            return {
+                "status": "error",
+                "message": "Timestamps cannot be more than 2 days in the future."
+            }
+            
+        # Handle same start/end time - expand to full day
+        if start_time_ms == end_time_ms:
+            # Create a datetime object from the timestamp (assuming UTC)
+            dt = datetime.fromtimestamp(start_time_ms / 1000)
+            
+            # Set to beginning of day (00:00:00)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            
+            # Set to end of day (23:59:59)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+            end_time_ms = int(end_dt.timestamp() * 1000)
+
+        print(f"Fetching loganomaly data for {system_name}...", file=sys.stderr)
+
         # Call the InsightFinder API client with ONLY the system name
         api_client = _get_api_client()
         result = await api_client.get_loganomaly(
@@ -517,12 +517,6 @@ async def get_project_log_anomalies(
         for i, anomaly in enumerate(project_anomalies):
             # Determine severity category
             score = anomaly.get("anomalyScore", 0)
-            if score > 100:
-                severity = "high"
-            elif score >= 10:
-                severity = "medium"
-            else:
-                severity = "low"
                 
             anomaly_info = {
                 "id": i + 1,
@@ -534,7 +528,6 @@ async def get_project_log_anomalies(
                 "pattern": anomaly.get("patternName", "Unknown"),
                 "zone": anomaly.get("zoneName", "Unknown"),
                 "anomaly_score": round(anomaly.get("anomalyScore", 0), 2),
-                "severity": severity,
                 "is_incident": anomaly.get("isIncident", False),
                 "active": anomaly.get("active", 0)
             }
