@@ -33,7 +33,8 @@ async def get_log_anomalies_overview(
     system_name: str,
     start_time_ms: Optional[int] = None,
     end_time_ms: Optional[int] = None,
-    project_name: Optional[str] = None
+    project_name: Optional[str] = None,
+    anomaly_type: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Fetches a very high-level overview of log anomalies - just counts and basic metrics.
@@ -75,6 +76,10 @@ async def get_log_anomalies_overview(
         if project_name:
             # log_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
             log_anomalies = [la for la in log_anomalies if la.get("projectName", "").lower() == project_name.lower() or la.get("projectDisplayName", "").lower() == project_name.lower()]
+
+        # Filter by anomaly type if specified (e.g. "whiteList")
+        if anomaly_type:
+            log_anomalies = [la for la in log_anomalies if str(la.get("type", "")).lower() == anomaly_type.lower()]
         
         # Basic counts and metrics
         total_anomalies = len(log_anomalies)
@@ -141,9 +146,9 @@ async def get_log_anomalies_list(
     start_time_ms: Optional[int] = None,
     end_time_ms: Optional[int] = None,
     limit: int = 10,
-    min_severity: str = "low",
     project_name: Optional[str] = None,
-    include_raw_data: bool = False
+    include_raw_data: bool = False,
+    anomaly_type: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Fetches a detailed list of log anomalies with comprehensive information.
@@ -156,7 +161,6 @@ async def get_log_anomalies_list(
         start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
         end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
         limit (int): Maximum number of anomalies to return (default: 10).
-        min_severity (str): Minimum severity level - "low" (>0), "medium" (>10), "high" (>100).
         project_name (str): Optional. Filter results to only include anomalies from this specific project.
         include_raw_data (bool): Whether to include raw log data (default: False for performance).
     """
@@ -187,21 +191,17 @@ async def get_log_anomalies_list(
         if project_name:
             # log_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
             log_anomalies = [la for la in log_anomalies if la.get("projectName", "").lower() == project_name.lower() or la.get("projectDisplayName", "").lower() == project_name.lower()]
-        
-        # Filter by severity
-        severity_thresholds = {"low": 0, "medium": 10, "high": 100}
-        min_score = severity_thresholds.get(min_severity, 0)
-        log_anomalies = [la for la in log_anomalies if la.get("anomalyScore", 0) >= min_score]
-        
+
+        # Filter by anomaly type if specified (e.g. "whiteList")
+        if anomaly_type:
+            log_anomalies = [la for la in log_anomalies if str(la.get("type", "")).lower() == anomaly_type.lower()]
+
         # Sort by anomaly score (highest first) and limit
         log_anomalies = sorted(log_anomalies, key=lambda x: x.get("anomalyScore", 0), reverse=True)[:limit]
 
         # Create detailed anomaly list
         anomaly_list = []
-        for i, anomaly in enumerate(log_anomalies):
-            # Determine severity category
-            score = anomaly.get("anomalyScore", 0)
-                
+        for i, anomaly in enumerate(log_anomalies):                
             anomaly_info = {
                 "id": i + 1,
                 "timestamp": anomaly["timestamp"],
@@ -212,7 +212,6 @@ async def get_log_anomalies_list(
                 "pattern": anomaly.get("patternName", "Unknown"),
                 "zone": anomaly.get("zoneName", "Unknown"),
                 "anomaly_score": round(anomaly.get("anomalyScore", 0), 2),
-                "severity": severity,
                 "is_incident": anomaly.get("isIncident", False),
                 "active": anomaly.get("active", 0)
             }
@@ -288,7 +287,6 @@ async def get_log_anomalies_list(
             "status": "success",
             "system_name": system_name,
             "filters": {
-                "min_severity": min_severity,
                 "limit": limit,
                 "project_name": project_name,
                 "include_raw_data": include_raw_data
@@ -314,7 +312,8 @@ async def get_log_anomalies_statistics(
     system_name: str,
     start_time_ms: Optional[int] = None,
     end_time_ms: Optional[int] = None,
-    project_name: Optional[str] = None
+    project_name: Optional[str] = None,
+    anomaly_type: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Provides statistical analysis of log anomalies for a system over a time period.
@@ -351,6 +350,10 @@ async def get_log_anomalies_statistics(
         # Filter by project name if specified
         if project_name:
             log_anomalies = [la for la in log_anomalies if la.get("projectName", "").lower() == project_name.lower() or la.get("projectDisplayName", "").lower() == project_name.lower()]
+
+        # Filter by anomaly type if specified (e.g. "whiteList")
+        # if anomaly_type:
+        #     log_anomalies = [la for la in log_anomalies if str(la.get("type", "")).lower() == anomaly_type.lower()]
 
         # Calculate statistics
         total_anomalies = len(log_anomalies)
@@ -437,7 +440,7 @@ async def get_project_log_anomalies(
     Use this tool when the user specifies both a system name and project name.
     
     The response includes full anomaly details with:
-    - Basic anomaly information (timestamp, component, instance, pattern, zone, score, severity)
+    - Basic anomaly information (timestamp, component, instance, pattern, zone, score)
     - Parsed raw data fields (e.g., _id, cdn, status_code, url, name, etc.)
     - Key fields extraction for common data elements (including 'cdn' if available)
     - Formatted summaries for better readability
@@ -502,22 +505,21 @@ async def get_project_log_anomalies(
 
         if result["status"] != "success":
             return result
-
         log_anomalies = result["data"]
-        
+
         # Filter by the specific project name
         # project_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
         project_anomalies = [la for la in log_anomalies if la.get("projectName", "").lower() == project_name.lower() or la.get("projectDisplayName", "").lower() == project_name.lower()]
+
+        # Always only return anomalies of type "whiteList" for project-specific queries
+        project_anomalies = [la for la in project_anomalies if str(la.get("type", "")).lower() == "whitelist"]
 
         # Sort by timestamp (most recent first) and limit
         project_anomalies = sorted(project_anomalies, key=lambda x: x.get("timestamp", 0), reverse=True)[:limit]
 
         # Create detailed anomaly list for the project
         anomaly_list = []
-        for i, anomaly in enumerate(project_anomalies):
-            # Determine severity category
-            score = anomaly.get("anomalyScore", 0)
-                
+        for i, anomaly in enumerate(project_anomalies):                
             anomaly_info = {
                 "id": i + 1,
                 "timestamp": anomaly["timestamp"],

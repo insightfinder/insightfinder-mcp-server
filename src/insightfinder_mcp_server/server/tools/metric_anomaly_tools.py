@@ -194,7 +194,6 @@ async def get_metric_anomalies_list(
     start_time_ms: Optional[int] = None,
     end_time_ms: Optional[int] = None,
     limit: int = 20,
-    min_severity: str = "low",
     sort_by: str = "timestamp",
     include_raw_data: bool = False,
     include_analysis: bool = True,
@@ -212,7 +211,6 @@ async def get_metric_anomalies_list(
          • Project: [anomaly.project_name]     ← MANDATORY - ALWAYS DISPLAY THIS LINE
          • Time: [anomaly.datetime]
          • Metric: [anomaly.metric.name]
-         • Severity: [anomaly.severity]
          • Component: [anomaly.location.component]
          • Instance: [anomaly.location.instance]"
     
@@ -221,8 +219,7 @@ async def get_metric_anomalies_list(
         start_time_ms: Start timestamp in milliseconds (optional, defaults to 24 hours ago)
         end_time_ms: End timestamp in milliseconds (optional, defaults to current time)
         limit: Maximum number of anomalies to return
-        min_severity: Minimum severity level ("low", "medium", "high", "critical")
-        sort_by: Sort field ("timestamp", "severity", "pattern")
+        sort_by: Sort field ("timestamp", "pattern")
         include_raw_data: Whether to include raw anomaly data (default: False for performance)
         include_analysis: Whether to include anomaly analysis (default: True)
         project_name: Optional project name to filter results (if not provided, returns all projects)
@@ -253,7 +250,6 @@ async def get_metric_anomalies_list(
             print(f"[DEBUG] get_metric_anomalies_list called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}, project_name={project_name}", file=sys.stderr)
             print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
             print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
-            print(f"[DEBUG] Filters: limit={limit}, min_severity={min_severity}, sort_by={sort_by}, project_name={project_name}", file=sys.stderr)
         
         client = _get_api_client()
         
@@ -293,25 +289,10 @@ async def get_metric_anomalies_list(
             # anomalies = [anomaly for anomaly in anomalies if anomaly.get("projectName") == project_name]
             anomalies = [anomaly for anomaly in anomalies if anomaly.get("projectName", "").lower() == project_name.lower() or anomaly.get("projectDisplayName", "").lower() == project_name.lower()]
         
-        # Convert severity level to score threshold
-        severity_thresholds = {
-            "low": 0,
-            "medium": 1,
-            "high": 5,
-            "critical": 10
-        }
-        min_score = severity_thresholds.get(min_severity, 0)
-        
-        # Filter by severity
-        filtered_anomalies = [
-            anomaly for anomaly in anomalies 
-            if anomaly.get("anomalyScore", 0) >= min_score
-        ]
+        filtered_anomalies = anomalies  # No filtering for now, but can be added back if needed
         
         # Sort anomalies
-        if sort_by == "severity":
-            filtered_anomalies.sort(key=lambda x: x.get("anomalyScore", 0), reverse=True)
-        elif sort_by == "pattern":
+        if sort_by == "pattern":
             filtered_anomalies.sort(key=lambda x: x.get("patternName", ""))
         else:  # timestamp
             filtered_anomalies.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
@@ -324,10 +305,7 @@ async def get_metric_anomalies_list(
         for anomaly in limited_anomalies:
             root_cause = anomaly.get("rootCause", {})
             result_info = anomaly.get("rootCauseResultInfo", {})
-            
-            # Determine severity level
-            score = anomaly.get("anomalyScore", 0)
-            
+                        
             # Calculate duration
             time_pairs = root_cause.get("timePairList", [])
             duration_minutes = _calculate_duration_minutes(time_pairs)
@@ -345,9 +323,6 @@ async def get_metric_anomalies_list(
                 "timestamp": anomaly.get("timestamp"),
                 "datetime": format_api_timestamp_corrected(anomaly.get("timestamp", 0)) if anomaly.get("timestamp") else None,
                 
-                # Severity information
-                "severity": severity,
-                "anomaly_score": score,
                 "active": anomaly.get("active", 0),
                 
                 # Location information (includes project again for nested access)
@@ -403,7 +378,6 @@ async def get_metric_anomalies_list(
             "total_found": len(filtered_anomalies),
             "returned_count": len(enhanced_anomalies),
             "filters": {
-                "min_severity": min_severity,
                 "sort_by": sort_by,
                 "limit": limit,
                 "include_raw_data": include_raw_data,
@@ -433,7 +407,6 @@ async def get_metric_anomalies_statistics(
     system_name: str,
     start_time_ms: Optional[int] = None,
     end_time_ms: Optional[int] = None,
-    include_trends: bool = True,
     project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
@@ -446,7 +419,6 @@ async def get_metric_anomalies_statistics(
         system_name: Name of the system to query
         start_time_ms: Start timestamp in milliseconds (optional, defaults to 24 hours ago)
         end_time_ms: End timestamp in milliseconds (optional, defaults to current time)
-        include_trends: Whether to include trend analysis
         project_name: Optional project name to filter results (if not provided, returns all projects)
         
     Returns:
@@ -632,10 +604,7 @@ async def get_metric_anomalies_statistics(
             }
         }
         
-        # Add trend analysis if requested
-        if include_trends and total_anomalies > 0:
-            statistics["trend_analysis"] = _calculate_trends(anomalies, start_time_ms, end_time_ms)
-        
+
         return {
             "status": "success",
             "statistics": statistics
@@ -679,7 +648,7 @@ async def fetch_metric_anomalies(
         Dict with status and data. Each anomaly in data array includes:
         - projectName: The internal project name
         - projectDisplayName: The user-facing project display name (use this for presentation)
-        - All other anomaly fields (timestamp, severity, metrics, etc.)
+        - All other anomaly fields (timestamp, metrics, etc.)
     """
     try:
         
@@ -761,7 +730,7 @@ async def get_project_metric_anomalies(
     Returns:
         Dict with status, summary, and anomalies list. Each anomaly includes:
         - project_name: The project name (ALWAYS included - derived from projectDisplayName or projectName)
-        - All other anomaly details (severity, metrics, timestamps, location info, etc.)
+        - All other anomaly details (metrics, timestamps, location info, etc.)
     """
     try:
         # Set default time range if not provided (timezone-aware)
@@ -811,8 +780,6 @@ async def get_project_metric_anomalies(
                 "index": i + 1,
                 "timestamp": anomaly.get("timestamp"),
                 "datetime": format_api_timestamp_corrected(anomaly.get("timestamp", 0)) if anomaly.get("timestamp") else None,
-                "severity": severity,
-                "anomaly_score": score,
                 "active": anomaly.get("active", 0),
                 
                 # Location information
@@ -870,81 +837,6 @@ async def get_project_metric_anomalies(
         error_message = f"Error in get_project_metric_anomalies: {str(e)}"
         logger.error(error_message)
         return {"status": "error", "message": error_message}
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
-def _calculate_duration_minutes(time_pairs: List[Dict[str, int]]) -> float:
-    """Calculate total duration in minutes from time pairs."""
-    if not time_pairs:
-        return 0.0
-    
-    total_duration_ms = 0
-    for pair in time_pairs:
-        start = pair.get("s", 0)
-        end = pair.get("e", 0)
-        if end > start:
-            total_duration_ms += (end - start)
-    
-    return round(total_duration_ms / (1000 * 60), 2)
-
-
-def _calculate_trends(anomalies: List[Dict[str, Any]], start_time_ms: int, end_time_ms: int) -> Dict[str, Any]:
-    """Calculate trend analysis for anomalies over time."""
-    if not anomalies:
-        return {}
-    
-    # Divide time range into buckets for trend analysis
-    time_range_ms = end_time_ms - start_time_ms
-    bucket_size_ms = time_range_ms // 6  # 6 buckets for trend analysis
-    
-    buckets = []
-    for i in range(6):
-        bucket_start = start_time_ms + (i * bucket_size_ms)
-        bucket_end = bucket_start + bucket_size_ms
-        buckets.append({
-            "start": bucket_start,
-            "end": bucket_end,
-            "count": 0,
-            "total_score": 0
-        })
-    
-    # Distribute anomalies into buckets
-    for anomaly in anomalies:
-        timestamp = anomaly.get("timestamp", 0)
-        score = anomaly.get("anomalyScore", 0)
-        
-        for bucket in buckets:
-            if bucket["start"] <= timestamp < bucket["end"]:
-                bucket["count"] += 1
-                bucket["total_score"] += score
-                break
-    
-    # Calculate trend metrics
-    counts = [bucket["count"] for bucket in buckets]
-    avg_scores = [bucket["total_score"] / bucket["count"] if bucket["count"] > 0 else 0 for bucket in buckets]
-    
-    # Simple trend calculation (positive = increasing, negative = decreasing)
-    count_trend = 0
-    score_trend = 0
-    
-    if len(counts) >= 2:
-        count_trend = (counts[-1] - counts[0]) / max(counts[0], 1)
-        if len([s for s in avg_scores if s > 0]) >= 2:
-            non_zero_scores = [s for s in avg_scores if s > 0]
-            score_trend = (non_zero_scores[-1] - non_zero_scores[0]) / max(non_zero_scores[0], 0.1)
-    
-    return {
-        "time_buckets": buckets,
-        "trend_indicators": {
-            "anomaly_frequency_trend": "increasing" if count_trend > 0.2 else "decreasing" if count_trend < -0.2 else "stable",
-            "severity_trend": "increasing" if score_trend > 0.2 else "decreasing" if score_trend < -0.2 else "stable",
-            "count_trend_value": round(count_trend, 3),
-            "score_trend_value": round(score_trend, 3)
-        }
-    }
-
 
 def _get_api_client():
     """
