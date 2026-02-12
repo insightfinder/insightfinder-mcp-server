@@ -33,7 +33,7 @@ import logging
 import re
 import zoneinfo
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any, Union
 
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
@@ -442,6 +442,52 @@ def parse_user_datetime_to_ms(input_str: str, user_tz_name: str) -> int:
         f"Cannot parse datetime: '{input_str}'. "
         f"Supported formats: ISO 8601, YYYY-MM-DD, MM/DD/YYYY, or 13-digit milliseconds"
     )
+
+
+def convert_to_ms(timestamp: Optional[Union[str, int, float]], param_name: str = "timestamp", tz_name: str = "UTC") -> Optional[int]:
+    """
+    Convert a timestamp parameter to InsightFinder fake-UTC milliseconds.
+
+    Accepts any human-readable format that parse_user_datetime_to_ms() supports:
+        - "2026-02-12T11:05:00"       (ISO without offset — treated as owner tz)
+        - "2026-02-12T11:05:00Z"      (ISO with Z — converted from UTC to owner tz)
+        - "2026-02-12T11:05:00-05:00" (ISO with offset — converted to owner tz)
+        - "2026-02-12"                (date only — midnight in owner tz)
+        - "02/12/2026"                (US format MM/DD/YYYY)
+        - "1770768600000"             (13-digit ms — pass-through)
+        - 1770768600000               (int — pass-through)
+
+    Args:
+        timestamp: The timestamp value (int, str, float, or None)
+        param_name: The name of the parameter (for error messages)
+        tz_name: Owner timezone name for interpreting naive datetimes
+
+    Returns:
+        int or None: The timestamp as InsightFinder fake-UTC milliseconds, or None if input was None
+
+    Raises:
+        ValueError: If the timestamp cannot be parsed
+    """
+    if timestamp is None:
+        return None
+
+    if isinstance(timestamp, (int, float)):
+        return int(timestamp)
+
+    if isinstance(timestamp, str):
+        timestamp = timestamp.strip()
+        if not timestamp:
+            return None
+        try:
+            return parse_user_datetime_to_ms(timestamp, tz_name)
+        except ValueError:
+            raise ValueError(
+                f"Invalid {param_name}: cannot parse '{timestamp}'. "
+                f"Accepted formats: '2026-02-12T11:05:00', '2026-02-12', '02/12/2026', "
+                f"or 13-digit milliseconds."
+            )
+
+    raise ValueError(f"Invalid {param_name}: must be a string or integer, got {type(timestamp).__name__}")
 
 
 # ---------------------------------------------------------------------------

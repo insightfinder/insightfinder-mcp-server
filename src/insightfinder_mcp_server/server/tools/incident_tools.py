@@ -13,162 +13,9 @@ from .get_time import (
     format_timestamp_in_user_timezone,
     format_api_timestamp_corrected,
     parse_user_datetime_to_ms,
+    convert_to_ms,
 )
 
-def _convert_timestamp_to_int(timestamp: Optional[Any], param_name: str, tz_name: str = "UTC") -> Optional[int]:
-    """
-    Convert a timestamp parameter to InsightFinder fake-UTC milliseconds.
-
-    Accepts any human-readable format that parse_user_datetime_to_ms() supports:
-        - "2026-02-12T11:05:00"       (ISO without offset — treated as owner tz)
-        - "2026-02-12T11:05:00Z"      (ISO with Z — converted from UTC to owner tz)
-        - "2026-02-12T11:05:00-05:00" (ISO with offset — converted to owner tz)
-        - "2026-02-12"                (date only — midnight in owner tz)
-        - "02/12/2026"                (US format MM/DD/YYYY)
-        - "1770768600000"             (13-digit ms — pass-through)
-        - 1770768600000               (int — pass-through)
-
-    Args:
-        timestamp: The timestamp value (int, str, or None)
-        param_name: The name of the parameter (for error messages)
-        tz_name: Owner timezone name for interpreting naive datetimes
-
-    Returns:
-        int or None: The timestamp as InsightFinder fake-UTC milliseconds, or None if input was None
-
-    Raises:
-        ValueError: If the timestamp cannot be parsed
-    """
-    if timestamp is None:
-        return None
-
-    if isinstance(timestamp, (int, float)):
-        return int(timestamp)
-
-    if isinstance(timestamp, str):
-        timestamp = timestamp.strip()
-        if not timestamp:
-            return None
-        try:
-            return parse_user_datetime_to_ms(timestamp, tz_name)
-        except ValueError:
-            raise ValueError(
-                f"Invalid {param_name}: cannot parse '{timestamp}'. "
-                f"Accepted formats: '2026-02-12T11:05:00', '2026-02-12', '02/12/2026', "
-                f"or 13-digit milliseconds."
-            )
-
-    raise ValueError(f"Invalid {param_name}: must be a string or integer, got {type(timestamp).__name__}")
-
-"""
-=== INCIDENT INVESTIGATION TOOLS - LLM USAGE GUIDELINES ===
-
-IMPORTANT: All time parameters accept human-readable datetime strings.
-The tools handle conversion internally — you never need to compute epoch timestamps.
-
-🕐 TIME PARAMETER FORMAT:
-- start_time / end_time accept any of these formats:
-    "2026-02-12T11:05:00"   (datetime without offset — interpreted in owner timezone)
-    "2026-02-12"            (date only — midnight in owner timezone)
-    "02/12/2026"            (US format MM/DD/YYYY)
-- If not provided, tools automatically use last 24 hours
-- NEVER pass epoch milliseconds — always pass human-readable strings
-
-📅 TIME RANGE BEST PRACTICES:
-1. For "today's incidents": Omit time parameters (defaults to last 24 hours)
-2. For specific dates: Pass the date directly, e.g. start_time="2026-02-11"
-3. For specific time windows: Pass datetimes directly, e.g. start_time="2026-02-11T09:00:00", end_time="2026-02-11T17:00:00"
-4. ALWAYS display times in the Owner User Timezone, never label as UTC
-
-🔧 WHEN TO USE EACH TOOL (Progressive Investigation):
-
-Layer 0 - OVERVIEW (Start here):
-├── get_incidents_overview() - Quick counts and basic metrics (defaults to last 24h)
-└── Use when: User asks "any incidents?" or "what happened today?"
-
-Layer 1 - LIST (Browse incidents):
-├── get_incidents_list() - Compact list with basic info
-└── Use when: Need to see individual incidents without detail
-
-Layer 2 - SUMMARY (Get context):
-├── get_incidents_summary() - Detailed summary with root cause
-└── Use when: Need understanding of specific incidents
-
-Layer 3 - DETAILS (Investigate specific):
-├── get_incident_details() - Full incident information
-└── Use when: User wants complete info about one incident
-
-Layer 4 - RAW DATA (Deep dive):
-├── get_incident_raw_data() - Stack traces, logs, error details
-└── Use when: Need actual error messages or stack traces
-
-Layer 5 - ANALYTICS (Pattern analysis):
-├── get_incidents_statistics() - Patterns, trends, frequency
-└── Use when: Need to understand patterns or root causes
-
-🎯 QUERY PARAMETER GUIDELINES:
-
-Time Ranges:
-- start_time: Start of the time window (e.g. "2026-02-11", "2026-02-11T09:00:00")
-- end_time: End of the time window (e.g. "2026-02-12", "2026-02-12T17:00:00")
-- If omitted: Tools default to last 24 hours automatically
-
-System Names:
-- Always required: system_name parameter
-- Use exact system identifier from user's environment
-
-Filtering:
-- only_true_incidents=True: For confirmed incidents only
-- limit: Control response size (default varies by tool)
-- include_root_cause=True: Include diagnostic information
-
-🚨 COMMON USER QUESTIONS → TOOL MAPPING:
-
-"Any incidents today?" → get_incidents_overview(system_name=...) with no time params
-"What happened yesterday?" → get_incidents_overview(system_name=..., start_time="2026-02-11", end_time="2026-02-12")
-"List recent incidents" → get_incidents_list()
-"Tell me about incident X" → get_incident_details() with specific timestamp
-"Why did the system fail?" → get_incidents_summary() then get_incident_raw_data()
-"Show me patterns" → get_incidents_statistics()
-"What broke the most?" → get_incidents_statistics() for top components
-
-💡 TIMEZONE HANDLING:
-- All timestamps are in the Owner User Timezone (NOT UTC)
-- The "timezone" field in tool responses tells you the system's timezone
-- ALWAYS display times using the timezone from the response (e.g., "US/Eastern")
-- NEVER label displayed times as "UTC" — use the timezone from the response
-- Timezone resolution is handled internally by each tool — no need to pass timezone info
-
-⚡ PERFORMANCE TIPS:
-- Start with overview tools for quick assessment
-- Use specific timestamp when drilling down
-- Limit raw data requests to avoid overwhelming responses
-- Filter for true incidents when investigating real issues
-
-🔍 INVESTIGATION WORKFLOW EXAMPLE:
-1. get_incidents_overview() - "Are there any incidents?"
-2. get_incidents_list() - "Show me what happened"
-3. get_incidents_summary() - "Tell me more about these incidents"
-4. get_incident_details() - "Investigate this specific incident"
-5. get_incident_raw_data() - "Show me the actual error"
-6. get_incidents_statistics() - "What patterns do we see?"
-
-📋 COMPLETE USAGE EXAMPLE:
-
-User: "Show me incidents from yesterday 9 AM to 5 PM in prod-web"
-
-Step 1: Get overview with human-readable times
-→ get_incidents_overview(system_name="prod-web", start_time="2026-02-11T09:00:00", end_time="2026-02-11T17:00:00")
-
-Step 2: Get details if incidents found
-→ get_incidents_list(system_name="prod-web", start_time="2026-02-11T09:00:00", end_time="2026-02-11T17:00:00")
-
-Step 3: Investigate specific incident
-→ get_incident_details(system_name="prod-web", incident_timestamp="2026-02-11T14:30:00")
-
-Remember: Always start with overview tools and progressively drill down!
-Always display times in the system's owner timezone, never UTC!
-"""
 
 # Layer 0: Ultra-compact incident overview (just counts and basic info)
 @mcp_server.tool()
@@ -212,8 +59,8 @@ async def get_incidents_overview(
 
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = _convert_timestamp_to_int(start_time, "start_time", tz_name)
-            end_time_ms = _convert_timestamp_to_int(end_time, "end_time", tz_name)
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
@@ -225,6 +72,25 @@ async def get_incidents_overview(
             if start_time_ms is None:
                 start_time_ms = default_start_ms
         # print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
+
+        
+        # If start and end time are the same (e.g. user provided "2026-02-12" for both),
+        # expand to cover the full day (00:00:00.000 to 23:59:59.999).
+        # We treat the timestamp as UTC because it's already "fake UTC" (owner wall-clock).
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            import datetime
+            dt = datetime.datetime.fromtimestamp(start_time_ms / 1000, tz=datetime.timezone.utc)
+            # Set to start of day
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            # Set to end of day
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
+            
+            if settings.ENABLE_DEBUG_MESSAGES:
+                logger.debug(f"Expanded equal start/end time to full day: {start_time_ms} - {end_time_ms}")
+
         # Call the InsightFinder API client
         api_client = _get_api_client()
         result = await api_client.get_incidents(
@@ -324,8 +190,8 @@ async def get_incidents_list(
 
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = _convert_timestamp_to_int(start_time, "start_time", tz_name)
-            end_time_ms = _convert_timestamp_to_int(end_time, "end_time", tz_name)
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
@@ -336,6 +202,22 @@ async def get_incidents_list(
                 end_time_ms = default_end_ms
             if start_time_ms is None:
                 start_time_ms = default_start_ms
+
+
+
+        # If start and end time are the same (e.g. user provided "2026-02-12" for both),
+        # expand to cover the full day (00:00:00.000 to 23:59:59.999).
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            import datetime
+            dt = datetime.datetime.fromtimestamp(start_time_ms / 1000, tz=datetime.timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
+            
+            if settings.ENABLE_DEBUG_MESSAGES:
+                logger.debug(f"Expanded equal start/end time to full day: {start_time_ms} - {end_time_ms}")
 
         # Call the InsightFinder API client
         api_client = _get_api_client()
@@ -441,8 +323,8 @@ async def get_incidents_summary(
 
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = _convert_timestamp_to_int(start_time, "start_time", tz_name)
-            end_time_ms = _convert_timestamp_to_int(end_time, "end_time", tz_name)
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
@@ -453,6 +335,22 @@ async def get_incidents_summary(
                 end_time_ms = default_end_ms
             if start_time_ms is None:
                 start_time_ms = default_start_ms
+
+
+
+        # If start and end time are the same (e.g. user provided "2026-02-12" for both),
+        # expand to cover the full day (00:00:00.000 to 23:59:59.999).
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            import datetime
+            dt = datetime.datetime.fromtimestamp(start_time_ms / 1000, tz=datetime.timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
+            
+            if settings.ENABLE_DEBUG_MESSAGES:
+                logger.debug(f"Expanded equal start/end time to full day: {start_time_ms} - {end_time_ms}")
 
         # Call the InsightFinder API client
         api_client = _get_api_client()
@@ -613,7 +511,7 @@ async def get_incident_details(
 
         # Convert any human-readable timestamp to InsightFinder fake-UTC ms
         try:
-            timestamp_ms = _convert_timestamp_to_int(incident_timestamp, "incident_timestamp", tz_name)
+            timestamp_ms = convert_to_ms(incident_timestamp, "incident_timestamp", tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
 
@@ -854,7 +752,7 @@ async def get_incident_raw_data(
 
         # Convert any human-readable timestamp to InsightFinder fake-UTC ms
         try:
-            timestamp_ms = _convert_timestamp_to_int(incident_timestamp, "incident_timestamp", tz_name)
+            timestamp_ms = convert_to_ms(incident_timestamp, "incident_timestamp", tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
 

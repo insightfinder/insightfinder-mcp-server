@@ -1,7 +1,7 @@
 import sys
 import json
-from typing import Dict, Any, Optional, List
-from datetime import datetime
+from typing import Dict, Any, Optional, List, Union
+from datetime import datetime, timezone
 
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
@@ -11,6 +11,7 @@ from .get_time import (
     resolve_system_timezone,
     format_timestamp_in_user_timezone,
     format_api_timestamp_corrected,
+    convert_to_ms,
 )
 
 def _get_api_client():
@@ -36,8 +37,8 @@ def _get_api_client():
 @mcp_server.tool()
 async def get_log_anomalies_overview(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
     project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
@@ -47,15 +48,24 @@ async def get_log_anomalies_overview(
 
     Args:
         system_name (str): The name of the system to query for log anomalies.
-        start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
-                         If not provided, defaults to 24 hours ago.
-        end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
-                       If not provided, defaults to the current time.
+        start_time (Optional[Union[str, int]]): The start of the time window.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
+            If not provided, defaults to 24 hours ago.
+        end_time (Optional[Union[str, int]]): The end of the time window.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
+            If not provided, defaults to the current time.
         project_name (str): Optional. Filter results to only include anomalies from this specific project.
     """
     try:
         # Resolve owner timezone for this system
         tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert timestamps
+        try:
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
 
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
@@ -64,6 +74,14 @@ async def get_log_anomalies_overview(
                 end_time_ms = default_end_ms
             if start_time_ms is None:
                 start_time_ms = default_start_ms  # 24 hours ago
+
+        # Expand if start/end are equal (day expansion)
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            dt = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
 
         # Call the InsightFinder API client
         api_client = _get_api_client()
@@ -156,8 +174,8 @@ async def get_log_anomalies_overview(
 @mcp_server.tool()
 async def get_log_anomalies_list(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
     limit: int = 10,
     min_severity: str = "low",
     project_name: Optional[str] = None,
@@ -171,8 +189,10 @@ async def get_log_anomalies_list(
 
     Args:
         system_name (str): The name of the system to query for log anomalies.
-        start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
-        end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
+        start_time (Optional[Union[str, int]]): The start of the time window.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
+        end_time (Optional[Union[str, int]]): The end of the time window.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
         limit (int): Maximum number of anomalies to return (default: 10).
         min_severity (str): Minimum severity level - "low" (>0), "medium" (>10), "high" (>100).
         project_name (str): Optional. Filter results to only include anomalies from this specific project.
@@ -182,6 +202,13 @@ async def get_log_anomalies_list(
         # Resolve owner timezone for this system
         tz_name, system_name = await resolve_system_timezone(system_name)
 
+        # Convert timestamps
+        try:
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
             default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
@@ -189,6 +216,14 @@ async def get_log_anomalies_list(
                 end_time_ms = default_end_ms
             if start_time_ms is None:
                 start_time_ms = default_start_ms  # 24 hours ago
+
+        # Expand if start/end are equal (day expansion)
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            dt = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
 
         # Call the InsightFinder API client
         api_client = _get_api_client()
@@ -338,8 +373,8 @@ async def get_log_anomalies_list(
 @mcp_server.tool()
 async def get_log_anomalies_statistics(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
     project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
@@ -348,13 +383,22 @@ async def get_log_anomalies_statistics(
 
     Args:
         system_name (str): The name of the system to analyze.
-        start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
-        end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
+        start_time (Optional[Union[str, int]]): The start of the time window.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
+        end_time (Optional[Union[str, int]]): The end of the time window.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
         project_name (str): Optional. Filter results to only include anomalies from this specific project.
     """
     try:
         # Resolve owner timezone for this system
         tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert timestamps
+        try:
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
 
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
@@ -363,6 +407,14 @@ async def get_log_anomalies_statistics(
                 end_time_ms = default_end_ms
             if start_time_ms is None:
                 start_time_ms = default_start_ms  # 24 hours ago
+
+        # Expand if start/end are equal (day expansion)
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            dt = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
 
         api_client = _get_api_client()
         result = await api_client.get_loganomaly(
@@ -465,8 +517,8 @@ async def get_log_anomalies_statistics(
 async def get_project_log_anomalies(
     system_name: str,
     project_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
     limit: int = 20,
     include_raw_data: bool = True
 ) -> Dict[str, Any]:
@@ -491,14 +543,23 @@ async def get_project_log_anomalies(
     Args:
         system_name (str): The name of the system (e.g., "InsightFinder Demo System (APP)")
         project_name (str): The name of the project (e.g., "demo-kpi-metrics-2")
-        start_time_ms (int): Start time in milliseconds (owner timezone)
-        end_time_ms (int): End time in milliseconds (owner timezone)
+        start_time (Optional[Union[str, int]]): Start time.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
+        end_time (Optional[Union[str, int]]): End time.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
         limit (int): Maximum number of anomalies to return (default: 20)
         include_raw_data (bool): Whether to include full raw data details (default: True)
     """
     try:
         # Resolve owner timezone for this system
         tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert timestamps
+        try:
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
 
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
@@ -507,6 +568,14 @@ async def get_project_log_anomalies(
                 end_time_ms = default_end_ms
             if start_time_ms is None:
                 start_time_ms = default_start_ms
+        
+        # Expand if start/end are equal (day expansion)
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            dt = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
 
         # Call the InsightFinder API client with ONLY the system name
         api_client = _get_api_client()
