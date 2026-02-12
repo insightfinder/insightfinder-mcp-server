@@ -6,7 +6,12 @@ from datetime import datetime
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
 from ...config.settings import settings
-from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, format_api_timestamp_corrected
+from .get_time import (
+    get_time_range_ms,
+    resolve_system_timezone,
+    format_timestamp_in_user_timezone,
+    format_api_timestamp_corrected,
+)
 
 def _get_api_client():
     """
@@ -49,10 +54,12 @@ async def get_log_anomalies_overview(
         project_name (str): Optional. Filter results to only include anomalies from this specific project.
     """
     try:
-        # Set default time range if not provided
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -111,9 +118,10 @@ async def get_log_anomalies_overview(
         return {
             "status": "success",
             "system_name": system_name,
+            "timezone": tz_name,
             "time_range": {
-                "start_human": format_timestamp_in_user_timezone(start_time_ms),
-                "end_human": format_timestamp_in_user_timezone(end_time_ms)
+                "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
             },
             "summary": {
                 "total_anomalies": total_anomalies,
@@ -132,8 +140,8 @@ async def get_log_anomalies_overview(
                     "min_score": round(min_score, 2),
                     "avg_score": round(avg_score, 2)
                 },
-                "first_anomaly": format_api_timestamp_corrected(first_anomaly) if first_anomaly else None,
-                "last_anomaly": format_api_timestamp_corrected(last_anomaly) if last_anomaly else None,
+                "first_anomaly": format_api_timestamp_corrected(first_anomaly, tz_name) if first_anomaly else None,
+                "last_anomaly": format_api_timestamp_corrected(last_anomaly, tz_name) if last_anomaly else None,
                 "has_anomalies": total_anomalies > 0
             }
         }
@@ -171,10 +179,12 @@ async def get_log_anomalies_list(
         include_raw_data (bool): Whether to include raw log data (default: False for performance).
     """
     try:
-        # Set default time range if not provided
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -221,7 +231,7 @@ async def get_log_anomalies_list(
             anomaly_info = {
                 "id": i + 1,
                 "timestamp": anomaly["timestamp"],
-                "timestamp_human": format_api_timestamp_corrected(anomaly["timestamp"]),
+                "timestamp_human": format_api_timestamp_corrected(anomaly["timestamp"], tz_name),
                 "project": anomaly.get("projectDisplayName", "Unknown"),
                 "component": anomaly.get("componentName", "Unknown"),
                 "instance": anomaly.get("instanceName", "Unknown"),
@@ -310,8 +320,8 @@ async def get_log_anomalies_list(
                 "include_raw_data": include_raw_data
             },
             "time_range": {
-                "start_human": format_timestamp_in_user_timezone(start_time_ms),
-                "end_human": format_timestamp_in_user_timezone(end_time_ms)
+                "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
             },
             "total_found": len(result["data"]),
             "returned_count": len(anomaly_list),
@@ -343,10 +353,12 @@ async def get_log_anomalies_statistics(
         project_name (str): Optional. Filter results to only include anomalies from this specific project.
     """
     try:
-        # Set default time range if not provided
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -417,9 +429,10 @@ async def get_log_anomalies_statistics(
         return {
             "status": "success",
             "system_name": system_name,
+            "timezone": tz_name,
             "time_range": {
-                "start_human": format_timestamp_in_user_timezone(start_time_ms),
-                "end_human": format_timestamp_in_user_timezone(end_time_ms)
+                "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
             },
             "statistics": {
                 "total_anomalies": total_anomalies,
@@ -478,15 +491,18 @@ async def get_project_log_anomalies(
     Args:
         system_name (str): The name of the system (e.g., "InsightFinder Demo System (APP)")
         project_name (str): The name of the project (e.g., "demo-kpi-metrics-2")
-        start_time_ms (int): Start time in UTC milliseconds
-        end_time_ms (int): End time in UTC milliseconds  
+        start_time_ms (int): Start time in milliseconds (owner timezone)
+        end_time_ms (int): End time in milliseconds (owner timezone)
         limit (int): Maximum number of anomalies to return (default: 20)
         include_raw_data (bool): Whether to include full raw data details (default: True)
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -527,7 +543,7 @@ async def get_project_log_anomalies(
             anomaly_info = {
                 "id": i + 1,
                 "timestamp": anomaly["timestamp"],
-                "timestamp_human": format_api_timestamp_corrected(anomaly["timestamp"]),
+                "timestamp_human": format_api_timestamp_corrected(anomaly["timestamp"], tz_name),
                 "project": anomaly.get("projectDisplayName", "Unknown"),
                 "component": anomaly.get("componentName", "Unknown"),
                 "instance": anomaly.get("instanceName", "Unknown"),
@@ -612,8 +628,8 @@ async def get_project_log_anomalies(
             "project_name": project_name,
             "include_raw_data": include_raw_data,
             "time_range": {
-                "start_human": format_timestamp_in_user_timezone(start_time_ms),
-                "end_human": format_timestamp_in_user_timezone(end_time_ms)
+                "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
             },
             "total_system_anomalies": len(log_anomalies),
             "project_anomalies_found": len(project_anomalies),

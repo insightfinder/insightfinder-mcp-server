@@ -19,15 +19,15 @@ import asyncio
 import json
 import logging
 from typing import Dict, Any, List, Optional
-from datetime import datetime, timezone
+from datetime import datetime
 import re
 
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
-
-def _format_timestamp_utc(timestamp_ms: int) -> str:
-    """Convert timestamp to UTC ISO format."""
-    return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
+from .get_time import (
+    resolve_system_timezone,
+    format_timestamp_in_user_timezone,
+)
 
 def _get_api_client():
     """
@@ -77,6 +77,9 @@ async def get_traces_overview(
         Dict containing ultra-compact overview with status, summary stats, key insights, and projectName
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         client = _get_api_client()
         
         # Fetch raw data
@@ -95,8 +98,8 @@ async def get_traces_overview(
                 "summary": {
                     "total_traces": 0,
                     "time_range": {
-                        "start": _format_timestamp_utc(start_time_ms),
-                        "end": _format_timestamp_utc(end_time_ms),
+                        "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                        "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
@@ -120,8 +123,8 @@ async def get_traces_overview(
                 "summary": {
                     "total_traces": 0,
                     "time_range": {
-                        "start": _format_timestamp_utc(start_time_ms),
-                        "end": _format_timestamp_utc(end_time_ms),
+                        "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                        "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
@@ -230,8 +233,8 @@ async def get_traces_overview(
                 "top_operations": [{"operation": op, "count": cnt} for op, cnt in top_operations],
                 "time_analysis": {
                     "time_span_hours": time_span_hours,
-                    "start": _format_timestamp_utc(start_time_ms),
-                    "end": _format_timestamp_utc(end_time_ms),
+                    "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                    "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                     "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                 }
             },
@@ -285,6 +288,9 @@ async def get_traces_list(
         Dict containing compact list of traces with status, metadata, and projectName
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         client = _get_api_client()
         
         # Fetch raw data
@@ -342,7 +348,7 @@ async def get_traces_list(
             
             compact_trace = {
                 "timestamp": trace.get("timestamp"),
-                "datetime": _format_timestamp_utc(trace.get("timestamp", 0)) if trace.get("timestamp") else None,
+                "datetime": format_timestamp_in_user_timezone(trace.get("timestamp", 0, tz_name)) if trace.get("timestamp") else None,
                 "projectName": trace.get("projectDisplayName"),
                 "trace_id": trace_info.get("traceID"),
                 "span_id": trace_info.get("spanID"),
@@ -416,6 +422,9 @@ async def get_traces_summary(
         Dict containing detailed trace summaries with status, metadata, and projectName
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         client = _get_api_client()
         
         # Fetch raw data
@@ -467,7 +476,7 @@ async def get_traces_summary(
             
             detailed_trace = {
                 "timestamp": trace.get("timestamp"),
-                "datetime": _format_timestamp_utc(trace.get("timestamp", 0)) if trace.get("timestamp") else None,
+                "datetime": format_timestamp_in_user_timezone(trace.get("timestamp", 0, tz_name)) if trace.get("timestamp") else None,
                 "projectName": trace.get("projectDisplayName"),
                 "active": trace.get("active", 0),
                 
@@ -567,6 +576,9 @@ async def get_trace_details(
         Dict containing complete trace details with status and metadata
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         client = _get_api_client()
         
         # Use a small time window around the timestamp to find the specific trace
@@ -610,7 +622,7 @@ async def get_trace_details(
             "trace": {
                 # Basic identification
                 "timestamp": target_trace.get("timestamp"),
-                "datetime": _format_timestamp_utc(target_trace.get("timestamp", 0)) if target_trace.get("timestamp") else None,
+                "datetime": format_timestamp_in_user_timezone(target_trace.get("timestamp", 0, tz_name)) if target_trace.get("timestamp") else None,
                 "projectName": target_trace.get("projectDisplayName"),
                 "active": target_trace.get("active", 0),
                 
@@ -700,6 +712,9 @@ async def get_trace_raw_data(
         Dict containing raw trace data with status and metadata
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         client = _get_api_client()
         
         # Use a small time window around the timestamp to find the specific trace
@@ -816,6 +831,9 @@ async def get_traces_statistics(
         Dict containing comprehensive statistics with status, metadata, and projectName
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         client = _get_api_client()
         
         # Fetch raw data
@@ -834,8 +852,8 @@ async def get_traces_statistics(
                 "statistics": {
                     "total_traces": 0,
                     "time_range": {
-                        "start": _format_timestamp_utc(start_time_ms),
-                        "end": _format_timestamp_utc(end_time_ms),
+                        "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                        "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
@@ -945,8 +963,8 @@ async def get_traces_statistics(
         statistics = {
             "total_traces": total_traces,
             "time_range": {
-                "start": _format_timestamp_utc(start_time_ms),
-                "end": _format_timestamp_utc(end_time_ms),
+                "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                 "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1),
                 "actual_span_hours": time_span_hours
             },
@@ -1036,11 +1054,14 @@ async def get_project_traces(
     Args:
         system_name (str): The name of the system (e.g., "InsightFinder Demo System (APP)")
         project_name (str): The name of the project (e.g., "demo-kpi-metrics-2")
-        start_time_ms (int): Start time in UTC milliseconds
-        end_time_ms (int): End time in UTC milliseconds  
+        start_time_ms (int): Start time in milliseconds (owner timezone)
+        end_time_ms (int): End time in milliseconds (owner timezone)
         limit (int): Maximum number of traces to return (default: 20)
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         client = _get_api_client()
         
         # Call the InsightFinder API client with ONLY the system name
@@ -1059,8 +1080,8 @@ async def get_project_traces(
                     "project_name": project_name,
                     "system_name": system_name,
                     "time_range": {
-                        "start": _format_timestamp_utc(start_time_ms),
-                        "end": _format_timestamp_utc(end_time_ms),
+                        "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                        "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
@@ -1084,7 +1105,7 @@ async def get_project_traces(
             trace_summary = {
                 "index": i + 1,
                 "timestamp": trace.get("timestamp"),
-                "datetime": _format_timestamp_utc(trace.get("timestamp", 0)) if trace.get("timestamp") else None,
+                "datetime": format_timestamp_in_user_timezone(trace.get("timestamp", 0, tz_name)) if trace.get("timestamp") else None,
                 "active": trace.get("active", 0),
                 
                 # Location information
@@ -1181,9 +1202,10 @@ async def get_project_traces(
                 "incident_rate_percentage": round(incident_count / total_traces * 100, 1) if total_traces > 0 else 0,
                 "project_name": project_name,
                 "system_name": system_name,
+                "timezone": tz_name,
                 "time_range": {
-                    "start": _format_timestamp_utc(start_time_ms),
-                    "end": _format_timestamp_utc(end_time_ms),
+                    "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                    "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                     "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                 }
             },

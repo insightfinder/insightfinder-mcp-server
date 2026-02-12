@@ -1,5 +1,4 @@
 import sys
-import os
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone, timedelta
@@ -8,69 +7,83 @@ logger = logging.getLogger(__name__)
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
 from ...config.settings import settings
-from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, format_api_timestamp_corrected
+from .get_time import (
+    get_time_range_ms,
+    resolve_system_timezone,
+    format_timestamp_in_user_timezone,
+    format_api_timestamp_corrected,
+    parse_user_datetime_to_ms,
+)
 
-def _convert_timestamp_to_int(timestamp: Optional[Any], param_name: str) -> Optional[int]:
+def _convert_timestamp_to_int(timestamp: Optional[Any], param_name: str, tz_name: str = "UTC") -> Optional[int]:
     """
-    Convert a timestamp parameter to integer if it's a string.
-    Supports both ISO 8601 format and millisecond timestamp strings.
-    
+    Convert a timestamp parameter to InsightFinder fake-UTC milliseconds.
+
+    Accepts any human-readable format that parse_user_datetime_to_ms() supports:
+        - "2026-02-12T11:05:00"       (ISO without offset — treated as owner tz)
+        - "2026-02-12T11:05:00Z"      (ISO with Z — converted from UTC to owner tz)
+        - "2026-02-12T11:05:00-05:00" (ISO with offset — converted to owner tz)
+        - "2026-02-12"                (date only — midnight in owner tz)
+        - "02/12/2026"                (US format MM/DD/YYYY)
+        - "1770768600000"             (13-digit ms — pass-through)
+        - 1770768600000               (int — pass-through)
+
     Args:
         timestamp: The timestamp value (int, str, or None)
         param_name: The name of the parameter (for error messages)
-    
+        tz_name: Owner timezone name for interpreting naive datetimes
+
     Returns:
-        int or None: The timestamp as an integer, or None if input was None
-        
+        int or None: The timestamp as InsightFinder fake-UTC milliseconds, or None if input was None
+
     Raises:
-        ValueError: If the timestamp cannot be converted to int
+        ValueError: If the timestamp cannot be parsed
     """
     if timestamp is None:
         return None
-    
+
+    if isinstance(timestamp, (int, float)):
+        return int(timestamp)
+
     if isinstance(timestamp, str):
-        # Try ISO 8601 format first (contains 'T' or '-')
-        if 'T' in timestamp or '-' in timestamp:
-            try:
-                # Parse ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
-                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-                return int(dt.timestamp() * 1000)
-            except ValueError:
-                raise ValueError(f"Invalid {param_name}: invalid ISO 8601 format '{timestamp}'. Expected format: '2026-01-08T21:45:30Z'")
-        else:
-            # Try to parse as milliseconds string
-            try:
-                return int(timestamp)
-            except ValueError:
-                raise ValueError(f"Invalid {param_name}: must be ISO 8601 format or integer milliseconds, got '{timestamp}'")
-    
-    if isinstance(timestamp, int):
-        return timestamp
-    
-    raise ValueError(f"Invalid {param_name}: must be an integer or string, got {type(timestamp).__name__}")
+        timestamp = timestamp.strip()
+        if not timestamp:
+            return None
+        try:
+            return parse_user_datetime_to_ms(timestamp, tz_name)
+        except ValueError:
+            raise ValueError(
+                f"Invalid {param_name}: cannot parse '{timestamp}'. "
+                f"Accepted formats: '2026-02-12T11:05:00', '2026-02-12', '02/12/2026', "
+                f"or 13-digit milliseconds."
+            )
+
+    raise ValueError(f"Invalid {param_name}: must be a string or integer, got {type(timestamp).__name__}")
 
 """
 === INCIDENT INVESTIGATION TOOLS - LLM USAGE GUIDELINES ===
 
-IMPORTANT: All timestamp parameters in these tools use UTC milliseconds format.
+IMPORTANT: All time parameters accept human-readable datetime strings.
+The tools handle conversion internally — you never need to compute epoch timestamps.
 
-🕐 TIMESTAMP FORMAT REQUIREMENTS:
-- start_time_ms: UTC timestamp in milliseconds (e.g., 1691234567890)
-- end_time_ms: UTC timestamp in milliseconds (e.g., 1691234567890)
-- Default behavior: If not provided, tools automatically use last 24 hours
+🕐 TIME PARAMETER FORMAT:
+- start_time / end_time accept any of these formats:
+    "2026-02-12T11:05:00"   (datetime without offset — interpreted in owner timezone)
+    "2026-02-12"            (date only — midnight in owner timezone)
+    "02/12/2026"            (US format MM/DD/YYYY)
+- If not provided, tools automatically use last 24 hours
+- NEVER pass epoch milliseconds — always pass human-readable strings
 
 📅 TIME RANGE BEST PRACTICES:
-1. For "today's incidents": Use get_today_incidents() tool
-2. For specific dates: Convert user's local date to UTC midnight-to-midnight
-3. For time periods: Convert user's timezone to UTC range
-4. For specific times: Always convert local time to UTC milliseconds
+1. For "today's incidents": Omit time parameters (defaults to last 24 hours)
+2. For specific dates: Pass the date directly, e.g. start_time="2026-02-11"
+3. For specific time windows: Pass datetimes directly, e.g. start_time="2026-02-11T09:00:00", end_time="2026-02-11T17:00:00"
+4. ALWAYS display times in the Owner User Timezone, never label as UTC
 
 🔧 WHEN TO USE EACH TOOL (Progressive Investigation):
 
 Layer 0 - OVERVIEW (Start here):
-├── get_incidents_overview() - Quick counts and basic metrics
-├── get_today_incidents() - Today's incidents in user timezone
-├── get_utc_time_range_for_query() - Convert time descriptions to UTC
+├── get_incidents_overview() - Quick counts and basic metrics (defaults to last 24h)
 └── Use when: User asks "any incidents?" or "what happened today?"
 
 Layer 1 - LIST (Browse incidents):
@@ -96,8 +109,8 @@ Layer 5 - ANALYTICS (Pattern analysis):
 🎯 QUERY PARAMETER GUIDELINES:
 
 Time Ranges:
-- start_time_ms: UTC midnight of start date (e.g., for Aug 7, 2026: start of day UTC)
-- end_time_ms: UTC end of period or current time
+- start_time: Start of the time window (e.g. "2026-02-11", "2026-02-11T09:00:00")
+- end_time: End of the time window (e.g. "2026-02-12", "2026-02-12T17:00:00")
 - If omitted: Tools default to last 24 hours automatically
 
 System Names:
@@ -111,8 +124,8 @@ Filtering:
 
 🚨 COMMON USER QUESTIONS → TOOL MAPPING:
 
-"Any incidents today?" → get_today_incidents()
-"What happened yesterday?" → get_utc_time_range_for_query("yesterday") then get_incidents_overview()
+"Any incidents today?" → get_incidents_overview(system_name=...) with no time params
+"What happened yesterday?" → get_incidents_overview(system_name=..., start_time="2026-02-11", end_time="2026-02-12")
 "List recent incidents" → get_incidents_list()
 "Tell me about incident X" → get_incident_details() with specific timestamp
 "Why did the system fail?" → get_incidents_summary() then get_incident_raw_data()
@@ -120,11 +133,11 @@ Filtering:
 "What broke the most?" → get_incidents_statistics() for top components
 
 💡 TIMEZONE HANDLING:
-- All API queries use UTC internally
-- Tools automatically handle timezone conversion for display
-- User sees human-readable times in their timezone
-- When user specifies times, convert to UTC milliseconds
-- Use get_utc_time_range_for_query() to convert time descriptions
+- All timestamps are in the Owner User Timezone (NOT UTC)
+- The "timezone" field in tool responses tells you the system's timezone
+- ALWAYS display times using the timezone from the response (e.g., "US/Eastern")
+- NEVER label displayed times as "UTC" — use the timezone from the response
+- Timezone resolution is handled internally by each tool — no need to pass timezone info
 
 ⚡ PERFORMANCE TIPS:
 - Start with overview tools for quick assessment
@@ -142,29 +155,27 @@ Filtering:
 
 📋 COMPLETE USAGE EXAMPLE:
 
-User: "Show me incidents from yesterday 9 AM to 5 PM"
+User: "Show me incidents from yesterday 9 AM to 5 PM in prod-web"
 
-Step 1: Convert time range
-→ get_utc_time_range_for_query("yesterday 9 AM to 5 PM")
+Step 1: Get overview with human-readable times
+→ get_incidents_overview(system_name="prod-web", start_time="2026-02-11T09:00:00", end_time="2026-02-11T17:00:00")
 
-Step 2: Get overview
-→ get_incidents_overview(system_name="prod-web", start_time_ms=1786147200000, end_time_ms=1786176000000)
+Step 2: Get details if incidents found
+→ get_incidents_list(system_name="prod-web", start_time="2026-02-11T09:00:00", end_time="2026-02-11T17:00:00")
 
-Step 3: Get details if incidents found
-→ get_incidents_list(system_name="prod-web", start_time_ms=1786147200000, end_time_ms=1786176000000)
-
-Step 4: Investigate specific incident
-→ get_incident_details(system_name="prod-web", incident_timestamp=1786158000000)
+Step 3: Investigate specific incident
+→ get_incident_details(system_name="prod-web", incident_timestamp="2026-02-11T14:30:00")
 
 Remember: Always start with overview tools and progressively drill down!
+Always display times in the system's owner timezone, never UTC!
 """
 
 # Layer 0: Ultra-compact incident overview (just counts and basic info)
 @mcp_server.tool()
 async def get_incidents_overview(
     system_name: str,
-    start_time_ms: Optional[Any] = None,
-    end_time_ms: Optional[Any] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
     project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
@@ -174,36 +185,41 @@ async def get_incidents_overview(
 
     Args:
         system_name (str): The name of the system to query for incidents.
-        start_time_ms (int or str): Optional. The start of the time window.
-                         Accepts ISO 8601 format (e.g., "2026-08-07T00:00:00Z") or UTC milliseconds (e.g., 1786060800000).
+        start_time (str): Optional. The start of the time window.
+                         Accepts human-readable formats: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
                          If not provided, defaults to 24 hours ago.
-        end_time_ms (int or str): Optional. The end of the time window.
-                       Accepts ISO 8601 format (e.g., "2026-08-07T23:59:00Z") or UTC milliseconds (e.g., 1786147140000).
+        end_time (str): Optional. The end of the time window.
+                       Accepts human-readable formats: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
                        If not provided, defaults to the current time.
         project_name (str): Optional. Filter results to only include incidents from this specific project.
 
     Time Conversion Examples:
-        - "Today's incidents" → use get_today_incidents() instead
-        - "Yesterday 9 AM to 5 PM EST" → convert to UTC: (9 AM EST = 1 PM UTC, 5 PM EST = 9 PM UTC)
+        - "Today's incidents" → omit time parameters (uses default last 24 hours)
+        - "Yesterday 9 AM to 5 PM" → start_time="2026-02-11T09:00:00", end_time="2026-02-11T17:00:00"
         - "Last 24 hours" → omit parameters (uses default range)
-        - "This week" → start_time_ms=Monday_midnight_UTC, end_time_ms=current_time_UTC
+        - "This week" → start_time="2026-02-09" (Monday's date)
+
+    Note: All timestamps are in the Owner User Timezone. Display times using the
+    "timezone" field from the response, never label as UTC.
     """
     # Simple security checks
     if not system_name or len(system_name) > 100:
         return {"status": "error", "message": "Invalid system_name"}
     
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
-            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+            start_time_ms = _convert_timestamp_to_int(start_time, "start_time", tz_name)
+            end_time_ms = _convert_timestamp_to_int(end_time, "end_time", tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
-        # print(f"[DEBUG] get_incidents_overview called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}", file=sys.stderr)
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -218,14 +234,7 @@ async def get_incidents_overview(
         )
 
         if settings.ENABLE_DEBUG_MESSAGES:
-            print(f"[DEBUG] Overview query - TZ env: {os.getenv('TZ', 'Not set')}", file=sys.stderr)
-            print(f"[DEBUG] Query range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
-            print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
-            print(f"[DEBUG] API response status: {result.get('status', 'unknown')}", file=sys.stderr)
-            if result.get("status") == "success":
-                print(f"[DEBUG] API response data length: {len(result.get('data', []))}", file=sys.stderr)
-            else:
-                print(f"[DEBUG] API response error: {result.get('message', 'No message')}", file=sys.stderr)
+            logger.debug("Overview query - tz=%s, range=%s to %s", tz_name, start_time_ms, end_time_ms)
 
         if result["status"] != "success":
             return result
@@ -234,20 +243,7 @@ async def get_incidents_overview(
         
         # Filter by project name if specified
         if project_name:
-            # incidents = [i for i in incidents if i.get("projectName") == project_name]
             incidents = [i for i in incidents if i.get("projectName", "").lower() == project_name.lower() or i.get("projectDisplayName", "").lower() == project_name.lower()]
-        
-        if settings.ENABLE_DEBUG_MESSAGES and incidents:
-            print(f"[DEBUG] Found {len(incidents)} incidents", file=sys.stderr)
-            print(f"[DEBUG] Raw API response sample: {incidents[0] if incidents else 'No incidents'}", file=sys.stderr)
-            for i, incident in enumerate(incidents[:3]):  # Show first 3 for debugging
-                raw_timestamp = incident["timestamp"]
-                timestamp_with_conversion = format_timestamp_in_user_timezone(raw_timestamp)
-                print(f"[DEBUG] Incident {i+1}:", file=sys.stderr)
-                print(f"  Raw timestamp: {raw_timestamp}", file=sys.stderr)
-                print(f"  With UTC->Local conversion: {timestamp_with_conversion}", file=sys.stderr)
-                print(f"  No conversion (treat as local): {timestamp_with_conversion}", file=sys.stderr)
-                print(f"  Component: {incident.get('componentName', 'N/A')}", file=sys.stderr)
         
         # Basic counts and metrics
         total_events = len(incidents)
@@ -270,9 +266,10 @@ async def get_incidents_overview(
         return {
             "status": "success",
             "system_name": system_name,
+            "timezone": tz_name,
             "time_range": {
-                "start_human": format_timestamp_in_user_timezone(start_time_ms),
-                "end_human": format_timestamp_in_user_timezone(end_time_ms)
+                "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
             },
             "summary": {
                 "total_events": total_events,
@@ -282,8 +279,8 @@ async def get_incidents_overview(
                 "unique_instances": unique_instances,
                 "unique_patterns": unique_patterns,
                 "unique_projects": unique_projects,
-                "first_event": format_api_timestamp_corrected(first_incident) if first_incident else None,
-                "last_event": format_api_timestamp_corrected(last_incident) if last_incident else None,
+                "first_event": format_api_timestamp_corrected(first_incident, tz_name) if first_incident else None,
+                "last_event": format_api_timestamp_corrected(last_incident, tz_name) if last_incident else None,
                 "has_incidents": true_incidents > 0
             }
         }
@@ -298,8 +295,8 @@ async def get_incidents_overview(
 @mcp_server.tool()
 async def get_incidents_list(
     system_name: str,
-    start_time_ms: Optional[Any] = None,
-    end_time_ms: Optional[Any] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
     limit: int = 10,
     only_true_incidents: bool = True
 ) -> Dict[str, Any]:
@@ -309,30 +306,32 @@ async def get_incidents_list(
 
     Args:
         system_name (str): The name of the system to query for incidents.
-        start_time_ms (int or str): Optional. The start of the time window.
-                          Accepts ISO 8601 format (e.g., "2026-08-07T00:00:00Z") or UTC milliseconds (e.g., 1786060800000).
+        start_time (str): Optional. The start of the time window.
+                          Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
                           If not provided, defaults to 24 hours ago.
-        end_time_ms (int or str): Optional. The end of the time window.
-                        Accepts ISO 8601 format (e.g., "2026-08-07T23:59:00Z") or UTC milliseconds (e.g., 1786147199000).
+        end_time (str): Optional. The end of the time window.
+                        Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
                         If not provided, defaults to the current time.
         limit (int): Maximum number of incidents to return (default: 10).
         only_true_incidents (bool): If True, only return events marked as true incidents. default is True.
     
-    UTC Conversion Notes:
-        - Always provide timestamps in UTC format (either ISO 8601 or milliseconds)
-        - Use tools like get_current_datetime() or get_time_range_query() for conversion
+    Note: All timestamps are in the Owner User Timezone. Display times using the
+    "timezone" field from the response, never label as UTC.
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
-            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+            start_time_ms = _convert_timestamp_to_int(start_time, "start_time", tz_name)
+            end_time_ms = _convert_timestamp_to_int(end_time, "end_time", tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -364,7 +363,7 @@ async def get_incidents_list(
             incident_info = {
                 "id": i + 1,
                 "timestamp": incident["timestamp"],
-                "timestamp_human": format_api_timestamp_corrected(incident["timestamp"]),
+                "timestamp_human": format_api_timestamp_corrected(incident["timestamp"], tz_name),
                 "projectDisplayName": incident.get("projectDisplayName", "Unknown"),
                 "realProjectName": incident.get("projectName", "Unknown"),
                 "component": incident.get("componentName", "Unknown"),
@@ -393,8 +392,8 @@ async def get_incidents_list(
                 "limit": limit
             },
             "time_range": {
-                "start_human": format_timestamp_in_user_timezone(start_time_ms),
-                "end_human": format_timestamp_in_user_timezone(end_time_ms)
+                "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
             },
             "total_found": len(result["data"]),
             "returned_count": len(incident_list),
@@ -411,8 +410,8 @@ async def get_incidents_list(
 @mcp_server.tool()
 async def get_incidents_summary(
     system_name: str,
-    start_time_ms: Optional[Any] = None,
-    end_time_ms: Optional[Any] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
     limit: int = 5,
     only_true_incidents: bool = True,
     include_root_cause_info: bool = True
@@ -423,27 +422,33 @@ async def get_incidents_summary(
 
     Args:
         system_name (str): The name of the system to query for incidents.
-        start_time_ms (int or str): Optional. The start of the time window.
-                         Accepts ISO 8601 format (e.g., "2026-08-07T00:00:00Z") or UTC milliseconds (e.g., 1786060800000).
+        start_time (str): Optional. The start of the time window.
+                         Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
                          If not provided, defaults to 24 hours ago.
-        end_time_ms (int or str): Optional. The end of the time window.
-                       Accepts ISO 8601 format (e.g., "2026-08-07T23:59:00Z") or UTC milliseconds (e.g., 1786147140000).
+        end_time (str): Optional. The end of the time window.
+                       Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
                        If not provided, defaults to the current time.
         limit (int): Maximum number of incidents to return (default: 5).
         only_true_incidents (bool): If True, only return events marked as true incidents (default: True).
         include_root_cause_info (bool): If True, include information about root cause availability (default: True).
+
+    Note: All timestamps are in the Owner User Timezone. Display times using the
+    "timezone" field from the response, never label as UTC.
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
-            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+            start_time_ms = _convert_timestamp_to_int(start_time, "start_time", tz_name)
+            end_time_ms = _convert_timestamp_to_int(end_time, "end_time", tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -473,7 +478,7 @@ async def get_incidents_summary(
         incidents_summary = []
         for incident in incidents:
             # Convert timestamp to human readable
-            timestamp_str = format_api_timestamp_corrected(incident["timestamp"])
+            timestamp_str = format_api_timestamp_corrected(incident["timestamp"], tz_name)
             
             summary = {
                 "incident_id": len(incidents_summary) + 1,  # Simple ID for reference
@@ -547,8 +552,8 @@ async def get_incidents_summary(
             "time_range": {
                 "start": start_time_ms,
                 "end": end_time_ms,
-                "start_human": format_timestamp_in_user_timezone(start_time_ms),
-                "end_human": format_timestamp_in_user_timezone(end_time_ms)
+                "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
             },
             "total_found": len(result["data"]),
             "returned_count": len(incidents_summary),
@@ -593,7 +598,8 @@ async def get_incident_details(
 
     Args:
         system_name (str): The name of the system to query.
-        incident_timestamp (str): The timestamp in ISO 8601 format (e.g., "2026-01-08T21:45:30Z") or 13-digit milliseconds.
+        incident_timestamp (str): The timestamp of the incident.
+                                  Accepts: "2026-02-12T01:15:00", or 13-digit milliseconds.
         instance_name (str): Optional. Filter by specific instance name.
         pattern_id (str): Optional. Filter by specific pattern ID.
         pattern_name (str): Optional. Filter by specific pattern name.
@@ -602,27 +608,17 @@ async def get_incident_details(
         include_recommendations (bool): Whether to include recommendations or remediation steps if available.
     """
     try:
-        # Convert ISO 8601 timestamp to milliseconds or parse 13-digit timestamp
-        timestamp_ms = None
-        if isinstance(incident_timestamp, str):
-            # Try ISO 8601 format first
-            if 'T' in incident_timestamp or '-' in incident_timestamp:
-                try:
-                    # Parse ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
-                    dt = datetime.fromisoformat(incident_timestamp.replace('Z', '+00:00'))
-                    timestamp_ms = int(dt.timestamp() * 1000)
-                except ValueError:
-                    return {"status": "error", "message": f"Invalid ISO 8601 timestamp format: '{incident_timestamp}'. Expected format: '2026-01-08T21:45:30Z'"}
-            else:
-                # Try to parse as 13-digit milliseconds string
-                try:
-                    timestamp_ms = int(incident_timestamp)
-                except ValueError:
-                    return {"status": "error", "message": f"Invalid timestamp: must be ISO 8601 format or 13-digit milliseconds, got '{incident_timestamp}'"}
-        elif isinstance(incident_timestamp, int):
-            timestamp_ms = incident_timestamp
-        else:
-            return {"status": "error", "message": f"Invalid timestamp type: {type(incident_timestamp).__name__}"}
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert any human-readable timestamp to InsightFinder fake-UTC ms
+        try:
+            timestamp_ms = _convert_timestamp_to_int(incident_timestamp, "incident_timestamp", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
+        if timestamp_ms is None:
+            return {"status": "error", "message": "incident_timestamp is required"}
         
         # Use a 1-minute window around the incident timestamp
         window_ms = 1 * 60 * 1000  # 1 minute in milliseconds
@@ -738,7 +734,7 @@ async def get_incident_details(
                         # Format didPredictionTime and eventEndTimestamp if present
                         for ts_field in ('didPredictionTime', 'eventEndTimestamp', 'eventTimestamp'):
                             if ts_field in node:
-                                node[ts_field] = format_timestamp_in_user_timezone(node[ts_field])
+                                node[ts_field] = format_timestamp_in_user_timezone(node[ts_field], tz_name)
 
                         # Replace sourceProjectName with sourceProjectDisplayName and remove the display name
                         if 'sourceProjectDisplayName' in node:
@@ -832,7 +828,7 @@ async def get_incident_details(
 @mcp_server.tool()
 async def get_incident_raw_data(
     system_name: str,
-    incident_timestamp: int,
+    incident_timestamp: str,
     max_length: int = 5000
 ) -> Dict[str, Any]:
     """
@@ -841,7 +837,8 @@ async def get_incident_raw_data(
 
     Args:
         system_name (str): The name of the system to query.
-        incident_timestamp (int): The timestamp of the specific incident.
+        incident_timestamp (str): The timestamp of the specific incident.
+                                  Accepts: "2026-02-12T01:15:00", "2026-02-12", or 13-digit milliseconds.
         max_length (int): Maximum length of raw data to return (to prevent overwhelming the LLM).
     """
     # Security checks
@@ -852,16 +849,21 @@ async def get_incident_raw_data(
     max_length = min(max_length, 10000)
     
     try:
-        # Convert string timestamp to integer if needed
-        if isinstance(incident_timestamp, str):
-            try:
-                incident_timestamp = int(incident_timestamp)
-            except ValueError:
-                return {"status": "error", "message": f"Invalid incident_timestamp: must be an integer, got '{incident_timestamp}'"}
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert any human-readable timestamp to InsightFinder fake-UTC ms
+        try:
+            timestamp_ms = _convert_timestamp_to_int(incident_timestamp, "incident_timestamp", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
+        if timestamp_ms is None:
+            return {"status": "error", "message": "incident_timestamp is required"}
         
         # Get incidents for a small time window around the specific timestamp
-        start_time = incident_timestamp - (5 * 60 * 1000)  # 5 minutes before
-        end_time = incident_timestamp + (5 * 60 * 1000)    # 5 minutes after
+        start_time = timestamp_ms - (5 * 60 * 1000)  # 5 minutes before
+        end_time = timestamp_ms + (5 * 60 * 1000)    # 5 minutes after
 
         api_client = _get_api_client()
         result = await api_client.get_incidents(
@@ -876,12 +878,12 @@ async def get_incident_raw_data(
         # Find the specific incident
         target_incident = None
         for incident in result["data"]:
-            if incident["timestamp"] == incident_timestamp:
+            if incident["timestamp"] == timestamp_ms:
                 target_incident = incident
                 break
 
         if not target_incident:
-            return {"status": "error", "message": f"Incident with timestamp {incident_timestamp} not found"}
+            return {"status": "error", "message": f"Incident with timestamp {timestamp_ms} not found"}
 
         raw_data = target_incident.get("rawData", "")
         if not raw_data:
@@ -893,8 +895,8 @@ async def get_incident_raw_data(
 
         result = {
             "status": "success",
-            "incident_timestamp": incident_timestamp,
-            "timestamp_human": format_api_timestamp_corrected(incident_timestamp),
+            "incident_timestamp": timestamp_ms,
+            "timestamp_human": format_api_timestamp_corrected(timestamp_ms, tz_name),
             "projectName": target_incident.get("projectDisplayName"),
             "instanceName": target_incident.get("instanceName"),
         }
@@ -923,8 +925,8 @@ async def get_incident_raw_data(
 @mcp_server.tool()
 async def get_incidents_statistics(
     system_name: str,
-    start_time_ms: Optional[Any] = None,
-    end_time_ms: Optional[Any] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Provides statistical analysis of incidents for a system over a time period.
@@ -932,20 +934,25 @@ async def get_incidents_statistics(
 
     Args:
         system_name (str): The name of the system to analyze.
-        start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
-        end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
+        start_time (str): Optional. The start of the time window.
+                         Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
+        end_time (str): Optional. The end of the time window.
+                       Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
-            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+            start_time_ms = _convert_timestamp_to_int(start_time, "start_time", tz_name)
+            end_time_ms = _convert_timestamp_to_int(end_time, "end_time", tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -993,9 +1000,10 @@ async def get_incidents_statistics(
         return {
             "status": "success",
             "system_name": system_name,
+            "timezone": tz_name,
             "time_range": {
-                "start_human": format_timestamp_in_user_timezone(start_time_ms),
-                "end_human": format_timestamp_in_user_timezone(end_time_ms)
+                "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
             },
             "statistics": {
                 "total_events": total_incidents,
@@ -1018,8 +1026,8 @@ async def get_incidents_statistics(
 @mcp_server.tool()
 async def fetch_traces(
     system_name: str,
-    start_time_ms: Optional[Any] = None,
-    end_time_ms: Optional[Any] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Fetches trace timeline data from InsightFinder for a specific system within a given time range.
@@ -1027,22 +1035,27 @@ async def fetch_traces(
 
     Args:
         system_name (str): The name of the system to query for traces.
-        start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
+        start_time (str): Optional. The start of the time window.
+                         Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
                          If not provided, defaults to 24 hours ago.
-        end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
+        end_time (str): Optional. The end of the time window.
+                       Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
                        If not provided, defaults to the current time.
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
-            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+            start_time_ms = _convert_timestamp_to_int(start_time, "start_time", tz_name)
+            end_time_ms = _convert_timestamp_to_int(end_time, "end_time", tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -1067,8 +1080,8 @@ async def fetch_traces(
 @mcp_server.tool()
 async def fetch_log_anomalies(
     system_name: str,
-    start_time_ms: Optional[Any] = None,
-    end_time_ms: Optional[Any] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Fetches log anomaly timeline data from InsightFinder for a specific system within a given time range.
@@ -1076,22 +1089,27 @@ async def fetch_log_anomalies(
 
     Args:
         system_name (str): The name of the system to query for log anomalies.
-        start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
+        start_time (str): Optional. The start of the time window.
+                         Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
                          If not provided, defaults to 24 hours ago.
-        end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
+        end_time (str): Optional. The end of the time window.
+                       Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
                        If not provided, defaults to the current time.
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
-            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+            start_time_ms = _convert_timestamp_to_int(start_time, "start_time", tz_name)
+            end_time_ms = _convert_timestamp_to_int(end_time, "end_time", tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -1116,8 +1134,8 @@ async def fetch_log_anomalies(
 @mcp_server.tool()
 async def fetch_deployments(
     system_name: str,
-    start_time_ms: Optional[Any] = None,
-    end_time_ms: Optional[Any] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Fetches deployment timeline data from InsightFinder for a specific system within a given time range.
@@ -1125,22 +1143,27 @@ async def fetch_deployments(
 
     Args:
         system_name (str): The name of the system to query for deployments.
-        start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
+        start_time (str): Optional. The start of the time window.
+                         Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
                          If not provided, defaults to 24 hours ago.
-        end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
+        end_time (str): Optional. The end of the time window.
+                       Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
                        If not provided, defaults to the current time.
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
-            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+            start_time_ms = _convert_timestamp_to_int(start_time, "start_time", tz_name)
+            end_time_ms = _convert_timestamp_to_int(end_time, "end_time", tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -1167,8 +1190,8 @@ async def fetch_deployments(
 async def get_project_incidents(
     system_name: str,
     project_name: str,
-    start_time_ms: Optional[Any] = None,
-    end_time_ms: Optional[Any] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
     only_true_incidents: bool = True,
     limit: int = 20
 ) -> Dict[str, Any]:
@@ -1183,22 +1206,27 @@ async def get_project_incidents(
     Args:
         system_name (str): The name of the system (e.g., "InsightFinder Demo System (APP)")
         project_name (str): The name of the project (e.g., "demo-kpi-metrics-2")
-        start_time_ms (int): Start time in UTC milliseconds
-        end_time_ms (int): End time in UTC milliseconds  
+        start_time (str): Optional. The start of the time window.
+                         Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026"
+        end_time (str): Optional. The end of the time window.
+                       Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026"
         only_true_incidents (bool): If True, only return events marked as true incidents
         limit (int): Maximum number of incidents to return (default: 20)
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = _convert_timestamp_to_int(start_time_ms, "start_time_ms")
-            end_time_ms = _convert_timestamp_to_int(end_time_ms, "end_time_ms")
+            start_time_ms = _convert_timestamp_to_int(start_time, "start_time", tz_name)
+            end_time_ms = _convert_timestamp_to_int(end_time, "end_time", tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
@@ -1242,7 +1270,7 @@ async def get_project_incidents(
             incident_info = {
                 "id": i + 1,
                 "timestamp": incident["timestamp"],
-                "timestamp_human": format_api_timestamp_corrected(incident["timestamp"]),
+                "timestamp_human": format_api_timestamp_corrected(incident["timestamp"], tz_name),
                 "project": incident.get("projectDisplayName", "Unknown"),
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
@@ -1281,8 +1309,8 @@ async def get_project_incidents(
             "system_name": system_name,
             "project_name": project_name,
             "time_range": {
-                "start_human": format_timestamp_in_user_timezone(start_time_ms),
-                "end_human": format_timestamp_in_user_timezone(end_time_ms)
+                "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
             },
             "filters": {
                 "only_true_incidents": only_true_incidents,
@@ -1303,8 +1331,8 @@ async def get_project_incidents(
 @mcp_server.tool()
 async def predict_incidents(
     system_name: str,
-    start_time_ms: int,
-    end_time_ms: int,
+    start_time: str,
+    end_time: str,
 ) -> Dict[str, Any]:
     """
     Predicts future incidents for a system in a given time window.
@@ -1316,8 +1344,10 @@ async def predict_incidents(
 
     Args:
         system_name (str): The name of the system to predict incidents for.
-        start_time_ms (int): Start of the prediction window (UTC ms).
-        end_time_ms (int): End of the prediction window (UTC ms).
+        start_time (str): Start of the prediction window.
+                         Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
+        end_time (str): End of the prediction window.
+                       Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
 
     Returns:
         Dict[str, Any]: Prediction results, including recommendations if any are available.
@@ -1327,18 +1357,18 @@ async def predict_incidents(
         if not system_name or len(system_name) > 100:
             return {"status": "error", "message": "Invalid system_name"}
 
-        # Convert string timestamps to integers if needed
-        if isinstance(start_time_ms, str):
-            try:
-                start_time_ms = int(start_time_ms)
-            except ValueError:
-                return {"status": "error", "message": f"Invalid start_time_ms: must be an integer, got '{start_time_ms}'"}
-        
-        if isinstance(end_time_ms, str):
-            try:
-                end_time_ms = int(end_time_ms)
-            except ValueError:
-                return {"status": "error", "message": f"Invalid end_time_ms: must be an integer, got '{end_time_ms}'"}
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert human-readable timestamps to InsightFinder fake-UTC ms
+        try:
+            start_time_ms = _convert_timestamp_to_int(start_time, "start_time", tz_name)
+            end_time_ms = _convert_timestamp_to_int(end_time, "end_time", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
+        if start_time_ms is None or end_time_ms is None:
+            return {"status": "error", "message": "start_time and end_time are required for predictions"}
 
         # Call the InsightFinder API client
         api_client = _get_api_client()
@@ -1368,7 +1398,7 @@ async def predict_incidents(
         #     if not include_raw_data:
         #         incident.pop("rawData", None)
             
-        #     print(f"[DEBUG] Predicted incident timestamp: {incident.get('timestamp')} - {format_api_timestamp_corrected(incident.get('timestamp'))}", file=sys.stderr)
+        #     print(f"[DEBUG] Predicted incident timestamp: {incident.get('timestamp')} - {format_api_timestamp_corrected(incident.get('timestamp', tz_name))}", file=sys.stderr)
 
 
         incident_list = []
@@ -1376,9 +1406,9 @@ async def predict_incidents(
             incident_info = {
                 "id": i + 1,
                 "timestamp_prediction": incident["predictionTime"],
-                "timestamp_prediction_human": format_api_timestamp_corrected(incident["predictionTime"]),
+                "timestamp_prediction_human": format_api_timestamp_corrected(incident["predictionTime"], tz_name),
                 "timestamp_occurence_prediction": incident["predictionOccurenceTime"],
-                "timestamp_occurence_prediction_human": format_api_timestamp_corrected(incident["predictionOccurenceTime"]),
+                "timestamp_occurence_prediction_human": format_api_timestamp_corrected(incident["predictionOccurenceTime"], tz_name),
                 "project": incident.get("projectDisplayName", "Unknown"),
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
@@ -1432,11 +1462,12 @@ async def predict_incidents(
         return {
             "status": "success",
             "system_name": system_name,
+            "timezone": tz_name,
             "time_range": {
                 "start": start_time_ms,
                 "end": end_time_ms,
-                "start_human": format_timestamp_in_user_timezone(start_time_ms),
-                "end_human": format_timestamp_in_user_timezone(end_time_ms)
+                "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
             },
             "predicted_incidents": incident_list,
             "returned_count": len(incident_list)
@@ -1490,7 +1521,7 @@ def merge_rca_chain(rca_chain: list) -> list:
     # Collect deduplicated nodes
     merged_nodes = list(unique_nodes.values())
 
-    # Sort strictly by eventTimestamp (assumes already formatted string UTC)
+    # Sort strictly by eventTimestamp (formatted string in owner timezone)
     from datetime import datetime
     def parse_ts(ts):
         try:

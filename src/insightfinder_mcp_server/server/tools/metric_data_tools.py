@@ -19,7 +19,12 @@ from urllib.parse import quote
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
 from ...config.settings import settings
-from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone
+from .get_time import (
+    get_time_range_ms,
+    resolve_system_timezone,
+    format_timestamp_in_user_timezone,
+    parse_user_datetime_to_ms,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,15 +57,17 @@ async def get_metric_data_with_single_metric_name(
     3. If validation fails OR you don't know instance/metrics: Use list_available_instances_for_project or list_available_metrics
     
     **Time Range:**
-    - Accepts ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
+    - Accepts human-readable formats: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026"
     - start_time must be < end_time (cannot be equal)
     
     Args:
         project_name: Project name (required)
         instance_name: Instance/host name (required)
         metric_name: Single metric name (required, e.g., "CPU")
-        start_time: Start time in ISO 8601 format (optional, defaults to 1 day ago)
-        end_time: End time in ISO 8601 format (optional, defaults to now)
+        start_time: Start time in human-readable format (optional, defaults to 1 day ago).
+                    Examples: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026"
+        end_time: End time in human-readable format (optional, defaults to now).
+                  Examples: "2026-02-12T13:05:00", "2026-02-12", "02/12/2026"
 
     Returns:
         - status: "success" or "error"
@@ -133,15 +140,17 @@ async def get_metric_data(
     3. If validation fails OR you don't know instance/metrics: Use list_available_instances_for_project or list_available_metrics
     
     **Time Range:**
-    - Accepts ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
+    - Accepts human-readable formats: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026"
     - start_time must be < end_time (cannot be equal)
     
     Args:
         project_name: Project name (required)
         instance_name: Instance/host name (required)
         metric_list: List of metric names (required, e.g., ["CPU", "Memory"])
-        start_time: Start time in ISO 8601 format (optional, defaults to 1 day ago)
-        end_time: End time in ISO 8601 format (optional, defaults to now)
+        start_time: Start time in human-readable format (optional, defaults to 1 day ago).
+                    Examples: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026"
+        end_time: End time in human-readable format (optional, defaults to now).
+                  Examples: "2026-02-12T13:05:00", "2026-02-12", "02/12/2026"
 
     Returns:
         - status: "success" or "error"
@@ -166,6 +175,9 @@ async def get_metric_data(
             )
     """
     try:
+        # Resolve owner timezone
+        tz_name, _ = await resolve_system_timezone()
+
         # Get current API client
         api_client = get_current_api_client()
         if not api_client:
@@ -180,66 +192,36 @@ async def get_metric_data(
         
         # Get time range with timezone awareness if not provided
         if start_time is None or end_time is None:
-            start_time_ms, end_time_ms = get_timezone_aware_time_range_ms(days_back=1)
+            start_time_ms, end_time_ms = get_time_range_ms(tz_name, 1)
         else:
-            # Convert start_time
-            if isinstance(start_time, str):
-                # Try ISO 8601 format first
-                if 'T' in start_time or '-' in start_time:
-                    try:
-                        # Parse ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
-                        dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-                        start_time_ms = int(dt.timestamp() * 1000)
-                    except ValueError:
-                        return {
-                            "status": "error",
-                            "message": f"Invalid ISO 8601 timestamp format for start_time: '{start_time}'. Expected format: '2026-01-08T21:45:30Z'"
-                        }
+            # Convert start_time using parse_user_datetime_to_ms (handles all formats correctly)
+            try:
+                if isinstance(start_time, (int, float)):
+                    start_time_ms = int(start_time)
+                elif isinstance(start_time, str):
+                    start_time_ms = parse_user_datetime_to_ms(start_time.strip(), tz_name)
                 else:
-                    # Try to parse as 13-digit milliseconds string
-                    try:
-                        start_time_ms = int(start_time)
-                    except ValueError:
-                        return {
-                            "status": "error",
-                            "message": f"Invalid start_time: must be ISO 8601 format or 13-digit milliseconds, got '{start_time}'"
-                        }
-            elif isinstance(start_time, int):
-                start_time_ms = start_time
-            else:
+                    return {"status": "error", "message": f"Invalid start_time type: {type(start_time).__name__}"}
+            except ValueError:
                 return {
                     "status": "error",
-                    "message": f"Invalid start_time type: {type(start_time).__name__}"
+                    "message": f"Invalid start_time: cannot parse '{start_time}'. "
+                               f"Accepted formats: '2026-02-12T11:05:00', '2026-02-12', '02/12/2026', or 13-digit milliseconds."
                 }
-            
+
             # Convert end_time
-            if isinstance(end_time, str):
-                # Try ISO 8601 format first
-                if 'T' in end_time or '-' in end_time:
-                    try:
-                        # Parse ISO 8601 format (e.g., "2026-01-08T21:45:30Z")
-                        dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
-                        end_time_ms = int(dt.timestamp() * 1000)
-                    except ValueError:
-                        return {
-                            "status": "error",
-                            "message": f"Invalid ISO 8601 timestamp format for end_time: '{end_time}'. Expected format: '2026-01-08T21:45:30Z'"
-                        }
+            try:
+                if isinstance(end_time, (int, float)):
+                    end_time_ms = int(end_time)
+                elif isinstance(end_time, str):
+                    end_time_ms = parse_user_datetime_to_ms(end_time.strip(), tz_name)
                 else:
-                    # Try to parse as 13-digit milliseconds string
-                    try:
-                        end_time_ms = int(end_time)
-                    except ValueError:
-                        return {
-                            "status": "error",
-                            "message": f"Invalid end_time: must be ISO 8601 format or 13-digit milliseconds, got '{end_time}'"
-                        }
-            elif isinstance(end_time, int):
-                end_time_ms = end_time
-            else:
+                    return {"status": "error", "message": f"Invalid end_time type: {type(end_time).__name__}"}
+            except ValueError:
                 return {
                     "status": "error",
-                    "message": f"Invalid end_time type: {type(end_time).__name__}"
+                    "message": f"Invalid end_time: cannot parse '{end_time}'. "
+                               f"Accepted formats: '2026-02-12T11:05:00', '2026-02-12', '02/12/2026', or 13-digit milliseconds."
                 }
         
         
@@ -353,8 +335,8 @@ async def get_metric_data(
         response_data = result.get("data", [])
         if not response_data or len(response_data) == 0:
             # Format timestamps for error message
-            start_time_formatted = format_timestamp_in_user_timezone(start_time_ms)
-            end_time_formatted = format_timestamp_in_user_timezone(end_time_ms)
+            start_time_formatted = format_timestamp_in_user_timezone(start_time_ms, tz_name)
+            end_time_formatted = format_timestamp_in_user_timezone(end_time_ms, tz_name)
             
             return {
                 "status": "error",
@@ -373,8 +355,8 @@ async def get_metric_data(
             }
         
         # Format timestamps for display
-        start_time_formatted = format_timestamp_in_user_timezone(start_time_ms)
-        end_time_formatted = format_timestamp_in_user_timezone(end_time_ms)
+        start_time_formatted = format_timestamp_in_user_timezone(start_time_ms, tz_name)
+        end_time_formatted = format_timestamp_in_user_timezone(end_time_ms, tz_name)
 
         # Get base URL from API client
         base_api_url = api_client.base_url
@@ -473,6 +455,9 @@ async def list_available_metrics(
         }
     """
     try:
+        # Resolve owner timezone
+        tz_name, _ = await resolve_system_timezone()
+
         # Get current API client
         api_client = get_current_api_client()
         if not api_client:

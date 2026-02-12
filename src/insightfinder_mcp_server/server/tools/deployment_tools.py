@@ -24,15 +24,15 @@ import asyncio
 import json
 import logging
 from typing import Dict, Any, List, Optional
-from datetime import datetime, timezone
+from datetime import datetime
 import re
 
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
-
-def _format_timestamp_utc(timestamp_ms: int) -> str:
-    """Convert timestamp to UTC ISO format."""
-    return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
+from .get_time import (
+    resolve_system_timezone,
+    format_timestamp_in_user_timezone,
+)
 
 def _get_api_client():
     """
@@ -85,6 +85,9 @@ async def get_deployments_overview(
         Dict containing ultra-compact overview with status, summary stats, key insights, and projectName
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         client = _get_api_client()
         
         # Fetch raw data
@@ -104,8 +107,8 @@ async def get_deployments_overview(
                 "summary": {
                     "total_deployments": 0,
                     "time_range": {
-                        "start": _format_timestamp_utc(start_time_ms),
-                        "end": _format_timestamp_utc(end_time_ms),
+                        "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                        "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
@@ -129,8 +132,8 @@ async def get_deployments_overview(
                 "summary": {
                     "total_deployments": 0,
                     "time_range": {
-                        "start": _format_timestamp_utc(start_time_ms),
-                        "end": _format_timestamp_utc(end_time_ms),
+                        "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                        "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
@@ -207,8 +210,8 @@ async def get_deployments_overview(
                 "time_span_hours": time_span_hours,
                 "top_job_types": [{"job_type": jt, "count": c} for jt, c in top_job_types],
                 "time_range": {
-                    "start": _format_timestamp_utc(start_time_ms),
-                    "end": _format_timestamp_utc(end_time_ms),
+                    "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                    "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                     "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                 }
             },
@@ -267,6 +270,9 @@ async def get_deployments_list(
         Dict containing enhanced list of deployments with status, metadata, and projectName
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         client = _get_api_client()
         
         # Fetch raw data
@@ -330,7 +336,7 @@ async def get_deployments_list(
             
             enhanced_deployment = {
                 "timestamp": deployment.get("timestamp"),
-                "datetime": _format_timestamp_utc(deployment.get("timestamp", 0)) if deployment.get("timestamp") else None,
+                "datetime": format_timestamp_in_user_timezone(deployment.get("timestamp", 0, tz_name)) if deployment.get("timestamp") else None,
                 "active": deployment.get("active", 0),
                 
                 # Location information
@@ -443,6 +449,9 @@ async def get_deployments_statistics(
         Dict containing comprehensive statistics with status, metadata, and projectName
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         client = _get_api_client()
         
         # Fetch raw data
@@ -464,8 +473,8 @@ async def get_deployments_statistics(
                 "statistics": {
                     "total_deployments": 0,
                     "time_range": {
-                        "start": _format_timestamp_utc(start_time_ms),
-                        "end": _format_timestamp_utc(end_time_ms),
+                        "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                        "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
@@ -557,8 +566,8 @@ async def get_deployments_statistics(
         statistics = {
             "total_deployments": total_deployments,
             "time_range": {
-                "start": _format_timestamp_utc(start_time_ms),
-                "end": _format_timestamp_utc(end_time_ms),
+                "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                 "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1),
                 "actual_span_hours": time_span_hours
             },
@@ -642,11 +651,14 @@ async def get_project_deployments(
     Args:
         system_name (str): The name of the system (e.g., "InsightFinder Demo System (APP)")
         project_name (str): The name of the project (e.g., "demo-kpi-metrics-2")
-        start_time_ms (int): Start time in UTC milliseconds
-        end_time_ms (int): End time in UTC milliseconds  
+        start_time_ms (int): Start time in milliseconds (owner timezone)
+        end_time_ms (int): End time in milliseconds (owner timezone)
         limit (int): Maximum number of deployments to return (default: 20)
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
         client = _get_api_client()
         
         # Call the InsightFinder API client with ONLY the system name
@@ -668,8 +680,8 @@ async def get_project_deployments(
                     "project_name": project_name,
                     "system_name": system_name,
                     "time_range": {
-                        "start": _format_timestamp_utc(start_time_ms),
-                        "end": _format_timestamp_utc(end_time_ms),
+                        "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                        "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
@@ -694,7 +706,7 @@ async def get_project_deployments(
             deployment_summary = {
                 "index": i + 1,
                 "timestamp": deployment.get("timestamp"),
-                "datetime": _format_timestamp_utc(deployment.get("timestamp", 0)) if deployment.get("timestamp") else None,
+                "datetime": format_timestamp_in_user_timezone(deployment.get("timestamp", 0, tz_name)) if deployment.get("timestamp") else None,
                 "active": deployment.get("active", 0),
                 
                 # Location information
@@ -764,9 +776,10 @@ async def get_project_deployments(
                 "incident_rate_percentage": round(incident_count / total_deployments * 100, 1) if total_deployments > 0 else 0,
                 "project_name": project_name,
                 "system_name": system_name,
+                "timezone": tz_name,
                 "time_range": {
-                    "start": _format_timestamp_utc(start_time_ms),
-                    "end": _format_timestamp_utc(end_time_ms),
+                    "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                    "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                     "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                 }
             },
