@@ -27,6 +27,42 @@ def _get_api_client():
         )
     return api_client
 
+def _matches_instance_name(api_instance_name: str, provided_instance_name: str) -> bool:
+    """
+    Check if the provided instance name matches the API instance name.
+    
+    Handles both exact matches and partial matches after underscore:
+    - "insightfinder-generallogworker-0" matches "insightfinder-generallogworker-0"
+    - "insightfinder-generallogworker-0" matches "generallogworker-app_insightfinder-generallogworker-0" (matches part after _)
+    
+    Args:
+        api_instance_name: The instance name returned by the API (e.g., "generallogworker-app_insightfinder-generallogworker-0")
+        provided_instance_name: The instance name provided by the user (e.g., "insightfinder-generallogworker-0")
+        
+    Returns:
+        bool: True if the names match (either exactly or after underscore)
+    """
+    api_name_lower = api_instance_name.lower()
+    provided_name_lower = provided_instance_name.lower()
+    
+    # Case 1: Exact match
+    if api_name_lower == provided_name_lower:
+        return True
+    
+    # Case 2: Match the part after underscore
+    if "_" in api_name_lower:
+        # Extract the part after the last underscore
+        part_after_underscore = api_name_lower.split("_")[-1]
+        if part_after_underscore == provided_name_lower:
+            return True
+    
+    # Case 3: Check if provided name is in the full API name (loose matching)
+    # This handles cases like user providing "generallogworker" should match "generallogworker-app_..."
+    if provided_name_lower in api_name_lower:
+        return True
+    
+    return False
+
 # Layer 0: Ultra-compact log anomaly overview (just counts and basic info)
 @mcp_server.tool()
 async def get_log_anomalies_overview(
@@ -528,9 +564,14 @@ async def get_project_log_anomalies(
         # project_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
         project_anomalies = [la for la in log_anomalies if la.get("projectName", "").lower() == project_name.lower() or la.get("projectDisplayName", "").lower() == project_name.lower()]
 
-        # Filter by instance name if provided
+        # Filter by instance name if provided (with smart matching for different formats)
         if instance_name:
-            project_anomalies = [la for la in project_anomalies if la.get("instanceName", "").lower() == instance_name.lower()]
+            project_anomalies = [
+                la for la in project_anomalies 
+                if _matches_instance_name(la.get("instanceName", ""), instance_name)
+            ]
+            # if settings.ENABLE_DEBUG_MESSAGES:
+            #     print(f"[Instance filter] Filtered by instance_name='{instance_name}', remaining: {len(project_anomalies)}", file=sys.stderr)
 
         # Always only return anomalies of type "whiteList" for project-specific queries
         project_anomalies = [la for la in project_anomalies if str(la.get("type", "")).lower() == "whitelist"]
