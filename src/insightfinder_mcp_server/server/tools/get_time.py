@@ -221,36 +221,13 @@ def convert_iso8601_to_timestamp(iso_timestamp: str) -> str:
                 'error': 'Input cannot be empty',
                 'suggestion': 'Provide an ISO 8601 formatted timestamp string (e.g., "2026-01-08T21:45:30Z")'
             }, indent=2)
-        
-        # Try to parse the ISO 8601 timestamp
-        dt = None
-        parse_error = None
-        
+            
         try:
-            # Handle 'Z' suffix (UTC indicator)
-            if iso_timestamp.endswith('Z'):
-                iso_timestamp_parsed = iso_timestamp[:-1] + '+00:00'
-            else:
-                iso_timestamp_parsed = iso_timestamp
-            
-            # Handle space separator (replace with T)
-            if ' ' in iso_timestamp_parsed and 'T' not in iso_timestamp_parsed:
-                iso_timestamp_parsed = iso_timestamp_parsed.replace(' ', 'T', 1)
-            
-            # Parse the timestamp
-            dt = datetime.fromisoformat(iso_timestamp_parsed)
-            
-            # If no timezone info, assume UTC
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            
+            timestamp_ms = parse_datetime_string_to_ms(iso_timestamp)
         except ValueError as e:
-            parse_error = str(e)
-        
-        if dt is None:
             return json.dumps({
                 'valid': False,
-                'error': f'Failed to parse ISO 8601 timestamp: {parse_error}',
+                'error': f'Failed to parse ISO 8601 timestamp: {str(e)}',
                 'provided_value': iso_timestamp,
                 'supported_formats': [
                     '2026-01-08T21:45:30Z',
@@ -261,23 +238,9 @@ def convert_iso8601_to_timestamp(iso_timestamp: str) -> str:
                 ],
                 'suggestion': 'Ensure the timestamp follows ISO 8601 format'
             }, indent=2)
-        
-        # Convert to UTC if not already
-        dt_utc = dt.astimezone(timezone.utc)
-        
-        # Convert to milliseconds timestamp
-        timestamp_ms = int(dt_utc.timestamp() * 1000)
-        timestamp_seconds = int(dt_utc.timestamp())
-        
-        # Validate reasonable date range (1970-2286)
-        if dt_utc.year < 1970 or dt_utc.year > 2286:
-            return json.dumps({
-                'valid': False,
-                'error': f'Timestamp represents an unrealistic date: {dt_utc.year}',
-                'provided_value': iso_timestamp,
-                'parsed_year': dt_utc.year,
-                'suggestion': 'Check the year in your ISO 8601 timestamp'
-            }, indent=2)
+
+        # Convert back to datetime for detailed output
+        dt_utc = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
         
         # Successfully converted - return detailed information
         result = {
@@ -307,6 +270,64 @@ def convert_iso8601_to_timestamp(iso_timestamp: str) -> str:
             'provided_value': iso_timestamp,
             'suggestion': 'Ensure the timestamp follows ISO 8601 format (e.g., "2026-01-08T21:45:30Z")'
         }, indent=2)
+
+def parse_datetime_string_to_ms(timestamp_str: str) -> int:
+    """
+    Parses a datetime string (ISO 8601 or similar) into a millisecond timestamp.
+    Raises ValueError if parsing fails.
+    """
+    timestamp_str = timestamp_str.strip()
+    
+    # Handle 'Z' suffix (UTC indicator)
+    if timestamp_str.endswith('Z'):
+        iso_timestamp_parsed = timestamp_str[:-1] + '+00:00'
+    else:
+        iso_timestamp_parsed = timestamp_str
+    
+    # Handle space separator (replace with T)
+    if ' ' in iso_timestamp_parsed and 'T' not in iso_timestamp_parsed:
+        iso_timestamp_parsed = iso_timestamp_parsed.replace(' ', 'T', 1)
+    
+    # Parse the timestamp
+    dt = datetime.fromisoformat(iso_timestamp_parsed)
+    
+    # If no timezone info, assume UTC
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    
+    # Convert to UTC if not already
+    dt_utc = dt.astimezone(timezone.utc)
+    
+    # Convert to milliseconds timestamp
+    timestamp_ms = int(dt_utc.timestamp() * 1000)
+    
+    # Validate reasonable date range (1970-2286)
+    if dt_utc.year < 1970 or dt_utc.year > 2286:
+        raise ValueError(f"Timestamp represents an unrealistic date: {dt_utc.year}")
+        
+    return timestamp_ms
+
+from typing import Union, Optional
+
+def parse_timestamp_argument(timestamp: Union[int, str, None]) -> Optional[int]:
+    """
+    Parses a timestamp argument which can be an integer (ms) or a string (ISO/Human).
+    Returns integer timestamp in milliseconds or None if input is None.
+    Raises ValueError if string parsing fails.
+    """
+    if timestamp is None:
+        return None
+        
+    if isinstance(timestamp, int):
+        return timestamp
+        
+    if isinstance(timestamp, str):
+        try:
+            return int(timestamp)
+        except ValueError:
+            return parse_datetime_string_to_ms(timestamp)
+            
+    raise ValueError(f"Invalid timestamp type: {type(timestamp)}")
 
 @mcp_server.tool()
 def get_time_range(hours_back: int = 24) -> str:

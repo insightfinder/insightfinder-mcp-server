@@ -1,12 +1,12 @@
 import sys
 import json
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 from datetime import datetime
 
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
 from ...config.settings import settings
-from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, format_api_timestamp_corrected
+from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, format_api_timestamp_corrected, parse_timestamp_argument
 
 def _get_api_client():
     """
@@ -429,8 +429,8 @@ async def get_log_anomalies_statistics(
 async def get_project_log_anomalies(
     system_name: str,
     project_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time_ms: Optional[Union[int, str]] = None,
+    end_time_ms: Optional[Union[int, str]] = None,
     limit: int = 20,
     include_raw_data: bool = True
 ) -> Dict[str, Any]:
@@ -455,12 +455,18 @@ async def get_project_log_anomalies(
     Args:
         system_name (str): The name of the system (e.g., "InsightFinder Demo System (APP)")
         project_name (str): The name of the project (e.g., "demo-kpi-metrics-2")
-        start_time_ms (int): Start time in UTC milliseconds
-        end_time_ms (int): End time in UTC milliseconds  
+        start_time_ms (Union[int, str]): Start time in UTC milliseconds or human-readable string (e.g. "2026-02-10 00:00:00")
+        end_time_ms (Union[int, str]): End time in UTC milliseconds or human-readable string
         limit (int): Maximum number of anomalies to return (default: 20)
         include_raw_data (bool): Whether to include full raw data details (default: True)
     """
     try:
+        # Parse timestamps if they are provided as strings
+        if start_time_ms is not None:
+            start_time_ms = parse_timestamp_argument(start_time_ms)
+        if end_time_ms is not None:
+            end_time_ms = parse_timestamp_argument(end_time_ms)
+
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
             default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
