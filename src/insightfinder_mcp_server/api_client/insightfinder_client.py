@@ -153,7 +153,9 @@ class InsightFinderAPIClient:
         if end_time_ms - start_time_ms > 365 * 24 * 60 * 60 * 1000:  # Max 1 year
             return {"status": "error", "message": "Time range too large (max 1 year)"}
 
-        async with httpx.AsyncClient(timeout=30.0) as client:  # Shorter timeout
+        print(f"Fetching {timeline_event_type} data for {system_name} from {self.base_url} with params: {params}")
+
+        async with httpx.AsyncClient(timeout=60.0) as client:  # Increased timeout to 60 seconds
             try:
                 response = await client.get(url, params=params, headers=self.headers)
                 response.raise_for_status()
@@ -177,6 +179,8 @@ class InsightFinderAPIClient:
                 if len(timeline_list) > 5000:
                     timeline_list = timeline_list[:5000]
                 
+                print(f"Successfully fetched {len(timeline_list)} {timeline_event_type} records for {system_name}")
+                
                 return {
                     "status": "success", 
                     "data": timeline_list,
@@ -184,14 +188,25 @@ class InsightFinderAPIClient:
                     "event_type": timeline_event_type
                 }
             except httpx.HTTPStatusError as e:
-                logger.error(f"API error {e.response.status_code} for {timeline_event_type}")
-                return {"status": "error", "message": "API request failed"}
+                error_msg = f"API error {e.response.status_code} for {timeline_event_type}: {str(e)}"
+                logger.error(error_msg)
+                print(f"ERROR: {error_msg}")
+                return {"status": "error", "message": f"API request failed: {e.response.status_code}"}
+            except httpx.TimeoutException as e:
+                error_msg = f"Timeout error for {timeline_event_type}: {str(e)}"
+                logger.error(error_msg)
+                print(f"ERROR: {error_msg}")
+                return {"status": "error", "message": "Request timeout - API took too long to respond"}
             except httpx.RequestError as e:
-                logger.error(f"Network error for {timeline_event_type}: {str(e)}")
-                return {"status": "error", "message": "Network error"}
+                error_msg = f"Network error for {timeline_event_type}: {str(e)}"
+                logger.error(error_msg)
+                print(f"ERROR: {error_msg}")
+                return {"status": "error", "message": f"Network error: {str(e)}"}
             except Exception as e:
-                logger.error(f"Unexpected error: {str(e)}")
-                return {"status": "error", "message": "Internal error"}
+                error_msg = f"Unexpected error in {timeline_event_type}: {str(e)}"
+                logger.error(error_msg)
+                print(f"ERROR: {error_msg}")
+                return {"status": "error", "message": f"Internal error: {str(e)}"}
 
     async def get_incidents(
         self,

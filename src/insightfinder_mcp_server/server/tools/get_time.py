@@ -572,6 +572,64 @@ async def get_current_datetime() -> str:
     return json.dumps(result, indent=2)
 
 
+def parse_datetime_string_to_ms(timestamp_str: str) -> int:
+    """
+    Parses a datetime string (ISO 8601 or similar) into a millisecond timestamp.
+    Raises ValueError if parsing fails.
+    """
+    timestamp_str = timestamp_str.strip()
+    
+    # Handle 'Z' suffix (UTC indicator)
+    if timestamp_str.endswith('Z'):
+        iso_timestamp_parsed = timestamp_str[:-1] + '+00:00'
+    else:
+        iso_timestamp_parsed = timestamp_str
+    
+    # Handle space separator (replace with T)
+    if ' ' in iso_timestamp_parsed and 'T' not in iso_timestamp_parsed:
+        iso_timestamp_parsed = iso_timestamp_parsed.replace(' ', 'T', 1)
+    
+    # Parse the timestamp
+    dt = datetime.fromisoformat(iso_timestamp_parsed)
+    
+    # If no timezone info, assume UTC
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    
+    # Convert to UTC if not already
+    dt_utc = dt.astimezone(timezone.utc)
+    
+    # Convert to milliseconds timestamp
+    timestamp_ms = int(dt_utc.timestamp() * 1000)
+    
+    # Validate reasonable date range (1970-2286)
+    if dt_utc.year < 1970 or dt_utc.year > 2286:
+        raise ValueError(f"Timestamp represents an unrealistic date: {dt_utc.year}")
+        
+    return timestamp_ms
+
+from typing import Union, Optional
+
+def parse_timestamp_argument(timestamp: Union[int, str, None]) -> Optional[int]:
+    """
+    Parses a timestamp argument which can be an integer (ms) or a string (ISO/Human).
+    Returns integer timestamp in milliseconds or None if input is None.
+    Raises ValueError if string parsing fails.
+    """
+    if timestamp is None:
+        return None
+        
+    if isinstance(timestamp, int):
+        return timestamp
+        
+    if isinstance(timestamp, str):
+        try:
+            return int(timestamp)
+        except ValueError:
+            return parse_datetime_string_to_ms(timestamp)
+            
+    raise ValueError(f"Invalid timestamp type: {type(timestamp)}")
+
 @mcp_server.tool()
 async def get_time_range(hours_back: int = 24) -> str:
     """Get start and end time range in InsightFinder milliseconds for queries.
