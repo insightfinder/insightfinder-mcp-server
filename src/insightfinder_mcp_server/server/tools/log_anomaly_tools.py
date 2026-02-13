@@ -515,9 +515,14 @@ async def get_project_log_anomalies(
             end_time_ms=end_time_ms,
         )
 
+        print(f"API call completed for {system_name}. Status: {result.get('status', 'unknown')}", file=sys.stderr)
+
         if result["status"] != "success":
+            error_message = f"API error for {system_name}: {result.get('message', 'Unknown error')}"
+            print(error_message, file=sys.stderr)
             return result
         log_anomalies = result["data"]
+        print(f"Retrieved {len(log_anomalies)} log anomalies for {system_name}", file=sys.stderr)
 
         # Filter by the specific project name
         # project_anomalies = [la for la in log_anomalies if la.get("projectName") == project_name]
