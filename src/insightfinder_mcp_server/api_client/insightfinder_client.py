@@ -139,10 +139,12 @@ class InsightFinderAPIClient:
             "timelineEventType": timeline_event_type
         }
 
-        # Debug: Display human-readable time range in UTC
-        start_time_readable = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-        end_time_readable = datetime.fromtimestamp(end_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-        print(f"DEBUG: Time range - Start: {start_time_readable}, End: {end_time_readable}")
+        print(f"Fetching {timeline_event_type} data for {system_name} from {self.base_url} with params: {params}")
+        
+        # Debug: Display human-readable time range (timestamps are wall-clock in owner timezone)
+        start_time_readable = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        end_time_readable = datetime.fromtimestamp(end_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        print(f"DEBUG: Time range - Start: {start_time_readable}, End: {end_time_readable} (Owner Timezone)")
 
         # Basic input validation
         if not system_name or len(system_name) > 100:
@@ -312,8 +314,8 @@ class InsightFinderAPIClient:
         Predict future incidents for a system in a given time window using the InsightFinder prediction API.
         Args:
             system_name (str): The name of the system to predict incidents for.
-            start_time_ms (int): Start of the prediction window (UTC ms).
-            end_time_ms (int): End of the prediction window (UTC ms).
+            start_time_ms (int): Start of the prediction window (owner timezone ms).
+            end_time_ms (int): End of the prediction window (owner timezone ms).
         Returns:
             dict: API response containing predicted incidents (timelineList).
         """
@@ -327,9 +329,9 @@ class InsightFinderAPIClient:
             "predict": "true"
         }
         
-        start_time_readable = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-        end_time_readable = datetime.fromtimestamp(end_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-        print(f"DEBUG: Time range - Start: {start_time_readable}, End: {end_time_readable}")
+        start_time_readable = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        end_time_readable = datetime.fromtimestamp(end_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        print(f"DEBUG: Time range - Start: {start_time_readable}, End: {end_time_readable} (Owner Timezone)")
 
         # Basic input validation
         if not system_name or len(system_name) > 100:
@@ -613,10 +615,10 @@ class InsightFinderAPIClient:
         logger.info(f"Fetching metric data for project={project_name}, instance={instance_name}, "
                    f"metrics={metric_list}, customer={customer_name}")
         
-        # Debug: Display human-readable time range
-        start_time_readable = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-        end_time_readable = datetime.fromtimestamp(end_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-        print(f"DEBUG: Metric data time range - Start: {start_time_readable}, End: {end_time_readable}")
+        # Debug: Display human-readable time range (timestamps are wall-clock in owner timezone)
+        start_time_readable = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        end_time_readable = datetime.fromtimestamp(end_time_ms / 1000, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        print(f"DEBUG: Metric data time range - Start: {start_time_readable}, End: {end_time_readable} (Owner Timezone)")
         # print(f"DEBUG: Metric data customer: {customer_name} (logged-in user: {self.user_name})")
         # print(f"DEBUG: Metric data API URL: {url}")
         # print(f"DEBUG: Metric data params: {params}")

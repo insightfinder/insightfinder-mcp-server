@@ -17,13 +17,19 @@ import asyncio
 import json
 import logging
 import sys
-from typing import Dict, Any, List, Optional
-from datetime import datetime
+from typing import Dict, Any, List, Optional, Union
+from datetime import datetime, timezone
 
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
 from ...config.settings import settings
-from .get_time import get_timezone_aware_time_range_ms, format_timestamp_in_user_timezone, format_api_timestamp_corrected
+from .get_time import (
+    get_time_range_ms,
+    resolve_system_timezone,
+    format_timestamp_in_user_timezone,
+    format_api_timestamp_corrected,
+    convert_to_ms,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +40,8 @@ logger = logging.getLogger(__name__)
 @mcp_server.tool()
 async def get_metric_anomalies_overview(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
     project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
@@ -49,26 +55,42 @@ async def get_metric_anomalies_overview(
     
     Args:
         system_name: Name of the system to query
-        start_time_ms: Start timestamp in milliseconds (optional, defaults to 24 hours ago)
-        end_time_ms: End timestamp in milliseconds (optional, defaults to current time)
+        start_time: Start timestamp (optional, defaults to 24 hours ago). Accepts human-readable formats.
+        end_time: End timestamp (optional, defaults to current time). Accepts human-readable formats.
         project_name: Optional project name to filter results (if not provided, returns all projects)
         
     Returns:
         Dict containing ultra-compact overview with status, summary stats, and key insights
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert timestamps
+        try:
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
                 start_time_ms = default_start_ms
         
+        # Expand if start/end are equal (day expansion)
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            dt = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
+        
         if settings.ENABLE_DEBUG_MESSAGES:
-            print(f"[DEBUG] get_metric_anomalies_overview called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}, project_name={project_name}", file=sys.stderr)
-            print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
-            print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
+            logger.debug("Using time range: %s to %s", start_time_ms, end_time_ms)
         
         client = _get_api_client()
         
@@ -78,13 +100,6 @@ async def get_metric_anomalies_overview(
             start_time_ms=start_time_ms,
             end_time_ms=end_time_ms
         )
-        
-        if settings.ENABLE_DEBUG_MESSAGES:
-            print(f"[DEBUG] API response status: {raw_data.get('status', 'unknown')}", file=sys.stderr)
-            if raw_data.get("status") == "success":
-                print(f"[DEBUG] API response data length: {len(raw_data.get('data', []))}", file=sys.stderr)
-            else:
-                print(f"[DEBUG] API response error: {raw_data.get('message', 'No message')}", file=sys.stderr)
         
         if raw_data.get("status") != "success":
             return raw_data
@@ -104,8 +119,8 @@ async def get_metric_anomalies_overview(
                 "summary": {
                     "total_anomalies": 0,
                     "time_range": {
-                        "start": format_timestamp_in_user_timezone(start_time_ms),
-                        "end": format_timestamp_in_user_timezone(end_time_ms),
+                        "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                        "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
@@ -170,8 +185,8 @@ async def get_metric_anomalies_overview(
                 "time_span_hours": time_span_hours,
                 "top_patterns": [{"pattern": p, "count": c} for p, c in top_patterns],
                 "time_range": {
-                    "start": format_timestamp_in_user_timezone(start_time_ms),
-                    "end": format_timestamp_in_user_timezone(end_time_ms),
+                    "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                    "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                     "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                 }
             }
@@ -191,8 +206,8 @@ async def get_metric_anomalies_overview(
 @mcp_server.tool()
 async def get_metric_anomalies_list(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
     limit: int = 20,
     sort_by: str = "timestamp",
     include_raw_data: bool = False,
@@ -216,8 +231,8 @@ async def get_metric_anomalies_list(
     
     Args:
         system_name: Name of the system to query
-        start_time_ms: Start timestamp in milliseconds (optional, defaults to 24 hours ago)
-        end_time_ms: End timestamp in milliseconds (optional, defaults to current time)
+        start_time: Start timestamp (optional, defaults to 24 hours ago). Accepts human-readable formats.
+        end_time: End timestamp (optional, defaults to current time). Accepts human-readable formats.
         limit: Maximum number of anomalies to return
         sort_by: Sort field ("timestamp", "pattern")
         include_raw_data: Whether to include raw anomaly data (default: False for performance)
@@ -237,19 +252,35 @@ async def get_metric_anomalies_list(
     and within the "location" object for each anomaly.
     """
     try:
-        
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert timestamps
+        try:
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
                 start_time_ms = default_start_ms
         
+        # Expand if start/end are equal (day expansion)
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            dt = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
+        
         if settings.ENABLE_DEBUG_MESSAGES:
-            print(f"[DEBUG] get_metric_anomalies_list called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}, project_name={project_name}", file=sys.stderr)
-            print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
-            print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
+            logger.debug("Using time range: %s to %s", start_time_ms, end_time_ms)
+            logger.debug("Filters: limit=%s, sort_by=%s, project_name=%s", limit, sort_by, project_name)
         
         client = _get_api_client()
         
@@ -260,12 +291,6 @@ async def get_metric_anomalies_list(
             end_time_ms=end_time_ms
         )
         
-        if settings.ENABLE_DEBUG_MESSAGES:
-            print(f"[DEBUG] API response status: {raw_data.get('status', 'unknown')}", file=sys.stderr)
-            if raw_data.get("status") == "success":
-                print(f"[DEBUG] API response data length: {len(raw_data.get('data', []))}", file=sys.stderr)
-            else:
-                print(f"[DEBUG] API response error: {raw_data.get('message', 'No message')}", file=sys.stderr)
         
         if raw_data.get("status") != "success":
             return raw_data
@@ -282,7 +307,7 @@ async def get_metric_anomalies_list(
         anomalies = raw_data["data"]
 
         # Print anomalies in formatted json for debugging
-        # print(f"[DEBUG] Anomalies found: {json.dumps(anomalies, indent=2)}", file=sys.stderr)
+        # logger.debug("Anomalies found: %sjson.dumps(anomalies, indent=2)", json.dumps(anomalies, indent=2))
 
         # Filter by project name if specified
         if project_name:
@@ -321,7 +346,7 @@ async def get_metric_anomalies_list(
                 
                 # Timing information
                 "timestamp": anomaly.get("timestamp"),
-                "datetime": format_api_timestamp_corrected(anomaly.get("timestamp", 0)) if anomaly.get("timestamp") else None,
+                "datetime": format_api_timestamp_corrected(anomaly.get("timestamp", 0), tz_name) if anomaly.get("timestamp") else None,
                 
                 "active": anomaly.get("active", 0),
                 
@@ -405,8 +430,9 @@ async def get_metric_anomalies_list(
 @mcp_server.tool()
 async def get_metric_anomalies_statistics(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
+    include_trends: bool = True,
     project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
@@ -417,28 +443,44 @@ async def get_metric_anomalies_statistics(
     
     Args:
         system_name: Name of the system to query
-        start_time_ms: Start timestamp in milliseconds (optional, defaults to 24 hours ago)
-        end_time_ms: End timestamp in milliseconds (optional, defaults to current time)
+        start_time: Start timestamp (optional, defaults to 24 hours ago). Accepts human-readable formats.
+        end_time: End timestamp (optional, defaults to current time). Accepts human-readable formats.
+        include_trends: Whether to include trend analysis
         project_name: Optional project name to filter results (if not provided, returns all projects)
         
     Returns:
         Dict containing comprehensive statistics with status and metadata
     """
     try:
-        
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert timestamps
+        try:
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
                 start_time_ms = default_start_ms
         
+        # Expand if start/end are equal (day expansion)
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            dt = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
+        
         if settings.ENABLE_DEBUG_MESSAGES:
-            print(f"[DEBUG] get_metric_anomalies_statistics called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}, project_name={project_name}", file=sys.stderr)
-            print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
-            print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
-            print(f"[DEBUG] Include trends: {include_trends}", file=sys.stderr)
+            logger.debug("Using time range: %s to %s", start_time_ms, end_time_ms)
+            logger.debug("Include trends: %s", include_trends)
         
         client = _get_api_client()
         
@@ -449,12 +491,6 @@ async def get_metric_anomalies_statistics(
             end_time_ms=end_time_ms
         )
         
-        if settings.ENABLE_DEBUG_MESSAGES:
-            print(f"[DEBUG] API response status: {raw_data.get('status', 'unknown')}", file=sys.stderr)
-            if raw_data.get("status") == "success":
-                print(f"[DEBUG] API response data length: {len(raw_data.get('data', []))}", file=sys.stderr)
-            else:
-                print(f"[DEBUG] API response error: {raw_data.get('message', 'No message')}", file=sys.stderr)
         
         if raw_data.get("status") != "success":
             return raw_data
@@ -466,8 +502,8 @@ async def get_metric_anomalies_statistics(
                 "statistics": {
                     "total_anomalies": 0,
                     "time_range": {
-                        "start": format_timestamp_in_user_timezone(start_time_ms),
-                        "end": format_timestamp_in_user_timezone(end_time_ms),
+                        "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                        "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
@@ -567,8 +603,8 @@ async def get_metric_anomalies_statistics(
         statistics = {
             "total_anomalies": total_anomalies,
             "time_range": {
-                "start": format_timestamp_in_user_timezone(start_time_ms),
-                "end": format_timestamp_in_user_timezone(end_time_ms),
+                "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                 "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1),
                 "actual_span_hours": time_span_hours
             },
@@ -624,8 +660,8 @@ async def get_metric_anomalies_statistics(
 @mcp_server.tool()
 async def fetch_metric_anomalies(
     system_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
     project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
@@ -638,10 +674,10 @@ async def fetch_metric_anomalies(
 
     Args:
         system_name (str): The name of the system to query for metric anomalies.
-        start_time_ms (int): Optional. The start of the time window in Unix timestamp (milliseconds).
-                         If not provided, defaults to 24 hours ago.
-        end_time_ms (int): Optional. The end of the time window in Unix timestamp (milliseconds).
-                       If not provided, defaults to the current time.
+        start_time (Optional[Union[str, int]]): Start time.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
+        end_time (Optional[Union[str, int]]): End time.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
         project_name (str): Optional. Project name to filter results (if not provided, returns all projects).
         
     Returns:
@@ -651,19 +687,34 @@ async def fetch_metric_anomalies(
         - All other anomaly fields (timestamp, metrics, etc.)
     """
     try:
-        
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert timestamps
+        try:
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
                 start_time_ms = default_start_ms
+        
+        # Expand if start/end are equal (day expansion)
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            dt = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
 
         if settings.ENABLE_DEBUG_MESSAGES:
-            print(f"[DEBUG] fetch_metric_anomalies called with system_name={system_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}, project_name={project_name}", file=sys.stderr)
-            print(f"[DEBUG] Using time range: {start_time_ms} to {end_time_ms}", file=sys.stderr)
-            print(f"[DEBUG] Query range formatted: {format_timestamp_in_user_timezone(start_time_ms)} to {format_timestamp_in_user_timezone(end_time_ms)}", file=sys.stderr)
+            logger.debug("Using time range: %s to %s", start_time_ms, end_time_ms)
 
         # Call the InsightFinder API client with the timeline endpoint
         api_client = _get_api_client()
@@ -673,12 +724,6 @@ async def fetch_metric_anomalies(
             end_time_ms=end_time_ms,
         )
 
-        if settings.ENABLE_DEBUG_MESSAGES:
-            print(f"[DEBUG] API response status: {result.get('status', 'unknown')}", file=sys.stderr)
-            if result.get("status") == "success":
-                print(f"[DEBUG] API response data length: {len(result.get('data', []))}", file=sys.stderr)
-            else:
-                print(f"[DEBUG] API response error: {result.get('message', 'No message')}", file=sys.stderr)
 
         if isinstance(result, dict):
             if result.get("data"):
@@ -705,8 +750,8 @@ async def fetch_metric_anomalies(
 async def get_project_metric_anomalies(
     system_name: str,
     project_name: str,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
     limit: int = 20
 ) -> Dict[str, Any]:
     """
@@ -723,8 +768,10 @@ async def get_project_metric_anomalies(
     Args:
         system_name (str): The name of the system (e.g., "InsightFinder Demo System (APP)")
         project_name (str): The name of the project (e.g., "demo-kpi-metrics-2")
-        start_time_ms (int): Start time in UTC milliseconds
-        end_time_ms (int): End time in UTC milliseconds  
+        start_time (Optional[Union[str, int]]): Start time.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
+        end_time (Optional[Union[str, int]]): End time.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
         limit (int): Maximum number of anomalies to return (default: 20)
         
     Returns:
@@ -733,16 +780,23 @@ async def get_project_metric_anomalies(
         - All other anomaly details (metrics, timestamps, location info, etc.)
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert timestamps
+        try:
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
         # Set default time range if not provided (timezone-aware)
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_timezone_aware_time_range_ms(1)
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
                 start_time_ms = default_start_ms
-
-        if settings.ENABLE_DEBUG_MESSAGES:
-            print(f"[DEBUG] get_project_metric_anomalies called with system_name={system_name}, project_name={project_name}, start_time_ms={start_time_ms}, end_time_ms={end_time_ms}", file=sys.stderr)
 
         # Call the InsightFinder API client with ONLY the system name
         api_client = _get_api_client()
@@ -779,7 +833,7 @@ async def get_project_metric_anomalies(
             anomaly_summary = {
                 "index": i + 1,
                 "timestamp": anomaly.get("timestamp"),
-                "datetime": format_api_timestamp_corrected(anomaly.get("timestamp", 0)) if anomaly.get("timestamp") else None,
+                "datetime": format_api_timestamp_corrected(anomaly.get("timestamp", 0), tz_name) if anomaly.get("timestamp") else None,
                 "active": anomaly.get("active", 0),
                 
                 # Location information
@@ -824,9 +878,10 @@ async def get_project_metric_anomalies(
                 "active_anomalies": active_count,
                 "project_name": project_name,
                 "system_name": system_name,
+                "timezone": tz_name,
                 "time_range": {
-                    "start": format_timestamp_in_user_timezone(start_time_ms),
-                    "end": format_timestamp_in_user_timezone(end_time_ms),
+                    "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                    "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                     "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                 }
             },
@@ -856,3 +911,18 @@ def _get_api_client():
             "X-InsightFinder-License-Key and X-InsightFinder-User-Name"
         )
     return api_client
+
+
+def _calculate_duration_minutes(time_pairs: List[Dict[str, int]]) -> float:
+    """Calculate total duration in minutes from time pairs."""
+    if not time_pairs:
+        return 0.0
+    
+    total_duration_ms = 0
+    for pair in time_pairs:
+        start = pair.get("s", 0)
+        end = pair.get("e", 0)
+        if end > start:
+            total_duration_ms += (end - start)
+    
+    return round(total_duration_ms / (1000 * 60), 2)
