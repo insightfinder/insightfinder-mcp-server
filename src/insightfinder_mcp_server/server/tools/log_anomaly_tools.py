@@ -381,8 +381,9 @@ async def get_log_anomalies_statistics(
     project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Provides statistical analysis of log anomalies for a system over a time period.
-    Use this to understand anomaly patterns, frequency, and impact.
+    Provides comprehensive statistical analysis of log anomalies for a system over a time period.
+    Use this tool to understand anomaly patterns, frequency, distribution, and impact across components.
+    Ideal for comparing log anomalies between time periods like "This week vs Last week" or "This month vs Last month".
 
     Args:
         system_name (str): The name of the system to analyze.
@@ -391,6 +392,18 @@ async def get_log_anomalies_statistics(
         end_time (Optional[Union[str, int]]): The end of the time window.
             Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
         project_name (str): Optional. Filter results to only include anomalies from this specific project.
+    
+    Usage for Comparisons (example dates - use actual dates for your queries):
+        When comparing "This week" vs "Last week", make two separate calls:
+        - Call 1: start_time="YYYY-MM-DD" (this Sunday, DD=day), end_time="YYYY-MM-DD" (today, DD=day)
+        - Call 2: start_time="YYYY-MM-DD" (last Sunday, DD=day), end_time="YYYY-MM-DD" (last Saturday, DD=day)
+        
+        When comparing "This month" vs "Last month", make two separate calls:
+        - Call 1: start_time="YYYY-MM-01", end_time="YYYY-MM-DD" (today, DD=day of month)
+        - Call 2: start_time="YYYY-MM-01", end_time="YYYY-MM-LL" where LL=last day of previous month (28, 29, 30, or 31)
+    
+    Returns:
+        Statistical breakdown with anomaly counts, score analysis, and top affected components, instances, and projects.
     """
     try:
         # Resolve owner timezone for this system

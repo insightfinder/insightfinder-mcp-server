@@ -27,8 +27,8 @@ async def get_incidents_overview(
 ) -> Dict[str, Any]:
     """
     Fetches a very high-level overview of incidents - just counts and basic metrics.
-    This is the most compact view, ideal for initial exploration.
-    Use this tool when a user first asks about incidents to get a quick overview.
+    This is the most compact view, ideal for initial exploration and comparisons.
+    Use this tool when a user first asks about incidents to get a quick overview or to compare time periods.
 
     Args:
         system_name (str): The name of the system to query for incidents.
@@ -40,14 +40,21 @@ async def get_incidents_overview(
                        If not provided, defaults to the current time.
         project_name (str): Optional. Filter results to only include incidents from this specific project.
 
-    Time Conversion Examples:
-        - "Today's incidents" → omit time parameters (uses default last 24 hours)
+    Usage for Comparisons (example dates - use actual dates for your queries):
+        When comparing "This week" vs "Last week", make two separate calls:
+        - Call 1: start_time="YYYY-MM-DD" (this Sunday, DD=day), end_time="YYYY-MM-DD" (today, DD=day)
+        - Call 2: start_time="YYYY-MM-DD" (last Sunday, DD=day), end_time="YYYY-MM-DD" (last Saturday, DD=day)
+        
+        When comparing "This month" vs "Last month", make two separate calls:
+        - Call 1: start_time="YYYY-MM-01", end_time="YYYY-MM-DD" (today, DD=day of month)
+        - Call 2: start_time="YYYY-MM-01", end_time="YYYY-MM-LL" where LL=last day of previous month (28, 29, 30, or 31)
+
         - "Yesterday 9 AM to 5 PM" → start_time="2026-02-11T09:00:00", end_time="2026-02-11T17:00:00"
         - "Last 24 hours" → omit parameters (uses default range)
-        - "This week" → start_time="2026-02-09" (Monday's date)
 
     Note: All timestamps are in the Owner User Timezone. Display times using the
-    "timezone" field from the response, never label as UTC.
+    "timezone" field from the response, never label as UTC. For accurate comparisons
+    between "This week" and "Last week", make two separate calls with the correct date ranges.
     """
     # Simple security checks
     if not system_name or len(system_name) > 100:
@@ -828,7 +835,8 @@ async def get_incidents_statistics(
 ) -> Dict[str, Any]:
     """
     Provides statistical analysis of incidents for a system over a time period.
-    Use this to understand incident patterns, frequency, and impact.
+    Use this tool to understand incident patterns, frequency, and impact across components.
+    Ideal for comparing incidents between time periods like "This week vs Last week" or "This month vs Last month".
 
     Args:
         system_name (str): The name of the system to analyze.
@@ -836,6 +844,18 @@ async def get_incidents_statistics(
                          Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
         end_time (str): Optional. The end of the time window.
                        Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
+    
+    Usage for Comparisons (example dates - use actual dates for your queries):
+        When comparing "This week" vs "Last week", make two separate calls:
+        - Call 1: start_time="YYYY-MM-DD" (this Sunday, DD=day), end_time="YYYY-MM-DD" (today, DD=day)
+        - Call 2: start_time="YYYY-MM-DD" (last Sunday, DD=day), end_time="YYYY-MM-DD" (last Saturday, DD=day)
+        
+        When comparing "This month" vs "Last month", make two separate calls:
+        - Call 1: start_time="YYYY-MM-01", end_time="YYYY-MM-DD" (today, DD=day of month)
+        - Call 2: start_time="YYYY-MM-01", end_time="YYYY-MM-LL" where LL=last day of previous month (28, 29, 30, or 31)
+    
+    Returns:
+        Statistical breakdown with top affected components, instances, patterns, and projects.
     """
     try:
         # Resolve owner timezone for this system

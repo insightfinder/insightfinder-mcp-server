@@ -5,8 +5,14 @@ This module provides a focused approach for exploring metric anomalies:
 - Layer 0: Ultra-compact overview (get_metric_anomalies_overview)
 - Layer 1: Enhanced list with detailed information (get_metric_anomalies_list) 
 - Layer 2: Statistics and analysis (get_metric_anomalies_statistics)
-- Additional: Simple wrapper (fetch_metric_anomalies) and today's anomalies (get_today_metric_anomalies)
-- Project-specific: Project-filtered anomalies (get_project_metric_anomalies)
+- Additional: Simple wrapper (fetch_metric_anomalies) and today's anomalies (get_today_metric_anom    Usage for Comparisons (example dates - use actual dates for your queries):
+        When comparing "This week" vs "Last week", make two separate calls:
+        - Call 1: start_time="YYYY-MM-DD" (this Sunday, DD=day), end_time="YYYY-MM-DD" (today, DD=day)
+        - Call 2: start_time="YYYY-MM-DD" (last Sunday, DD=day), end_time="YYYY-MM-DD" (last Saturday, DD=day)
+        
+        When comparing "This month" vs "Last month", make two separate calls:
+        - Call 1: start_time="YYYY-MM-01", end_time="YYYY-MM-DD" (today, DD=day of month)
+        - Call 2: start_time="YYYY-MM-01", end_time="YYYY-MM-LL" where LL=last day of previous month (28, 29, 30, or 31) Project-specific: Project-filtered anomalies (get_project_metric_anomalies)
 
 Each layer provides increasingly detailed information while maintaining LLM-friendly,
 structured outputs optimized for analysis and reasoning. All tools now support optional
@@ -440,10 +446,11 @@ async def get_metric_anomalies_statistics(
     project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Layer 5: Comprehensive statistics for metric anomalies.
+    Layer 5: Comprehensive statistics for metric anomalies across a time period.
     
-    Provides statistical analysis, trends, and insights across all anomalies
-    in the time range. Good for understanding patterns and overall system health.
+    Provides detailed statistical analysis, trends, and insights across all metric anomalies
+    in the time range. Use this for understanding patterns, system health, and to compare
+    anomalies between different time periods like "This week vs Last week" or "This month vs Last month".
     
     Args:
         system_name: Name of the system to query
@@ -453,9 +460,18 @@ async def get_metric_anomalies_statistics(
             Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
         include_trends: Whether to include trend analysis
         project_name: Optional project name to filter results (if not provided, returns all projects)
+    
+    Usage for Comparisons (example dates - use actual dates for your queries):
+        When comparing "This week" vs "Last week", make two separate calls:
+        - Call 1: start_time="YYYY-MM-DD" (this Sunday), end_time="YYYY-MM-DD" (today)
+        - Call 2: start_time="YYYY-MM-DD" (last Sunday), end_time="YYYY-MM-DD" (last Saturday)
+        
+        When comparing "This month" vs "Last month", make two separate calls:
+        - Call 1: start_time="YYYY-MM-01", end_time="YYYY-MM-DD" (today)
+        - Call 2: start_time="YYYY-MM-01", end_time="YYYY-MM-LL" (last day of previous month)
         
     Returns:
-        Dict containing comprehensive statistics with status and metadata
+        Dict containing comprehensive statistics with infrastructure, metric, and behavioral analysis
     """
     try:
         # Resolve owner timezone for this system
