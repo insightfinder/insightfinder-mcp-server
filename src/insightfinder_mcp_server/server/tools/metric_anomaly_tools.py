@@ -55,8 +55,10 @@ async def get_metric_anomalies_overview(
     
     Args:
         system_name: Name of the system to query
-        start_time: Start timestamp (optional, defaults to 24 hours ago). Accepts human-readable formats.
-        end_time: End timestamp (optional, defaults to current time). Accepts human-readable formats.
+        start_time (Optional[Union[str, int]]): Start time.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
+        end_time (Optional[Union[str, int]]): End time.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
         project_name: Optional project name to filter results (if not provided, returns all projects)
         
     Returns:
@@ -231,8 +233,10 @@ async def get_metric_anomalies_list(
     
     Args:
         system_name: Name of the system to query
-        start_time: Start timestamp (optional, defaults to 24 hours ago). Accepts human-readable formats.
-        end_time: End timestamp (optional, defaults to current time). Accepts human-readable formats.
+        start_time (Optional[Union[str, int]]): Start time.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
+        end_time (Optional[Union[str, int]]): End time.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
         limit: Maximum number of anomalies to return
         sort_by: Sort field ("timestamp", "pattern")
         include_raw_data: Whether to include raw anomaly data (default: False for performance)
@@ -443,8 +447,10 @@ async def get_metric_anomalies_statistics(
     
     Args:
         system_name: Name of the system to query
-        start_time: Start timestamp (optional, defaults to 24 hours ago). Accepts human-readable formats.
-        end_time: End timestamp (optional, defaults to current time). Accepts human-readable formats.
+        start_time (Optional[Union[str, int]]): Start time.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
+        end_time (Optional[Union[str, int]]): End time.
+            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
         include_trends: Whether to include trend analysis
         project_name: Optional project name to filter results (if not provided, returns all projects)
         
