@@ -5,8 +5,9 @@ Factory module for creating InsightFinder API client instances from HTTP request
 from typing import Optional
 from fastapi import Request, HTTPException
 from .insightfinder_client import InsightFinderAPIClient, create_api_client
-from .jira_client import JiraAPIClient, create_jira_client, set_current_jira_client
+from .jira_client import JiraAPIClient, create_jira_client
 from ..config.settings import settings
+import contextvars
 
 
 def extract_insightfinder_credentials_from_headers(request: Request) -> dict:
@@ -97,35 +98,40 @@ def create_api_client_from_request(request: Request) -> InsightFinderAPIClient:
     return create_api_client(**credentials)
 
 
-# Global request context storage for accessing API client in tools
-_current_request_context = {}
+# Global request context storage using contextvars for proper async/thread handling
+_current_api_client: contextvars.ContextVar[Optional[InsightFinderAPIClient]] = contextvars.ContextVar('api_client', default=None)
+_current_request: contextvars.ContextVar[Optional[Request]] = contextvars.ContextVar('request', default=None)
+_current_jira_client: contextvars.ContextVar[Optional[JiraAPIClient]] = contextvars.ContextVar('jira_client', default=None)
 
 def set_request_context(request: Request, api_client: InsightFinderAPIClient):
-    """Store the current request context for tools to access."""
-    import threading
-    thread_id = threading.get_ident()
-    _current_request_context[thread_id] = {
-        "request": request,
-        "api_client": api_client
-    }
+    """Store the current request context for tools to access.
+    
+    Uses contextvars which properly propagates across async boundaries,
+    unlike thread-local storage which can fail when async tasks switch threads.
+    """
+    _current_request.set(request)
+    _current_api_client.set(api_client)
     
     # Also try to create and set JIRA client if credentials are provided
     jira_credentials = extract_jira_credentials_from_headers(request)
     if jira_credentials:
         jira_client = create_jira_client(**jira_credentials)
-        set_current_jira_client(jira_client)
+        _current_jira_client.set(jira_client)
     else:
-        set_current_jira_client(None)
+        _current_jira_client.set(None)
 
 def get_current_api_client() -> Optional[InsightFinderAPIClient]:
-    """Get the API client for the current request context."""
-    import threading
-    thread_id = threading.get_ident()
-    context = _current_request_context.get(thread_id)
-    return context.get("api_client") if context else None
+    """Get the API client for the current request context.
+    
+    Uses contextvars which properly propagates across async boundaries.
+    """
+    return _current_api_client.get()
 
 def clear_request_context():
-    """Clear the current request context."""
-    import threading
-    thread_id = threading.get_ident()
-    _current_request_context.pop(thread_id, None)
+    """Clear the current request context.
+    
+    This resets the context variables for the current async context.
+    """
+    _current_request.set(None)
+    _current_api_client.set(None)
+    _current_jira_client.set(None)
