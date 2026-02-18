@@ -833,3 +833,161 @@ async def convert_timestamp(
     }
 
     return json.dumps(result, indent=2)
+
+
+# ============================================================================
+# RELATIVE DATE PARSING HELPER
+# ============================================================================
+
+def parse_relative_date_keyword(keyword: str, tz_name: str) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Parse relative date keywords like "thisweek", "lastweek", "thismonth", "lastmonth"
+    and return (start_time_ms, end_time_ms) tuple.
+
+    Supported keywords (case-insensitive):
+    - "thisweek", "this_week": Monday to today
+    - "lastweek", "last_week": Last Monday to Last Sunday
+    - "thismonth", "this_month": 1st of current month to today
+    - "lastmonth", "last_month": 1st of last month to last day of last month
+    - "today": Today's date (full day)
+    - "yesterday": Yesterday's date (full day)
+
+    Args:
+        keyword: Relative date keyword (e.g., "thisweek", "last_month")
+        tz_name: Owner timezone name for calculations
+
+    Returns:
+        Tuple of (start_time_ms, end_time_ms) in InsightFinder fake-UTC format
+        Returns (None, None) if keyword is not recognized
+
+    Raises:
+        ValueError: If timezone cannot be resolved
+    """
+    keyword_lower = keyword.strip().lower().replace(" ", "_")
+
+    tz = _make_tz(tz_name)
+    now_local = datetime.now(tz)
+    today = now_local.date()
+
+    # Calculate Monday of this week (0 = Monday, 6 = Sunday)
+    days_since_monday = today.weekday()
+    this_monday = today - timedelta(days=days_since_monday)
+    last_sunday = this_monday - timedelta(days=1)
+    last_monday = last_sunday - timedelta(days=6)
+
+    # Calculate month boundaries
+    this_month_start = today.replace(day=1)
+    # Last day of this month
+    if today.month == 12:
+        this_month_end = today.replace(year=today.year + 1, month=1, day=1) - timedelta(days=1)
+    else:
+        this_month_end = today.replace(month=today.month + 1, day=1) - timedelta(days=1)
+
+    # Last month boundaries
+    last_month_end = this_month_start - timedelta(days=1)
+    last_month_start = last_month_end.replace(day=1)
+
+    # Map keywords to date ranges
+    date_ranges = {
+        "thisweek": (this_monday, today),
+        "this_week": (this_monday, today),
+        "lastweek": (last_monday, last_sunday),
+        "last_week": (last_monday, last_sunday),
+        "thismonth": (this_month_start, today),
+        "this_month": (this_month_start, today),
+        "lastmonth": (last_month_start, last_month_end),
+        "last_month": (last_month_start, last_month_end),
+        "today": (today, today),
+        "yesterday": (today - timedelta(days=1), today - timedelta(days=1)),
+    }
+
+    if keyword_lower not in date_ranges:
+        return None, None
+
+    start_date, end_date = date_ranges[keyword_lower]
+
+    # Convert dates to midnight times in the owner timezone
+    start_dt = datetime.combine(start_date, datetime.min.time())
+    end_dt = datetime.combine(end_date, datetime.min.time())
+
+    # Convert to fake-UTC milliseconds
+    start_ms = _wall_clock_to_fake_utc_ms(start_dt)
+    end_ms = _wall_clock_to_fake_utc_ms(end_dt)
+
+    # For end_time, expand to end of day (23:59:59)
+    end_dt_expanded = datetime.combine(end_date, datetime.max.time())
+    end_ms_expanded = _wall_clock_to_fake_utc_ms(end_dt_expanded)
+
+    return start_ms, end_ms_expanded
+
+
+def is_relative_date_keyword(value: Union[str, int, None]) -> bool:
+    """
+    Check if a value is a relative date keyword.
+
+    Args:
+        value: The value to check
+
+    Returns:
+        True if value is a recognized relative date keyword, False otherwise
+    """
+    if not isinstance(value, str):
+        return False
+
+    keyword_lower = value.strip().lower().replace(" ", "_")
+    recognized_keywords = {
+        "thisweek", "this_week",
+        "lastweek", "last_week",
+        "thismonth", "this_month",
+        "lastmonth", "last_month",
+        "today",
+        "yesterday",
+    }
+
+    return keyword_lower in recognized_keywords
+
+
+def parse_time_parameters(
+    start_time: Optional[Union[str, int]],
+    end_time: Optional[Union[str, int]],
+    tz_name: str
+) -> tuple[Optional[int], Optional[int]]:
+    """
+    Parse time parameters supporting both relative keywords and absolute dates.
+    
+    Relative keywords: "thisweek", "lastweek", "thismonth", "lastmonth", "today", "yesterday"
+    Absolute formats: "2026-02-12", "2026-02-12T11:05:00", "02/12/2026", or milliseconds
+    
+    Args:
+        start_time: Start time (keyword or absolute date)
+        end_time: End time (keyword or absolute date)
+        tz_name: Owner timezone name
+        
+    Returns:
+        Tuple of (start_time_ms, end_time_ms) in InsightFinder format
+        
+    Raises:
+        ValueError: If parsing fails
+    """
+    # Check for relative date keywords and parse them
+    if is_relative_date_keyword(start_time):
+        parsed_start, parsed_end = parse_relative_date_keyword(str(start_time), tz_name)
+        start_time_ms = parsed_start
+        if is_relative_date_keyword(end_time):
+            parsed_start2, parsed_end2 = parse_relative_date_keyword(str(end_time), tz_name)
+            end_time_ms = parsed_end2
+        elif end_time is None:
+            end_time_ms = parsed_end
+        else:
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+    elif is_relative_date_keyword(end_time):
+        parsed_start, parsed_end = parse_relative_date_keyword(str(end_time), tz_name)
+        end_time_ms = parsed_end
+        start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+    else:
+        # Neither are keywords, parse normally
+        start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+        end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+    
+    return start_time_ms, end_time_ms
+

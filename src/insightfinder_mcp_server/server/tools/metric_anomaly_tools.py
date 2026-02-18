@@ -35,6 +35,7 @@ from .get_time import (
     format_timestamp_in_user_timezone,
     format_api_timestamp_corrected,
     convert_to_ms,
+    parse_time_parameters,
 )
 
 logger = logging.getLogger(__name__)
@@ -190,7 +191,7 @@ async def get_metric_anomalies_overview(
                 "unique_projects": len(projects),
                 "unique_metric_types": len(metric_types),
                 "unique_zones": len(zones),
-                "time_span_hours": time_span_hours,
+                # "time_span_hours": time_span_hours,
                 "top_patterns": [{"pattern": p, "count": c} for p, c in top_patterns],
                 "time_range": {
                     "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
@@ -450,25 +451,36 @@ async def get_metric_anomalies_statistics(
     
     Provides detailed statistical analysis, trends, and insights across all metric anomalies
     in the time range. Use this for understanding patterns, system health, and to compare
-    anomalies between different time periods like "This week vs Last week" or "This month vs Last month".
+    anomalies between different time periods.
+
+    ⚠️ RELATIVE DATE KEYWORDS SUPPORTED:
+    You can use simple keywords instead of explicit dates:
+    - "thisweek" or "this_week": Monday to today
+    - "lastweek" or "last_week": Last Monday to Last Sunday
+    - "thismonth" or "this_month": 1st of current month to today
+    - "lastmonth" or "last_month": 1st of last month to last day of last month
+    - "today": Today's date (full day)
+    - "yesterday": Yesterday's date (full day)
+
+    COMPARISON EXAMPLES - Use these keywords directly without calculating dates:
+        To compare "This week" vs "Last week":
+        - Call 1: start_time="thisweek", end_time="thisweek"
+        - Call 2: start_time="lastweek", end_time="lastweek"
+
+        To compare "This month" vs "Last month":
+        - Call 1: start_time="thismonth", end_time="thismonth"
+        - Call 2: start_time="lastmonth", end_time="lastmonth"
     
     Args:
         system_name: Name of the system to query
         start_time (Optional[Union[str, int]]): Start time.
-            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
+            - Relative keywords: "thisweek", "lastweek", "thismonth", "lastmonth", "today", "yesterday"
+            - Absolute dates: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds
         end_time (Optional[Union[str, int]]): End time.
-            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
+            - Relative keywords: "thisweek", "lastweek", "thismonth", "lastmonth", "today", "yesterday"
+            - Absolute dates: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds
         include_trends: Whether to include trend analysis
         project_name: Optional project name to filter results (if not provided, returns all projects)
-    
-    Usage for Comparisons (example dates - use actual dates for your queries):
-        When comparing "This week" vs "Last week", make two separate calls:
-        - Call 1: start_time="YYYY-MM-DD" (this Sunday), end_time="YYYY-MM-DD" (today)
-        - Call 2: start_time="YYYY-MM-DD" (last Sunday), end_time="YYYY-MM-DD" (last Saturday)
-        
-        When comparing "This month" vs "Last month", make two separate calls:
-        - Call 1: start_time="YYYY-MM-01", end_time="YYYY-MM-DD" (today)
-        - Call 2: start_time="YYYY-MM-01", end_time="YYYY-MM-LL" (last day of previous month)
         
     Returns:
         Dict containing comprehensive statistics with infrastructure, metric, and behavioral analysis
@@ -477,10 +489,9 @@ async def get_metric_anomalies_statistics(
         # Resolve owner timezone for this system
         tz_name, system_name = await resolve_system_timezone(system_name)
 
-        # Convert timestamps
+        # Parse time parameters (supports both keywords and absolute dates)
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
 
@@ -628,7 +639,7 @@ async def get_metric_anomalies_statistics(
                 "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
                 "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                 "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1),
-                "actual_span_hours": time_span_hours
+                # "actual_span_hours": time_span_hours
             },
             
             
