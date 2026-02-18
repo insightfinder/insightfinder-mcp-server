@@ -12,7 +12,7 @@ from .get_time import (
     format_timestamp_in_user_timezone,
     format_api_timestamp_corrected,
     convert_to_ms,
-    parse_timestamp_argument
+    parse_time_parameters,
 )
 
 def _get_api_client():
@@ -376,31 +376,42 @@ async def get_log_anomalies_list(
 @mcp_server.tool()
 async def get_log_anomalies_statistics(
     system_name: str,
-    start_time: Optional[int] = None,
-    end_time: Optional[int] = None,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
     project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Provides comprehensive statistical analysis of log anomalies for a system over a time period.
     Use this tool to understand anomaly patterns, frequency, distribution, and impact across components.
-    Ideal for comparing log anomalies between time periods like "This week vs Last week" or "This month vs Last month".
+    Ideal for comparing log anomalies between time periods.
+
+    ⚠️ RELATIVE DATE KEYWORDS SUPPORTED:
+    You can use simple keywords instead of explicit dates:
+    - "thisweek" or "this_week": Monday to today
+    - "lastweek" or "last_week": Last Monday to Last Sunday
+    - "thismonth" or "this_month": 1st of current month to today
+    - "lastmonth" or "last_month": 1st of last month to last day of last month
+    - "today": Today's date (full day)
+    - "yesterday": Yesterday's date (full day)
+
+    COMPARISON EXAMPLES - Use these keywords directly without calculating dates:
+        To compare "This week" vs "Last week":
+        - Call 1: start_time="thisweek", end_time="thisweek"
+        - Call 2: start_time="lastweek", end_time="lastweek"
+
+        To compare "This month" vs "Last month":
+        - Call 1: start_time="thismonth", end_time="thismonth"
+        - Call 2: start_time="lastmonth", end_time="lastmonth"
 
     Args:
         system_name (str): The name of the system to analyze.
         start_time (Optional[Union[str, int]]): The start of the time window.
-            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
+            - Relative keywords: "thisweek", "lastweek", "thismonth", "lastmonth", "today", "yesterday"
+            - Absolute dates: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds
         end_time (Optional[Union[str, int]]): The end of the time window.
-            Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds.
+            - Relative keywords: "thisweek", "lastweek", "thismonth", "lastmonth", "today", "yesterday"
+            - Absolute dates: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds
         project_name (str): Optional. Filter results to only include anomalies from this specific project.
-    
-    Usage for Comparisons (example dates - use actual dates for your queries):
-        When comparing "This week" vs "Last week", make two separate calls:
-        - Call 1: start_time="YYYY-MM-DD" (this Sunday, DD=day), end_time="YYYY-MM-DD" (today, DD=day)
-        - Call 2: start_time="YYYY-MM-DD" (last Sunday, DD=day), end_time="YYYY-MM-DD" (last Saturday, DD=day)
-        
-        When comparing "This month" vs "Last month", make two separate calls:
-        - Call 1: start_time="YYYY-MM-01", end_time="YYYY-MM-DD" (today, DD=day of month)
-        - Call 2: start_time="YYYY-MM-01", end_time="YYYY-MM-LL" where LL=last day of previous month (28, 29, 30, or 31)
     
     Returns:
         Statistical breakdown with anomaly counts, score analysis, and top affected components, instances, and projects.
@@ -409,10 +420,9 @@ async def get_log_anomalies_statistics(
         # Resolve owner timezone for this system
         tz_name, system_name = await resolve_system_timezone(system_name)
 
-        # Convert timestamps
+        # Parse time parameters (supports both keywords and absolute dates)
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
 

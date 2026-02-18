@@ -12,8 +12,8 @@ from .get_time import (
     resolve_system_timezone,
     format_timestamp_in_user_timezone,
     format_api_timestamp_corrected,
-    parse_user_datetime_to_ms,
     convert_to_ms,
+    parse_time_parameters,
 )
 
 
@@ -30,31 +30,36 @@ async def get_incidents_overview(
     This is the most compact view, ideal for initial exploration and comparisons.
     Use this tool when a user first asks about incidents to get a quick overview or to compare time periods.
 
+    ⚠️ RELATIVE DATE KEYWORDS SUPPORTED:
+    You can use simple keywords instead of explicit dates:
+    - "thisweek" or "this_week": Monday to today
+    - "lastweek" or "last_week": Last Monday to Last Sunday
+    - "thismonth" or "this_month": 1st of current month to today
+    - "lastmonth" or "last_month": 1st of last month to last day of last month
+    - "today": Today's date (full day)
+    - "yesterday": Yesterday's date (full day)
+
+    COMPARISON EXAMPLES - Use these keywords directly without calculating dates:
+        To compare "This week" vs "Last week":
+        - Call 1: start_time="thisweek", end_time="thisweek"
+        - Call 2: start_time="lastweek", end_time="lastweek"
+
+        To compare "This month" vs "Last month":
+        - Call 1: start_time="thismonth", end_time="thismonth"
+        - Call 2: start_time="lastmonth", end_time="lastmonth"
+
     Args:
         system_name (str): The name of the system to query for incidents.
-        start_time (str): Optional. The start of the time window.
-                         Accepts human-readable formats: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
-                         If not provided, defaults to 24 hours ago.
-        end_time (str): Optional. The end of the time window.
-                       Accepts human-readable formats: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
-                       If not provided, defaults to the current time.
+        start_time (Optional[Union[str, int]]): The start of the time window.
+            - Relative keywords: "thisweek", "lastweek", "thismonth", "lastmonth", "today", "yesterday"
+            - Absolute dates: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds
+        end_time (Optional[Union[str, int]]): The end of the time window.
+            - Relative keywords: "thisweek", "lastweek", "thismonth", "lastmonth", "today", "yesterday"
+            - Absolute dates: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds
         project_name (str): Optional. Filter results to only include incidents from this specific project.
 
-    Usage for Comparisons (example dates - use actual dates for your queries):
-        When comparing "This week" vs "Last week", make two separate calls:
-        - Call 1: start_time="YYYY-MM-DD" (this Sunday, DD=day), end_time="YYYY-MM-DD" (today, DD=day)
-        - Call 2: start_time="YYYY-MM-DD" (last Sunday, DD=day), end_time="YYYY-MM-DD" (last Saturday, DD=day)
-        
-        When comparing "This month" vs "Last month", make two separate calls:
-        - Call 1: start_time="YYYY-MM-01", end_time="YYYY-MM-DD" (today, DD=day of month)
-        - Call 2: start_time="YYYY-MM-01", end_time="YYYY-MM-LL" where LL=last day of previous month (28, 29, 30, or 31)
-
-        - "Yesterday 9 AM to 5 PM" → start_time="2026-02-11T09:00:00", end_time="2026-02-11T17:00:00"
-        - "Last 24 hours" → omit parameters (uses default range)
-
-    Note: All timestamps are in the Owner User Timezone. Display times using the
-    "timezone" field from the response, never label as UTC. For accurate comparisons
-    between "This week" and "Last week", make two separate calls with the correct date ranges.
+    Returns:
+        Dict with status and overview containing incident counts and basic statistics.
     """
     # Simple security checks
     if not system_name or len(system_name) > 100:
@@ -64,10 +69,9 @@ async def get_incidents_overview(
         # Resolve owner timezone for this system
         tz_name, system_name = await resolve_system_timezone(system_name)
 
-        # Convert string timestamps to integers if needed
+        # Parse time parameters (supports both keywords and absolute dates)
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
@@ -836,23 +840,34 @@ async def get_incidents_statistics(
     """
     Provides statistical analysis of incidents for a system over a time period.
     Use this tool to understand incident patterns, frequency, and impact across components.
-    Ideal for comparing incidents between time periods like "This week vs Last week" or "This month vs Last month".
+    Ideal for comparing incidents between time periods.
+
+    ⚠️ RELATIVE DATE KEYWORDS SUPPORTED:
+    You can use simple keywords instead of explicit dates:
+    - "thisweek" or "this_week": Monday to today
+    - "lastweek" or "last_week": Last Monday to Last Sunday
+    - "thismonth" or "this_month": 1st of current month to today
+    - "lastmonth" or "last_month": 1st of last month to last day of last month
+    - "today": Today's date (full day)
+    - "yesterday": Yesterday's date (full day)
+
+    COMPARISON EXAMPLES - Use these keywords directly without calculating dates:
+        To compare "This week" vs "Last week":
+        - Call 1: start_time="thisweek", end_time="thisweek"
+        - Call 2: start_time="lastweek", end_time="lastweek"
+
+        To compare "This month" vs "Last month":
+        - Call 1: start_time="thismonth", end_time="thismonth"
+        - Call 2: start_time="lastmonth", end_time="lastmonth"
 
     Args:
         system_name (str): The name of the system to analyze.
-        start_time (str): Optional. The start of the time window.
-                         Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
-        end_time (str): Optional. The end of the time window.
-                       Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
-    
-    Usage for Comparisons (example dates - use actual dates for your queries):
-        When comparing "This week" vs "Last week", make two separate calls:
-        - Call 1: start_time="YYYY-MM-DD" (this Sunday, DD=day), end_time="YYYY-MM-DD" (today, DD=day)
-        - Call 2: start_time="YYYY-MM-DD" (last Sunday, DD=day), end_time="YYYY-MM-DD" (last Saturday, DD=day)
-        
-        When comparing "This month" vs "Last month", make two separate calls:
-        - Call 1: start_time="YYYY-MM-01", end_time="YYYY-MM-DD" (today, DD=day of month)
-        - Call 2: start_time="YYYY-MM-01", end_time="YYYY-MM-LL" where LL=last day of previous month (28, 29, 30, or 31)
+        start_time (Optional[Union[str, int]]): The start of the time window.
+            - Relative keywords: "thisweek", "lastweek", "thismonth", "lastmonth", "today", "yesterday"
+            - Absolute dates: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds
+        end_time (Optional[Union[str, int]]): The end of the time window.
+            - Relative keywords: "thisweek", "lastweek", "thismonth", "lastmonth", "today", "yesterday"
+            - Absolute dates: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds
     
     Returns:
         Statistical breakdown with top affected components, instances, patterns, and projects.
@@ -861,10 +876,9 @@ async def get_incidents_statistics(
         # Resolve owner timezone for this system
         tz_name, system_name = await resolve_system_timezone(system_name)
 
-        # Convert string timestamps to integers if needed
+        # Parse time parameters (supports both keywords and absolute dates)
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
