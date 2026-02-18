@@ -44,6 +44,11 @@ async def get_metric_data_with_single_metric_name(
     This is a convenience wrapper around get_metric_data that accepts a single metric name string
     instead of a list of metrics.
 
+    **IMPORTANT: URL FORMAT**
+    - Always returns the raw URL without any formatting, parentheses, or brackets
+    - The URL is returned as a plain string - copy/paste directly into browser
+    - No need to format or manipulate the returned URL
+
     **CRITICAL WORKFLOW - Follow this exact sequence:**
     
     **For Incident-Related Metrics:**
@@ -126,6 +131,11 @@ async def get_metric_data(
     """
     Get UI URL for fetching metric line chart data. Returns a URL that users can click
     to visualize metric data in the InsightFinder UI.
+
+    **IMPORTANT: URL FORMAT**
+    - Always returns the raw URL without any formatting, parentheses, or brackets
+    - The URL is returned as a plain string - copy/paste directly into browser
+    - No need to format or manipulate the returned URL
 
     **CRITICAL WORKFLOW - Follow this exact sequence:**
     
