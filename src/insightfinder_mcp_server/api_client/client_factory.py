@@ -5,7 +5,7 @@ Factory module for creating InsightFinder API client instances from HTTP request
 from typing import Optional
 from fastapi import Request, HTTPException
 from .insightfinder_client import InsightFinderAPIClient, create_api_client
-from .jira_client import JiraAPIClient, create_jira_client
+from .jira_client import JiraAPIClient, create_jira_client, set_current_jira_client
 from ..config.settings import settings
 import contextvars
 
@@ -117,8 +117,11 @@ def set_request_context(request: Request, api_client: InsightFinderAPIClient):
     if jira_credentials:
         jira_client = create_jira_client(**jira_credentials)
         _current_jira_client.set(jira_client)
+        # Also set in the jira_client module's global storage for compatibility
+        set_current_jira_client(jira_client)
     else:
         _current_jira_client.set(None)
+        set_current_jira_client(None)
 
 def get_current_api_client() -> Optional[InsightFinderAPIClient]:
     """Get the API client for the current request context.
@@ -135,3 +138,5 @@ def clear_request_context():
     _current_request.set(None)
     _current_api_client.set(None)
     _current_jira_client.set(None)
+    # Also clear in the jira_client module's global storage for compatibility
+    set_current_jira_client(None)
