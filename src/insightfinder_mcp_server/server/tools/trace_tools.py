@@ -18,16 +18,18 @@ project_name filtering to focus on specific projects within a system.
 import asyncio
 import json
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from datetime import datetime, timezone
 import re
 
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
-
-def _format_timestamp_utc(timestamp_ms: int) -> str:
-    """Convert timestamp to UTC ISO format."""
-    return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
+from .get_time import (
+    get_time_range_ms,
+    resolve_system_timezone,
+    format_timestamp_in_user_timezone,
+    convert_to_ms,
+)
 
 def _get_api_client():
     """
@@ -57,8 +59,8 @@ logger = logging.getLogger(__name__)
 @mcp_server.tool()
 async def get_traces_overview(
     system_name: str,
-    start_time_ms: int,
-    end_time_ms: int,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
     project_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
@@ -69,14 +71,40 @@ async def get_traces_overview(
     
     Args:
         system_name: Name of the system to query
-        start_time_ms: Start timestamp in milliseconds
-        end_time_ms: End timestamp in milliseconds
+        start_time: Start timestamp. Accepts human-readable formats or milliseconds.
+        end_time: End timestamp. Accepts human-readable formats or milliseconds.
         project_name: Optional project name to filter traces (client-side filtering)
         
     Returns:
         Dict containing ultra-compact overview with status, summary stats, key insights, and projectName
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert timestamps
+        try:
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
+        # Set default time range if not provided (timezone-aware)
+        if end_time_ms is None or start_time_ms is None:
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
+            if end_time_ms is None:
+                end_time_ms = default_end_ms
+            if start_time_ms is None:
+                start_time_ms = default_start_ms
+        
+        # Expand if start/end are equal (day expansion)
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            dt = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
+
         client = _get_api_client()
         
         # Fetch raw data
@@ -95,8 +123,8 @@ async def get_traces_overview(
                 "summary": {
                     "total_traces": 0,
                     "time_range": {
-                        "start": _format_timestamp_utc(start_time_ms),
-                        "end": _format_timestamp_utc(end_time_ms),
+                        "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                        "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
@@ -120,8 +148,8 @@ async def get_traces_overview(
                 "summary": {
                     "total_traces": 0,
                     "time_range": {
-                        "start": _format_timestamp_utc(start_time_ms),
-                        "end": _format_timestamp_utc(end_time_ms),
+                        "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                        "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
@@ -230,8 +258,8 @@ async def get_traces_overview(
                 "top_operations": [{"operation": op, "count": cnt} for op, cnt in top_operations],
                 "time_analysis": {
                     "time_span_hours": time_span_hours,
-                    "start": _format_timestamp_utc(start_time_ms),
-                    "end": _format_timestamp_utc(end_time_ms),
+                    "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                    "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                     "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                 }
             },
@@ -257,8 +285,8 @@ async def get_traces_overview(
 @mcp_server.tool()
 async def get_traces_list(
     system_name: str,
-    start_time_ms: int,
-    end_time_ms: int,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
     limit: int = 20,
     has_error: Optional[bool] = None,
     operation_name: Optional[str] = None,
@@ -273,8 +301,8 @@ async def get_traces_list(
     
     Args:
         system_name: Name of the system to query
-        start_time_ms: Start timestamp in milliseconds
-        end_time_ms: End timestamp in milliseconds
+        start_time: Start timestamp. Accepts human-readable formats or milliseconds.
+        end_time: End timestamp. Accepts human-readable formats or milliseconds.
         limit: Maximum number of traces to return
         has_error: Filter by error status (True/False/None for all)
         operation_name: Filter by operation name
@@ -285,6 +313,32 @@ async def get_traces_list(
         Dict containing compact list of traces with status, metadata, and projectName
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert timestamps
+        try:
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
+        # Set default time range if not provided (timezone-aware)
+        if end_time_ms is None or start_time_ms is None:
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
+            if end_time_ms is None:
+                end_time_ms = default_end_ms
+            if start_time_ms is None:
+                start_time_ms = default_start_ms
+        
+        # Expand if start/end are equal (day expansion)
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            dt = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
+
         client = _get_api_client()
         
         # Fetch raw data
@@ -342,7 +396,7 @@ async def get_traces_list(
             
             compact_trace = {
                 "timestamp": trace.get("timestamp"),
-                "datetime": _format_timestamp_utc(trace.get("timestamp", 0)) if trace.get("timestamp") else None,
+                "datetime": format_timestamp_in_user_timezone(trace.get("timestamp", 0, tz_name)) if trace.get("timestamp") else None,
                 "projectName": trace.get("projectDisplayName"),
                 "trace_id": trace_info.get("traceID"),
                 "span_id": trace_info.get("spanID"),
@@ -390,9 +444,9 @@ async def get_traces_list(
 @mcp_server.tool()
 async def get_traces_summary(
     system_name: str,
-    start_time_ms: int,
-    end_time_ms: int,
-    limit: int = 10,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
+    limit: int = 20,
     has_error: Optional[bool] = None,
     project_name: Optional[str] = None,
     include_context: bool = True
@@ -405,8 +459,8 @@ async def get_traces_summary(
     
     Args:
         system_name: Name of the system to query
-        start_time_ms: Start timestamp in milliseconds
-        end_time_ms: End timestamp in milliseconds
+        start_time: Start timestamp. Accepts human-readable formats or milliseconds.
+        end_time: End timestamp. Accepts human-readable formats or milliseconds.
         limit: Maximum number of traces to return
         has_error: Filter by error status (True/False/None for all)
         project_name: Optional project name to filter traces (client-side filtering)
@@ -416,6 +470,32 @@ async def get_traces_summary(
         Dict containing detailed trace summaries with status, metadata, and projectName
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert timestamps
+        try:
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
+        # Set default time range if not provided (timezone-aware)
+        if end_time_ms is None or start_time_ms is None:
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
+            if end_time_ms is None:
+                end_time_ms = default_end_ms
+            if start_time_ms is None:
+                start_time_ms = default_start_ms
+        
+        # Expand if start/end are equal (day expansion)
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            dt = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
+
         client = _get_api_client()
         
         # Fetch raw data
@@ -467,7 +547,7 @@ async def get_traces_summary(
             
             detailed_trace = {
                 "timestamp": trace.get("timestamp"),
-                "datetime": _format_timestamp_utc(trace.get("timestamp", 0)) if trace.get("timestamp") else None,
+                "datetime": format_timestamp_in_user_timezone(trace.get("timestamp", 0, tz_name)) if trace.get("timestamp") else None,
                 "projectName": trace.get("projectDisplayName"),
                 "active": trace.get("active", 0),
                 
@@ -549,7 +629,7 @@ async def get_traces_summary(
 @mcp_server.tool()
 async def get_trace_details(
     system_name: str,
-    trace_timestamp: int,
+    trace_timestamp: Union[str, int],
     include_analysis: bool = True
 ) -> Dict[str, Any]:
     """
@@ -560,13 +640,25 @@ async def get_trace_details(
     
     Args:
         system_name: Name of the system to query
-        trace_timestamp: Timestamp of the specific trace
+        trace_timestamp: Timestamp of the specific trace. Accepts human-readable formats or milliseconds.
         include_analysis: Whether to include detailed analysis
         
     Returns:
         Dict containing complete trace details with status and metadata
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+        
+        # Convert timestamp
+        try:
+            trace_timestamp = convert_to_ms(trace_timestamp, "trace_timestamp", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
+        if trace_timestamp is None:
+             return {"status": "error", "message": "trace_timestamp is required"}
+
         client = _get_api_client()
         
         # Use a small time window around the timestamp to find the specific trace
@@ -610,7 +702,7 @@ async def get_trace_details(
             "trace": {
                 # Basic identification
                 "timestamp": target_trace.get("timestamp"),
-                "datetime": _format_timestamp_utc(target_trace.get("timestamp", 0)) if target_trace.get("timestamp") else None,
+                "datetime": format_timestamp_in_user_timezone(target_trace.get("timestamp", 0, tz_name)) if target_trace.get("timestamp") else None,
                 "projectName": target_trace.get("projectDisplayName"),
                 "active": target_trace.get("active", 0),
                 
@@ -682,7 +774,7 @@ async def get_trace_details(
 @mcp_server.tool()
 async def get_trace_raw_data(
     system_name: str,
-    trace_timestamp: int,
+    trace_timestamp: Union[str, int],
     max_length: int = 10000
 ) -> Dict[str, Any]:
     """
@@ -693,13 +785,25 @@ async def get_trace_raw_data(
     
     Args:
         system_name: Name of the system to query
-        trace_timestamp: Timestamp of the specific trace
+        trace_timestamp: Timestamp of the specific trace. Accepts human-readable formats or milliseconds.
         max_length: Maximum length of raw data to return (for truncation)
         
     Returns:
         Dict containing raw trace data with status and metadata
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert timestamp
+        try:
+            trace_timestamp = convert_to_ms(trace_timestamp, "trace_timestamp", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
+        if trace_timestamp is None:
+             return {"status": "error", "message": "trace_timestamp is required"}
+
         client = _get_api_client()
         
         # Use a small time window around the timestamp to find the specific trace
@@ -794,8 +898,8 @@ async def get_trace_raw_data(
 @mcp_server.tool()
 async def get_traces_statistics(
     system_name: str,
-    start_time_ms: int,
-    end_time_ms: int,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
     project_name: Optional[str] = None,
     include_trends: bool = True
 ) -> Dict[str, Any]:
@@ -807,8 +911,8 @@ async def get_traces_statistics(
     
     Args:
         system_name: Name of the system to query
-        start_time_ms: Start timestamp in milliseconds
-        end_time_ms: End timestamp in milliseconds
+        start_time: Start timestamp. Accepts human-readable formats or milliseconds.
+        end_time: End timestamp. Accepts human-readable formats or milliseconds.
         project_name: Optional project name to filter traces (client-side filtering)
         include_trends: Whether to include trend analysis
         
@@ -816,6 +920,32 @@ async def get_traces_statistics(
         Dict containing comprehensive statistics with status, metadata, and projectName
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert timestamps
+        try:
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
+        # Set default time range if not provided (timezone-aware)
+        if end_time_ms is None or start_time_ms is None:
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
+            if end_time_ms is None:
+                end_time_ms = default_end_ms
+            if start_time_ms is None:
+                start_time_ms = default_start_ms
+        
+        # Expand if start/end are equal (day expansion)
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            dt = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
+
         client = _get_api_client()
         
         # Fetch raw data
@@ -834,8 +964,8 @@ async def get_traces_statistics(
                 "statistics": {
                     "total_traces": 0,
                     "time_range": {
-                        "start": _format_timestamp_utc(start_time_ms),
-                        "end": _format_timestamp_utc(end_time_ms),
+                        "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                        "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
@@ -945,8 +1075,8 @@ async def get_traces_statistics(
         statistics = {
             "total_traces": total_traces,
             "time_range": {
-                "start": _format_timestamp_utc(start_time_ms),
-                "end": _format_timestamp_utc(end_time_ms),
+                "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                 "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1),
                 "actual_span_hours": time_span_hours
             },
@@ -1020,8 +1150,8 @@ async def get_traces_statistics(
 async def get_project_traces(
     system_name: str,
     project_name: str,
-    start_time_ms: int,
-    end_time_ms: int,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
     limit: int = 20
 ) -> Dict[str, Any]:
     """
@@ -1036,11 +1166,37 @@ async def get_project_traces(
     Args:
         system_name (str): The name of the system (e.g., "InsightFinder Demo System (APP)")
         project_name (str): The name of the project (e.g., "demo-kpi-metrics-2")
-        start_time_ms (int): Start time in UTC milliseconds
-        end_time_ms (int): End time in UTC milliseconds  
+        start_time: Start timestamp. Accepts human-readable formats or milliseconds.
+        end_time: End timestamp. Accepts human-readable formats or milliseconds.
         limit (int): Maximum number of traces to return (default: 20)
     """
     try:
+        # Resolve owner timezone for this system
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
+        # Convert timestamps
+        try:
+            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
+            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
+        # Set default time range if not provided (timezone-aware)
+        if end_time_ms is None or start_time_ms is None:
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
+            if end_time_ms is None:
+                end_time_ms = default_end_ms
+            if start_time_ms is None:
+                start_time_ms = default_start_ms
+        
+        # Expand if start/end are equal (day expansion)
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            dt = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
+
         client = _get_api_client()
         
         # Call the InsightFinder API client with ONLY the system name
@@ -1059,8 +1215,8 @@ async def get_project_traces(
                     "project_name": project_name,
                     "system_name": system_name,
                     "time_range": {
-                        "start": _format_timestamp_utc(start_time_ms),
-                        "end": _format_timestamp_utc(end_time_ms),
+                        "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                        "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                         "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                     }
                 }
@@ -1084,7 +1240,7 @@ async def get_project_traces(
             trace_summary = {
                 "index": i + 1,
                 "timestamp": trace.get("timestamp"),
-                "datetime": _format_timestamp_utc(trace.get("timestamp", 0)) if trace.get("timestamp") else None,
+                "datetime": format_timestamp_in_user_timezone(trace.get("timestamp", 0, tz_name)) if trace.get("timestamp") else None,
                 "active": trace.get("active", 0),
                 
                 # Location information
@@ -1181,9 +1337,10 @@ async def get_project_traces(
                 "incident_rate_percentage": round(incident_count / total_traces * 100, 1) if total_traces > 0 else 0,
                 "project_name": project_name,
                 "system_name": system_name,
+                "timezone": tz_name,
                 "time_range": {
-                    "start": _format_timestamp_utc(start_time_ms),
-                    "end": _format_timestamp_utc(end_time_ms),
+                    "start": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                    "end": format_timestamp_in_user_timezone(end_time_ms, tz_name),
                     "duration_hours": round((end_time_ms - start_time_ms) / (1000 * 60 * 60), 1)
                 }
             },
