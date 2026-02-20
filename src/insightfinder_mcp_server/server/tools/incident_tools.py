@@ -1426,6 +1426,7 @@ def merge_rca_chain(rca_chain: list) -> list:
     """
     Merge all rcaNodeList items into a single deduplicated list sorted by eventTimestamp.
     Deduplication is based on (sourceInstanceName, sourceProjectName, patternName, eventTimestamp).
+    Also transforms 'probability' field to 'confidenceScore' for consistency.
     """
     unique_nodes = {}
     merged_nodes = []
@@ -1455,5 +1456,10 @@ def merge_rca_chain(rca_chain: list) -> list:
             return ts  # fallback, keep order as-is
 
     merged_nodes.sort(key=lambda n: parse_ts(n.get("eventTimestamp", "")))
+
+    # Transform 'probability' to 'confidenceScore' in merged nodes
+    for node in merged_nodes:
+        if "probability" in node:
+            node["confidenceScore"] = node.pop("probability")
 
     return merged_nodes
