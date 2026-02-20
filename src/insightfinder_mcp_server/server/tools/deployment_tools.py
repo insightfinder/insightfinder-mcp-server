@@ -33,7 +33,7 @@ from .get_time import (
     get_time_range_ms,
     resolve_system_timezone,
     format_timestamp_in_user_timezone,
-    convert_to_ms,
+    parse_time_parameters
 )
 
 def _get_api_client():
@@ -89,8 +89,7 @@ async def get_deployments_overview(
 
         # Convert timestamps
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
 
@@ -287,8 +286,7 @@ async def get_deployments_list(
 
         # Convert timestamps
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
 
@@ -481,8 +479,7 @@ async def get_deployments_statistics(
 
         # Convert timestamps
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
 
@@ -707,8 +704,7 @@ async def get_project_deployments(
 
         # Convert timestamps
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
 

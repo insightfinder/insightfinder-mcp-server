@@ -34,7 +34,6 @@ from .get_time import (
     resolve_system_timezone,
     format_timestamp_in_user_timezone,
     format_api_timestamp_corrected,
-    convert_to_ms,
     parse_time_parameters,
 )
 
@@ -77,8 +76,7 @@ async def get_metric_anomalies_overview(
 
         # Convert timestamps
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
 
@@ -268,8 +266,7 @@ async def get_metric_anomalies_list(
 
         # Convert timestamps
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
 
@@ -725,8 +722,7 @@ async def fetch_metric_anomalies(
 
         # Convert timestamps
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
 
@@ -818,8 +814,7 @@ async def get_project_metric_anomalies(
 
         # Convert timestamps
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
 

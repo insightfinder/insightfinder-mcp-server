@@ -201,8 +201,7 @@ async def get_incidents_list(
 
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
@@ -334,8 +333,7 @@ async def get_incidents_summary(
 
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
@@ -980,8 +978,7 @@ async def fetch_traces(
 
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
@@ -1034,8 +1031,7 @@ async def fetch_log_anomalies(
 
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
@@ -1088,8 +1084,7 @@ async def fetch_deployments(
 
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
@@ -1151,8 +1146,7 @@ async def get_project_incidents(
 
         # Convert string timestamps to integers if needed
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
         
@@ -1294,8 +1288,7 @@ async def predict_incidents(
 
         # Convert human-readable timestamps to InsightFinder fake-UTC ms
         try:
-            start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
-            end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
             return {"status": "error", "message": str(e)}
 
