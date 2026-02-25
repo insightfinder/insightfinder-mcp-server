@@ -184,11 +184,16 @@ async def get_incidents_list(
     Args:
         system_name (str): The name of the system to query for incidents.
         start_time (str): Optional. The start of the time window.
-                          Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
-                          If not provided, defaults to 24 hours ago.
+                Accepts:
+                - "2026-02-12T11:05:00" (ISO timestamp with time), "2026-02-12", "02/12/2026"
+                - If NOT provided, defaults to 24 hours ago from the current time.
+                - If the user explicitly asks for "last 24 hours", DO NOT pass start_time or end_time. Leave both unset so the system uses the default 24-hour window.
+                - If the user asks for rolling windows other than 24 hours (e.g., "last 48 hours", "last 72 hours", "last 7 days"), you MUST calculate and pass FULL ISO timestamps including BOTH date and time.
         end_time (str): Optional. The end of the time window.
-                        Accepts: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026".
-                        If not provided, defaults to the current time.
+                Accepts:
+                - "2026-02-12T11:05:00" (ISO timestamp with time), "2026-02-12", "02/12/2026"
+                - If NOT provided, defaults to the current time.
+                - For rolling windows (except "last 24 hours"), always include time precision when passing values. Do NOT pass date-only values for rolling ranges.
         limit (int): Maximum number of incidents to return (default: 10).
         only_true_incidents (bool): If True, only return events marked as true incidents. default is True.
     
