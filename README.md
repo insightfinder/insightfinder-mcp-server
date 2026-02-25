@@ -1,6 +1,6 @@
 # InsightFinder MCP Server
 
-This project provides a Model Context Protocol (MCP) server that allows Large Language Models (LLMs) to interact with the InsightFinder platform. The server offers comprehensive incident management, anomaly detection, and system monitoring capabilities
+This project provides a Model Context Protocol (MCP) server that allows Large Language Models (LLMs) to interact with the InsightFinder platform. The server offers comprehensive incident management, anomaly detection, and system monitoring capabilities.
 
 ## Features
 
