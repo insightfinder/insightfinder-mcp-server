@@ -76,19 +76,21 @@ class JiraAPIClient:
         This method handles GDPR strict mode by using the REST API v3 endpoint instead of v2,
         which doesn't require the deprecated 'username' parameter.
         
+        Filters out app accounts, bot accounts, and service accounts to show only human users.
+        
         Args:
             project_key: JIRA project key (e.g., 'II')
             query: Optional search query to filter users
             
         Returns:
-            List of user dictionaries with keys: accountId, displayName, emailAddress
+            List of user dictionaries with keys: accountId, displayName, emailAddress (only human users)
         """
         try:
             jira = self._get_client()
             
             # Try to get assignable users using REST API v3 endpoint
             # This endpoint doesn't use the deprecated 'username' parameter
-            url = f"{self.server_url}/rest/api/3/users/search?maxResults=50"
+            url = f"{self.server_url}/rest/api/3/users/search?maxResults=500"
             
             if query:
                 # URL encode the query parameter
@@ -105,14 +107,37 @@ class JiraAPIClient:
                 
                 users_data = response.json()
                 result = []
+
+                # print formatted json response for debugging
+                # import json
+                # print(json.dumps(users_data, indent=2))
                 
                 if isinstance(users_data, list):
                     for user in users_data:
+                        # Filter out app accounts, bot accounts, and service accounts
+                        # Keep only human users (accountType == "atlassian" or check for human indicators)
+                        account_type = user.get("accountType", "").lower()
+                        display_name = user.get("displayName", "").lower()
+                        
+                        # Skip app and bot accounts
+                        skip_keywords = ["app", "bot", "jira", "slack", "trello", "sketch", "github", "statuspage", "service", "widget", "chat", "opsgenie", "reports", "spreadsheet", "outlook", "workplace"]
+                        
+                        if any(keyword in display_name for keyword in skip_keywords):
+                            continue
+                        
+                        # Skip if accountType indicates it's an app/service
+                        if account_type in ["app", "service", "bot"]:
+                            continue
+
+                        # Skip inactive users
+                        if not user.get("active", True):
+                            continue
+                        
                         result.append({
                             "accountId": user.get("accountId", ""),
                             "displayName": user.get("displayName", ""),
-                            "emailAddress": user.get("emailAddress", ""),
-                            "active": user.get("active", True)
+                            # "emailAddress": user.get("emailAddress", ""),
+                            # "active": user.get("active", True)
                         })
                 
                 logger.info(f"Retrieved {len(result)} assignable users for project {project_key}")
@@ -128,11 +153,22 @@ class JiraAPIClient:
                 
                 result = []
                 for user in users:
+                    # Filter out app and bot accounts
+                    display_name = getattr(user, 'displayName', '').lower()
+                    skip_keywords = ["app", "bot", "jira", "slack", "trello", "sketch", "github", "statuspage", "service", "widget", "chat", "opsgenie", "reports", "spreadsheet", "outlook", "workplace"]
+                    
+                    if any(keyword in display_name for keyword in skip_keywords):
+                        continue
+
+                    # Skip inactive users
+                    if not getattr(user, 'active', True):
+                        continue
+
                     result.append({
                         "accountId": user.accountId,
                         "displayName": user.displayName,
-                        "emailAddress": getattr(user, 'emailAddress', ''),
-                        "active": getattr(user, 'active', True)
+                        # "emailAddress": getattr(user, 'emailAddress', ''),
+                        # "active": getattr(user, 'active', True)
                     })
                 
                 logger.info(f"Retrieved {len(result)} assignable users for project {project_key} (fallback method)")
