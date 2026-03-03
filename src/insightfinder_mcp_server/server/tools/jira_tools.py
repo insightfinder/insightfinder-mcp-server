@@ -1,11 +1,88 @@
 import logging
 from typing import Dict, Any, List, Optional
+import hashlib
+import time
 
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
 from ...api_client.jira_client import get_current_jira_client
 
 logger = logging.getLogger(__name__)
+
+
+def generate_confirmation_code(project_key: str, assignee_account_id: str) -> str:
+    """Generate a time-based confirmation code valid for 15 minutes.
+    
+    The code is independently verifiable without storage:
+    - Based on: project_key, assignee_account_id, summary, description, and current 15-min time window
+    - Format: 6 uppercase letters
+    
+    Args:
+        project_key: JIRA project key
+        assignee_account_id: Account ID of assignee
+    
+    Returns:
+        6-character uppercase confirmation code
+    """
+    # Get current time window (15-minute intervals, in seconds)
+    current_window = int(time.time() // 900)  # 900 seconds = 15 minutes
+    
+    # Create a deterministic hash from the parameters and time window
+    data = f"{project_key}|{assignee_account_id}|{current_window}"
+    hash_obj = hashlib.sha256(data.encode())
+    hash_hex = hash_obj.hexdigest()
+    
+    # Convert hex to uppercase letters only (A-Z)
+    # Take first 6 characters and map hex digits to letters
+    code = ""
+    for i in range(6):
+        hex_char = hash_hex[i]
+        # Map 0-9, a-f to A-P (16 letters, cycling through A-Z)
+        char_value = int(hex_char, 16)
+        code += chr(65 + (char_value % 26))  # 65 = 'A'
+    
+    return code
+
+
+def verify_confirmation_code(project_key: str, assignee_account_id: str, provided_code: str) -> bool:
+    """Verify a confirmation code.
+    
+    Checks against current and previous 15-minute window to account for edge cases.
+    Valid for 15 minutes from generation.
+    
+    Args:
+        project_key: JIRA project key
+        assignee_account_id: Account ID of assignee
+        provided_code: The confirmation code to verify
+    
+    Returns:
+        True if code is valid, False otherwise
+    """
+    # Check current time window
+    current_window = int(time.time() // 900)
+    
+    # Generate codes for current and previous window (to account for edge cases)
+    for window_offset in [0, -1]:
+        window = current_window + window_offset
+        
+        # Recreate the hash with the window
+        data = f"{project_key}|{assignee_account_id}|{window}"
+        hash_obj = hashlib.sha256(data.encode())
+        hash_hex = hash_obj.hexdigest()
+        
+        # Generate code the same way
+        code = ""
+        for i in range(6):
+            hex_char = hash_hex[i]
+            code += chr(65 + (int(hex_char, 16) % 26))
+        
+        if code.upper() == provided_code.upper():
+            logger.info(f"Confirmation code verified successfully")
+            return True
+    
+    logger.warning(f"Invalid or expired confirmation code provided")
+    return False
+
 
 
 async def resolve_project_key(project_identifier: str) -> str:
@@ -141,6 +218,8 @@ async def preview_jira_ticket(
 ) -> Dict[str, Any]:
     """Preview a JIRA ticket before creation with all details formatted for user confirmation.
     
+    IMPORTANT: This function generates a time-based confirmation code (valid for 15 minutes).
+    
     Parameters:
       project_key: JIRA project key (e.g., 'II') or project name (e.g., 'InsightFinder Infrastructure')
       assignee_account_id: Account ID of the assignee
@@ -148,6 +227,9 @@ async def preview_jira_ticket(
       description: Ticket description/body text
       issue_type: Issue type name (default: 'Task')
       fix_version_id: Optional fix version ID
+    
+    Returns:
+      Dictionary containing ticket preview and a confirmation code for create_jira_ticket
     """
     jira_client = get_current_jira_client()
     if not jira_client:
@@ -183,6 +265,12 @@ async def preview_jira_ticket(
             if not fix_version_info:
                 return {"status": "error", "message": f"Fix version {fix_version_id} not found for project {project_key}"}
 
+        # Generate confirmation code
+        confirmation_code = generate_confirmation_code(
+            resolved_project_key,
+            assignee_account_id
+        )
+
         # Create preview
         preview = {
             "project": {
@@ -202,6 +290,8 @@ async def preview_jira_ticket(
                 "emailAddress": assignee.get("emailAddress", "")
             },
             "fix_version": fix_version_info,
+            "confirmation_code": confirmation_code,
+            "code_validity_minutes": 15,
             "formatted_preview": f"""
 JIRA Ticket Preview
 ══════════════════════════════════════════
@@ -214,7 +304,7 @@ Assignee: {assignee['displayName']} ({assignee.get('emailAddress', '')})
 Description:
 {description}
 
-Please confirm to create this JIRA ticket.
+Please confirm by replying Yes or Confirm to create this JIRA ticket. (CONFIRMATION CODE: {confirmation_code})
             """.strip()
         }
 
@@ -234,9 +324,9 @@ async def create_jira_ticket(
     assignee_account_id: str,
     summary: str,
     description: str,
+    confirmation_code: str,
     issue_type: str = "Task",
-    fix_version_id: Optional[str] = None,
-    confirmed: bool = False
+    fix_version_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Create a JIRA ticket directly using JIRA API. 
     
@@ -244,8 +334,9 @@ async def create_jira_ticket(
     
     MANDATORY WORKFLOW:
     1. FIRST call preview_jira_ticket() with the same parameters to display the ticket preview to the user
-    2. Display the formatted preview to the user and request explicit confirmation
-    3. ONLY after user confirms, call this function with confirmed=True
+    2. Display the formatted preview and CONFIRMATION CODE to the user
+    3. Request explicit confirmation from the user
+    4. ONLY after user confirms, call this function with the confirmation_code from preview
     
     Do NOT create the ticket directly, even if the user requests it in a single prompt. 
     The preview step is mandatory and non-negotiable.
@@ -255,17 +346,41 @@ async def create_jira_ticket(
       assignee_account_id: Account ID of the assignee
       summary: Ticket title/summary
       description: Ticket description/body text
+      confirmation_code: The 6-character confirmation code from preview_jira_ticket (valid for 15 minutes)
       issue_type: Issue type name (default: 'Task')
       fix_version_id: Optional fix version ID
-      confirmed: Must be True to actually create the ticket (after preview and user confirmation)
 
     Returns:
       Dictionary containing creation status and created ticket details.
     """
-    if not confirmed:
+    # Validate confirmation code
+    if not confirmation_code or len(confirmation_code) != 6:
         return {
             "status": "error", 
-            "message": "Ticket creation requires confirmation. Please use preview_jira_ticket first to preview the ticket, then call this function with confirmed=True."
+            "message": f"Invalid confirmation code format. Expected 6-character code, got '{confirmation_code}'. Please use preview_jira_ticket first."
+        }
+    
+    try:
+        # Resolve project key from either key or name FIRST
+        # This is critical for confirmation code verification to work correctly
+        resolved_project_key = await resolve_project_key(project_key)
+    except ValueError as e:
+        return {
+            "status": "error", 
+            "message": f"Failed to resolve project: {str(e)}"
+        }
+    
+    # Verify the confirmation code using the RESOLVED project key
+    is_valid = verify_confirmation_code(
+        resolved_project_key,
+        assignee_account_id,
+        confirmation_code
+    )
+    
+    if not is_valid:
+        return {
+            "status": "error", 
+            "message": "Invalid or expired confirmation code. Please call preview_jira_ticket again to get a fresh confirmation code (valid for 15 minutes)."
         }
 
     jira_client = get_current_jira_client()
@@ -273,9 +388,6 @@ async def create_jira_ticket(
         return {"status": "error", "message": "JIRA client not available. Please ensure JIRA credentials are provided in headers."}
 
     try:
-        # Resolve project key from either key or name
-        resolved_project_key = await resolve_project_key(project_key)
-        
         # Prepare issue data
         issue_data = {
             "project": {"key": resolved_project_key},
