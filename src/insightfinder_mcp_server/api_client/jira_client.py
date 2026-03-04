@@ -4,6 +4,7 @@ JIRA API client for InsightFinder MCP Server.
 
 import logging
 from typing import Dict, Any, List, Optional
+import urllib.parse
 import httpx
 from jira import JIRA
 from jira.exceptions import JIRAError
@@ -72,32 +73,109 @@ class JiraAPIClient:
     async def get_assignable_users(self, project_key: str, query: str = "") -> List[Dict[str, Any]]:
         """Get assignable users for a specific project.
         
+        This method handles GDPR strict mode by using the REST API v3 endpoint instead of v2,
+        which doesn't require the deprecated 'username' parameter.
+        
+        Filters out app accounts, bot accounts, and service accounts to show only human users.
+        
         Args:
             project_key: JIRA project key (e.g., 'II')
             query: Optional search query to filter users
             
         Returns:
-            List of user dictionaries with keys: accountId, displayName, emailAddress
+            List of user dictionaries with keys: accountId, displayName, emailAddress (only human users)
         """
         try:
             jira = self._get_client()
-            users = jira.search_assignable_users_for_projects(query, project_key)
             
-            result = []
-            for user in users:
-                result.append({
-                    "accountId": user.accountId,
-                    "displayName": user.displayName,
-                    "emailAddress": getattr(user, 'emailAddress', ''),
-                    "active": getattr(user, 'active', True)
-                })
+            # Try to get assignable users using REST API v3 endpoint
+            # This endpoint doesn't use the deprecated 'username' parameter
+            url = f"{self.server_url}/rest/api/3/users/search?maxResults=500"
             
-            logger.info(f"Retrieved {len(result)} assignable users for project {project_key}")
-            return result
+            if query:
+                # URL encode the query parameter
+                url += f"&query={urllib.parse.quote(query)}"
             
-        except JIRAError as e:
+            headers = {
+                "Authorization": f"Bearer {self.api_token}",
+                "Accept": "application/json"
+            }
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=headers, auth=(self.username, self.api_token))
+                response.raise_for_status()
+                
+                users_data = response.json()
+                result = []
+
+                # print formatted json response for debugging
+                # import json
+                # print(json.dumps(users_data, indent=2))
+                
+                if isinstance(users_data, list):
+                    for user in users_data:
+                        # Filter out app accounts, bot accounts, and service accounts
+                        # Keep only human users (accountType == "atlassian" or check for human indicators)
+                        account_type = user.get("accountType", "").lower()
+                        display_name = user.get("displayName", "").lower()
+                        
+                        # Skip app and bot accounts
+                        skip_keywords = ["app", "bot", "jira", "slack", "trello", "sketch", "github", "statuspage", "service", "widget", "chat", "opsgenie", "reports", "spreadsheet", "outlook", "workplace"]
+                        
+                        if any(keyword in display_name for keyword in skip_keywords):
+                            continue
+                        
+                        # Skip if accountType indicates it's an app/service
+                        if account_type in ["app", "service", "bot"]:
+                            continue
+
+                        # Skip inactive users
+                        if not user.get("active", True):
+                            continue
+                        
+                        result.append({
+                            "accountId": user.get("accountId", ""),
+                            "displayName": user.get("displayName", ""),
+                            # "emailAddress": user.get("emailAddress", ""),
+                            # "active": user.get("active", True)
+                        })
+                
+                logger.info(f"Retrieved {len(result)} assignable users for project {project_key}")
+                return result
+            
+        except Exception as e:
             logger.error(f"Failed to get assignable users for project {project_key}: {e}")
-            raise
+            # Fallback: Try the old method, which may work depending on JIRA configuration
+            try:
+                jira = self._get_client()
+                # Try without the username parameter by using empty query
+                users = jira.search_assignable_users_for_projects("", project_key)
+                
+                result = []
+                for user in users:
+                    # Filter out app and bot accounts
+                    display_name = getattr(user, 'displayName', '').lower()
+                    skip_keywords = ["app", "bot", "jira", "slack", "trello", "sketch", "github", "statuspage", "service", "widget", "chat", "opsgenie", "reports", "spreadsheet", "outlook", "workplace"]
+                    
+                    if any(keyword in display_name for keyword in skip_keywords):
+                        continue
+
+                    # Skip inactive users
+                    if not getattr(user, 'active', True):
+                        continue
+
+                    result.append({
+                        "accountId": user.accountId,
+                        "displayName": user.displayName,
+                        # "emailAddress": getattr(user, 'emailAddress', ''),
+                        # "active": getattr(user, 'active', True)
+                    })
+                
+                logger.info(f"Retrieved {len(result)} assignable users for project {project_key} (fallback method)")
+                return result
+            except Exception as fallback_error:
+                logger.error(f"Fallback method also failed: {fallback_error}")
+                raise
     
     async def get_fix_versions(self, project_key: str) -> List[Dict[str, Any]]:
         """Get fix versions for a specific project.
