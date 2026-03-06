@@ -63,6 +63,71 @@ class InsightFinderAPIClient:
             logger.error(f"Error fetching root cause analysis: {str(e)}")
             raise
 
+    async def fetch_incident_llm_summary(
+        self,
+        user_name: str,
+        project_name: str,
+        instance_name: str,
+        timestamp: int,
+        pattern_id: int,
+        system_name: str,
+        type_: int = 1
+    ) -> Optional[str]:
+        """
+        Fetch the pre-built LLM-generated incident summary from the open API endpoint.
+
+        Args:
+            user_name: The incident owner's username
+            project_name: The project name from incidentLLMKey
+            instance_name: The instance name from incidentLLMKey
+            timestamp: The incident timestamp (ms) from incidentLLMKey
+            pattern_id: The pattern ID from incidentLLMKey
+            system_name: The system ID (systemKey.systemName hash)
+            type_: Always 1
+
+        Returns:
+            The summary response text string, or None if unavailable/empty
+        """
+        api_path = "/api/v1/incident-llm-summary"
+        url = f"{self.base_url}{api_path}"
+
+        params = {
+            "userName": user_name,
+            "projectName": project_name,
+            "instanceName": instance_name,
+            "timestamp": timestamp,
+            "systemName": system_name,
+            "patternId": pattern_id,
+            "type": type_
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+                if not response.text or not response.text.strip():
+                    return None
+                try:
+                    data = response.json()
+                except Exception:
+                    return None
+                response_text = data.get("summary", {}).get("response", "")
+                if not response_text:
+                    return None
+                # Extract only the Root Cause Analysis section
+                import re
+                rca_match = re.search(
+                    r'\*\*Root Cause Analysis:\*\*\s*(.*?)(?=\n\*\*|\Z)',
+                    response_text,
+                    re.DOTALL
+                )
+                if rca_match:
+                    return rca_match.group(1).strip()
+                return response_text
+        except Exception as e:
+            logger.warning(f"Error fetching incident LLM summary: {str(e)}")
+            return None
+
     async def fetch_recommendation(
         self,
         incident_llm_key: Dict[str, Any],
