@@ -619,93 +619,126 @@ async def get_incident_details(
 
         # Check if root cause analysis is available and requested
         root_cause_info = incident_data.get('rootCauseInfoKey')
-        if include_root_cause and root_cause_info and fetch_rca_chain:
-            try:
-                # print(f"[DEBUG] Fetching RCA chain for rootCauseInfoKey: {root_cause_info}", file=sys.stderr)
-                rca_data = await client.fetch_root_cause_analysis(
-                    root_cause_info_key=root_cause_info,
-                    customer_name=incident_data.get('userName', '')
-                )
-                rca_chain = rca_data.get('rcaChainList', [])
-                # Sort the RCA chain by the earliest eventTimestamp in each rcaNodeList
-                def get_min_event_timestamp(chain_item):
-                    node_list = chain_item.get('rcaNodeList', [])
-                    timestamps = [node.get('eventTimestamp', float('inf')) for node in node_list if 'eventTimestamp' in node]
-                    return min(timestamps) if timestamps else float('inf')
-                if isinstance(rca_chain, list) and rca_chain and 'rcaNodeList' in rca_chain[0]:
-                    rca_chain = sorted(rca_chain, key=get_min_event_timestamp)
+        if include_root_cause and fetch_rca_chain:
+            # Try the LLM summary API first
+            llm_summary = None
+            incident_llm_key = incident_data.get('incidentLLMKey')
+            # get timestamp from rootCauseInfoKey.incidentTimestamp if available, otherwise use incident timestamp
+            llm_root_cause_timestamp = root_cause_info.get('incidentTimestamp') if root_cause_info and 'incidentTimestamp' in root_cause_info else incident_data.get('timestamp')
+            if incident_llm_key:
+                try:
+                    project_info = await client.get_customer_name_for_project(
+                        incident_llm_key.get('projectName', '')
+                    )
+                    system_id = project_info[4] if project_info else ''
+                    if system_id:
+                        llm_summary = await client.fetch_incident_llm_summary(
+                            user_name=incident_llm_key.get('userName', ''),
+                            project_name=incident_llm_key.get('projectName', ''),
+                            instance_name=incident_llm_key.get('instanceName', ''),
+                            timestamp=llm_root_cause_timestamp,
+                            pattern_id=incident_llm_key.get('patternId', 0),
+                            system_name=system_id
+                        )
+                        # logger.debug(f"LLM summary fetch result: {str(llm_summary)}")
+                        logger.info(f"LLM summary fetch successful {llm_summary}")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch incident LLM summary: {str(e)}")
 
-                # Optionally, sort each rcaNodeList by eventTimestamp as well
-                for chain_item in rca_chain:
-                    node_list = chain_item.get('rcaNodeList', [])
-                    if not (isinstance(node_list, list) and node_list and 'eventTimestamp' in node_list[0]):
-                        continue
-                    import json
-                    unique_nodes = {}
-                    for node in node_list:
-                        # Format didPredictionTime and eventEndTimestamp if present
-                        for ts_field in ('didPredictionTime', 'eventEndTimestamp', 'eventTimestamp'):
-                            if ts_field in node:
-                                node[ts_field] = format_timestamp_in_user_timezone(node[ts_field], tz_name)
+            if llm_summary:
+                logger.info("RCA source: LLM summary API")
+                result["root_cause_chain"] = llm_summary
+                result["root_cause_available"] = True
+                result["root_cause_chain_event_count"] = 1
+            elif root_cause_info:
+                # Fallback: fetch the structured RCA chain
+                try:
+                    # print(f"[DEBUG] Fetching RCA chain for rootCauseInfoKey: {root_cause_info}", file=sys.stderr)
+                    rca_data = await client.fetch_root_cause_analysis(
+                        root_cause_info_key=root_cause_info,
+                        customer_name=incident_data.get('userName', '')
+                    )
+                    rca_chain = rca_data.get('rcaChainList', [])
+                    # Sort the RCA chain by the earliest eventTimestamp in each rcaNodeList
+                    def get_min_event_timestamp(chain_item):
+                        node_list = chain_item.get('rcaNodeList', [])
+                        timestamps = [node.get('eventTimestamp', float('inf')) for node in node_list if 'eventTimestamp' in node]
+                        return min(timestamps) if timestamps else float('inf')
+                    if isinstance(rca_chain, list) and rca_chain and 'rcaNodeList' in rca_chain[0]:
+                        rca_chain = sorted(rca_chain, key=get_min_event_timestamp)
 
-                        # Replace sourceProjectName with sourceProjectDisplayName and remove the display name
-                        if 'sourceProjectDisplayName' in node:
-                            node['sourceProjectName'] = node['sourceProjectDisplayName']
-                            node.pop('sourceProjectDisplayName', None)
+                    # Optionally, sort each rcaNodeList by eventTimestamp as well
+                    for chain_item in rca_chain:
+                        node_list = chain_item.get('rcaNodeList', [])
+                        if not (isinstance(node_list, list) and node_list and 'eventTimestamp' in node_list[0]):
+                            continue
+                        import json
+                        unique_nodes = {}
+                        for node in node_list:
+                            # Format didPredictionTime and eventEndTimestamp if present
+                            for ts_field in ('didPredictionTime', 'eventEndTimestamp', 'eventTimestamp'):
+                                if ts_field in node:
+                                    node[ts_field] = format_timestamp_in_user_timezone(node[ts_field], tz_name)
 
-                        # Parse and extract key fields from sourceDetail if present
-                        nid = node.get('nid')
-                        pattern_name = node.get('patternName')
-                        if 'sourceDetail' in node and node['sourceDetail']:
-                            import json
-                            try:
-                                detail_obj = json.loads(node['sourceDetail'])
-                                if detail_obj:
-                                    if detail_obj.get('nid'):
-                                        nid = detail_obj['nid']
-                                        node['nid'] = nid
-                                    if detail_obj.get('patternName'):
-                                        pattern_name = detail_obj['patternName']
-                                        node['patternName'] = pattern_name
-                                    if detail_obj.get('content'):
-                                        content_str = detail_obj['content']
-                                        import json as _json
-                                        try:
-                                            content = _json.loads(content_str) if isinstance(content_str, str) else content_str
-                                        except Exception:
-                                            content = content_str
-                                        # Extract common fields if they exist
-                                        common_fields = ["_id", "cdn", "id", "status_code", "status_text", "url", "name", "product", "location", "time"]
-                                        extracted_fields = {field: content[field] for field in common_fields if isinstance(content, dict) and field in content}
-                                        if extracted_fields:
-                                            node["key_fields"] = extracted_fields
-                                node.pop('sourceDetail', None)  # Remove the original sourceDetail to reduce clutter
-                            except Exception:
-                                pass
-                        # Build deduplication key
-                        key = (nid, pattern_name, node.get('sourceInstanceName'), node.get('sourceProjectName'))
-                        if key not in unique_nodes:
-                            # Copy node to avoid mutating original
-                            node_copy = dict(node)
-                            unique_nodes[key] = node_copy
-                    # Remove nid from each node to reduce clutter
-                    deduped_nodes = list(unique_nodes.values())
-                    # for n in deduped_nodes:
-                    #     n.pop('nid', None)
-                    chain_item['rcaNodeList'] = sorted(deduped_nodes, key=lambda n: n.get('eventTimestamp', 0))
+                            # Replace sourceProjectName with sourceProjectDisplayName and remove the display name
+                            if 'sourceProjectDisplayName' in node:
+                                node['sourceProjectName'] = node['sourceProjectDisplayName']
+                                node.pop('sourceProjectDisplayName', None)
+
+                            # Parse and extract key fields from sourceDetail if present
+                            nid = node.get('nid')
+                            pattern_name = node.get('patternName')
+                            if 'sourceDetail' in node and node['sourceDetail']:
+                                import json
+                                try:
+                                    detail_obj = json.loads(node['sourceDetail'])
+                                    if detail_obj:
+                                        if detail_obj.get('nid'):
+                                            nid = detail_obj['nid']
+                                            node['nid'] = nid
+                                        if detail_obj.get('patternName'):
+                                            pattern_name = detail_obj['patternName']
+                                            node['patternName'] = pattern_name
+                                        if detail_obj.get('content'):
+                                            content_str = detail_obj['content']
+                                            import json as _json
+                                            try:
+                                                content = _json.loads(content_str) if isinstance(content_str, str) else content_str
+                                            except Exception:
+                                                content = content_str
+                                            # Extract common fields if they exist
+                                            common_fields = ["_id", "cdn", "id", "status_code", "status_text", "url", "name", "product", "location", "time"]
+                                            extracted_fields = {field: content[field] for field in common_fields if isinstance(content, dict) and field in content}
+                                            if extracted_fields:
+                                                node["key_fields"] = extracted_fields
+                                    node.pop('sourceDetail', None)  # Remove the original sourceDetail to reduce clutter
+                                except Exception:
+                                    pass
+                            # Build deduplication key
+                            key = (nid, pattern_name, node.get('sourceInstanceName'), node.get('sourceProjectName'))
+                            if key not in unique_nodes:
+                                # Copy node to avoid mutating original
+                                node_copy = dict(node)
+                                unique_nodes[key] = node_copy
+                        # Remove nid from each node to reduce clutter
+                        deduped_nodes = list(unique_nodes.values())
+                        # for n in deduped_nodes:
+                        #     n.pop('nid', None)
+                        chain_item['rcaNodeList'] = sorted(deduped_nodes, key=lambda n: n.get('eventTimestamp', 0))
 
 
-                merged_nodes = merge_rca_chain(rca_chain)
-                result["root_cause_chain"] = merged_nodes
-                result["root_cause_chain_event_count"] = len(merged_nodes)  
-                result['root_cause_available'] = True
-                # include the count of events in the chain
-                # result['root_cause_chain_event_count'] = sum(len(item.get('rcaNodeList', [])) for item in rca_chain)
-                # result['root_cause_chain'] = rca_chain
-                # print(f"[DEBUG] RCA chain fetch result: {str(result['root_cause_chain'])}", file=sys.stderr)
-                # print(f"[DEBUG] RCA chain event count: {result['root_cause_chain_event_count']}", file=sys.stderr)
-            except Exception as e:
-                logger.warning(f"Failed to fetch root cause analysis: {str(e)}")
+                    merged_nodes = merge_rca_chain(rca_chain)
+                    logger.info("RCA source: fallback structured chain (%d events)", len(merged_nodes))
+                    result["root_cause_chain"] = merged_nodes
+                    result["root_cause_chain_event_count"] = len(merged_nodes)
+                    result['root_cause_available'] = True
+                    # include the count of events in the chain
+                    # result['root_cause_chain_event_count'] = sum(len(item.get('rcaNodeList', [])) for item in rca_chain)
+                    # result['root_cause_chain'] = rca_chain
+                    # print(f"[DEBUG] RCA chain fetch result: {str(result['root_cause_chain'])}", file=sys.stderr)
+                    # print(f"[DEBUG] RCA chain event count: {result['root_cause_chain_event_count']}", file=sys.stderr)
+                except Exception as e:
+                    logger.warning(f"Failed to fetch root cause analysis: {str(e)}")
         
         # Check if root cause info is available in the incident data
         if include_root_cause and incident_data.get('rootCauseResultInfo', {}).get('hasPrecedingEvent', False):
