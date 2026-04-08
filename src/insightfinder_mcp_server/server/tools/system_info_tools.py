@@ -12,11 +12,19 @@ These tools help users discover and navigate the InsightFinder system hierarchy.
 
 import json
 import logging
-from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
+from typing import Dict, Any, List, Optional, Union
 from difflib import SequenceMatcher
+
+import httpx
 
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
+from .get_time import (
+    get_time_range_ms,
+    resolve_system_timezone,
+    parse_time_parameters,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -995,3 +1003,109 @@ async def list_available_instances_for_project(
             "status": "error",
             "message": f"Failed to fetch instances for project: {str(e)}"
         }
+
+
+@mcp_server.tool()
+async def showallsystemssummary(
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+) -> str:
+    """
+    Returns a pre-composed LLM markdown summary of all systems' incidents, anomalies, and
+    change events for the specified time period.
+
+    **Use this tool when the user asks for a summary such as:**
+    - "Give me a summary for today / yesterday / this week / last month"
+    - "What happened on 2026-04-08?"
+    - "Show me a summary for April" / "Summarise last week"
+    - "What issues were there between [date] and [date]?"
+    - Any request for an overall summary over a time period
+
+    ⚠️ IMPORTANT: The result of this tool is already LLM-composed markdown. Return it
+    DIRECTLY to the user WITHOUT any rewriting, reformatting, or summarising. Do not
+    paraphrase or add extra commentary — the response is ready to display as-is.
+
+    ⚠️ RELATIVE DATE KEYWORDS SUPPORTED:
+    - "today": Today's date (full day)  [DEFAULT if omitted]
+    - "yesterday": Yesterday's date (full day)
+    - "thisweek" / "this_week": Monday to today
+    - "lastweek" / "last_week": Last Monday to Last Sunday
+    - "thismonth" / "this_month": 1st of current month to today
+    - "lastmonth" / "last_month": 1st of last month to last day of last month
+    - Absolute dates: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds
+
+    Args:
+        start_time: Start of the time window (default: today). Accepts relative keywords or absolute dates.
+        end_time: End of the time window (default: today). Accepts relative keywords or absolute dates.
+
+    Returns:
+        A ready-to-display markdown string with a one-line issue summary followed by
+        a per-system breakdown table and detailed incident/anomaly listings.
+    """
+    try:
+        api_client = get_current_api_client()
+        if not api_client:
+            return "Error: No API client configured. Please configure your InsightFinder credentials."
+
+        # Resolve owner timezone (uses first available system)
+        try:
+            tz_name, _ = await resolve_system_timezone("")
+        except Exception:
+            tz_name = "UTC"
+
+        # Parse / default time range
+        try:
+            start_ms, end_ms = parse_time_parameters(start_time, end_time, tz_name)
+        except ValueError as e:
+            return f"Error: {str(e)}"
+
+        if start_ms is None or end_ms is None:
+            start_ms, end_ms = get_time_range_ms(tz_name, 1)
+
+        # Build a human-readable timeframe label
+        try:
+            start_dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            end_dt = datetime.fromtimestamp(end_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            if start_dt == end_dt:
+                timeframe_label = f"on {start_dt}"
+            else:
+                timeframe_label = f"from {start_dt} to {end_dt}"
+        except Exception:
+            timeframe_label = "for the requested period"
+
+        url = f"{api_client.base_url}/api/v1/mcp-summary"
+        params = {
+            "startTime": start_ms,
+            "endTime": end_ms,
+        }
+        headers = {
+            "X-User-Name": api_client.user_name,
+            "X-License-Key": api_client.license_key,
+        }
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(url, params=params, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+        total_incidents = data.get("totalIncidents", 0)
+        total_metric = data.get("totalMetricAnomalies", 0)
+        total_log = data.get("totalLogAnomalies", 0)
+        total_change = data.get("totalChangeEvents", 0)
+        total_issues = total_incidents + total_metric + total_log + total_change
+        summary_markdown = data.get("summaryMarkdown", "")
+
+        header_line = (
+            f"I have identified **{total_issues}** issues {timeframe_label}. "
+            f"{total_incidents} Incidents, {total_metric} Metric Anomalies, "
+            f"{total_log} Log Anomalies, {total_change} Change Events"
+        )
+
+        return f"{header_line}\n\n{summary_markdown}"
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error fetching all-systems summary: {e}", exc_info=True)
+        return f"Error: API request failed with status {e.response.status_code}: {e.response.text}"
+    except Exception as e:
+        logger.error(f"Error fetching all-systems summary: {str(e)}", exc_info=True)
+        return f"Error: Failed to fetch all-systems summary: {str(e)}"
