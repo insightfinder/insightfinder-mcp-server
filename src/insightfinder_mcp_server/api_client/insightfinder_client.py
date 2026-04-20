@@ -445,6 +445,82 @@ class InsightFinderAPIClient:
                 logger.error(f"Unexpected error: {str(e)}")
                 return {"status": "error", "message": "Internal error"}
 
+    async def resolve_system_key(self, system_name: str) -> Optional[str]:
+        """
+        Resolve a human-readable system display name to its internal system key hash.
+
+        Searches both owned and shared systems. Returns the hash string used as
+        systemKey/systemName in the addNewProject API, or None if not found.
+        """
+        url = f"{self.base_url}/api/external/v1/systemframework"
+        params = {"customerName": self.user_name, "needDetail": "false", "tzOffset": "-18000000"}
+        headers = {"X-User-Name": self.user_name, "X-API-Key": self.license_key}
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, params=params, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+        except Exception as e:
+            logger.error(f"resolve_system_key fetch error: {e}")
+            return None
+
+        def _search(arr: list) -> Optional[str]:
+            for system_json in arr:
+                try:
+                    system_data = json.loads(system_json) if isinstance(system_json, str) else system_json
+                    display_name = system_data.get("systemDisplayName", "")
+                    systemKey_raw = system_data.get("systemKey", "{}")
+                    if isinstance(systemKey_raw, str):
+                        systemKey_data = json.loads(systemKey_raw)
+                    else:
+                        systemKey_data = systemKey_raw
+                    key_hash = systemKey_data.get("systemName", "")
+                    if (display_name.lower() == system_name.lower()
+                            or key_hash.lower() == system_name.lower()):
+                        return key_hash
+                except Exception:
+                    continue
+            return None
+
+        result = _search(data.get("ownSystemArr", []))
+        if result:
+            return result
+        return _search(data.get("shareSystemArr", []))
+
+    async def add_project_to_system(
+        self,
+        project_name: str,
+        customer_name: str,
+        system_key: str,
+    ) -> Dict[str, Any]:
+        """
+        Move/assign a project to a system after it has been created via addproject.
+
+        Must be POST form-data — GET silently no-ops on this endpoint.
+        Both systemKey and systemName params are the same internal hash.
+        """
+        url = f"{self.base_url}/api/external/v1/systemframework"
+        body = {
+            "operation": "addNewProject",
+            "projectName": project_name,
+            "customerName": customer_name,
+            "systemKey": system_key,
+            "systemName": system_key,
+        }
+        headers = {"X-User-Name": self.user_name, "X-API-Key": self.license_key}
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, data=body, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                return {"success": data.get("success", True), "data": data}
+        except httpx.HTTPStatusError as e:
+            logger.error(f"add_project_to_system HTTP error {e.response.status_code}")
+            return {"success": False, "message": f"HTTP error {e.response.status_code}"}
+        except Exception as e:
+            logger.error(f"add_project_to_system error: {e}")
+            return {"success": False, "message": str(e)}
+
     async def get_system_framework(self) -> Dict[str, Any]:
         """
         Get the complete system framework data including all owned and shared systems.
@@ -835,6 +911,235 @@ class InsightFinderAPIClient:
         except Exception as e:
             logger.error(f"Unexpected error fetching metric metadata: {str(e)}")
             return {"status": "error", "message": f"Internal error: {str(e)}"}
+
+    async def verify_cloudwatch_credentials(
+        self,
+        access_key: str,
+        secret_key: str,
+        region: str,
+        instance_type: str,
+        data_type: str,
+        project_creation_type: str,
+    ) -> Dict[str, Any]:
+        url = f"{self.base_url}/api/external/v1/keyverify"
+        params = {
+            "accessKey": access_key,
+            "secretKey": secret_key,
+            "region": region,
+            "instanceType": instance_type,
+            "projectCreationType": project_creation_type,
+            "dataType": data_type,
+        }
+        headers = {"X-User-Name": self.user_name, "X-API-Key": self.license_key}
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.get(url, params=params, headers=headers)
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"keyverify HTTP error {e.response.status_code}")
+            return {"success": False, "message": f"HTTP error {e.response.status_code}"}
+        except Exception as e:
+            logger.error(f"keyverify error: {e}")
+            return {"success": False, "message": str(e)}
+
+    async def create_cloudwatch_project(
+        self,
+        access_key: str,
+        secret_key: str,
+        region: str,
+        project_name: str,
+        data_type: str,
+        project_creation_type: str,
+        instance_type: str,
+        new_instances: list,
+        metrics: list,
+        log_groups: list,
+        system_name: str,
+        sampling_interval: int,
+        collection_interval: int,
+        start_time_ms: Optional[int],
+        end_time_ms: Optional[int],
+    ) -> Dict[str, Any]:
+        url = f"{self.base_url}/api/external/v1/addproject"
+        body: Dict[str, str] = {
+            "region": region,
+            "newInstances": json.dumps(new_instances),
+            "metrics": json.dumps(metrics),
+            "kpiMetrics": "[]",
+            "autoScalingGroup": "[]",
+            "extraNamespace": "[]",
+            "processPauseFlag": "true" if data_type in ("Log", "Alert") else "false",
+            "logGroups": json.dumps(log_groups),
+            "dataSource": "AWS CloudWatch",
+            "operation": "register",
+            "projectName": project_name,
+            "dataType": data_type,
+            "projectCreationType": project_creation_type,
+            "instanceType": instance_type,
+            "email": "",
+            "accessKey": access_key,
+            "secretKey": secret_key,
+            "hasAgentData": "false",
+            "samplingInterval": str(sampling_interval),
+            "samplingIntervalInSeconds": str(sampling_interval),
+            "collectionInterval": str(collection_interval),
+            "collectionIntervalInSeconds": str(sampling_interval),
+            "systemName": system_name,
+        }
+        if start_time_ms is not None:
+            body["startTime"] = str(start_time_ms)
+        if end_time_ms is not None:
+            body["endTime"] = str(end_time_ms)
+
+        headers = {"X-User-Name": self.user_name, "X-API-Key": self.license_key}
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(url, data=body, headers=headers)
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"addproject HTTP error {e.response.status_code}")
+            return {"success": False, "message": f"HTTP error {e.response.status_code}"}
+        except Exception as e:
+            logger.error(f"addproject error: {e}")
+            return {"success": False, "message": str(e)}
+
+    async def verify_datadog_credentials(
+        self,
+        app_key: str,
+        api_key: str,
+        site: str,
+        data_type: str,
+        project_creation_type: str,
+    ) -> Dict[str, Any]:
+        url = f"{self.base_url}/api/external/v1/keyverify"
+        params = {
+            "appkey": app_key,
+            "apikey": api_key,
+            "site": site,
+            "projectCreationType": project_creation_type,
+            "dataType": data_type,
+        }
+        headers = {"X-User-Name": self.user_name, "X-API-Key": self.license_key}
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.get(url, params=params, headers=headers)
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Datadog keyverify HTTP error {e.response.status_code}")
+            return {"success": False, "message": f"HTTP error {e.response.status_code}"}
+        except Exception as e:
+            logger.error(f"Datadog keyverify error: {e}")
+            return {"success": False, "message": str(e)}
+
+    async def list_datadog_metrics(
+        self,
+        api_key: str,
+        app_key: str,
+        site: str,
+        page: int,
+        page_size: int,
+        keyword_search: str,
+        tz_offset: int,
+    ) -> Dict[str, Any]:
+        url = f"{self.base_url}/api/external/v1/datadogmetriclist"
+        params = {
+            "apiKey": api_key,
+            "appKey": app_key,
+            "site": site,
+            "page": page,
+            "pageSize": page_size,
+            "keywordSearch": keyword_search,
+            "tzOffset": tz_offset,
+        }
+        headers = {"X-User-Name": self.user_name, "X-API-Key": self.license_key}
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.get(url, params=params, headers=headers)
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Datadog metric list HTTP error {e.response.status_code}")
+            return {"success": False, "message": f"HTTP error {e.response.status_code}"}
+        except Exception as e:
+            logger.error(f"Datadog metric list error: {e}")
+            return {"success": False, "message": str(e)}
+
+    async def create_datadog_project(
+        self,
+        app_key: str,
+        api_key: str,
+        site: str,
+        project_name: str,
+        data_type: str,
+        project_creation_type: str,
+        system_name: str,
+        sampling_interval: int,
+        start_time_ms: Optional[int],
+        end_time_ms: Optional[int],
+        # Metric-specific
+        component_name: str = "",
+        tags_expression: str = "",
+        selected_metrics: Optional[list] = None,
+        # Log-specific
+        selected_fields: Optional[list] = None,
+        component_fields: Optional[list] = None,
+        instance_key: str = "",
+        additional_query: str = "",
+        additional_filter: Optional[list] = None,
+        use_host_name: bool = False,
+    ) -> Dict[str, Any]:
+        url = f"{self.base_url}/api/external/v1/addproject"
+        body: Dict[str, str] = {
+            "site": site,
+            "dataSource": "DataDog",
+            "projectName": project_name,
+            "dataType": data_type,
+            "projectCreationType": project_creation_type,
+            "appkey": app_key,
+            "apikey": api_key,
+            "operation": "register",
+            "kpiMetrics": "[]",
+            "metrics": json.dumps(selected_metrics or []),
+            "samplingInterval": str(sampling_interval),
+            "samplingIntervalInSeconds": str(sampling_interval),
+            "systemName": system_name,
+            "useHostName": str(use_host_name).lower(),
+        }
+        if start_time_ms is not None:
+            body["startTime"] = str(start_time_ms)
+        if end_time_ms is not None:
+            body["endTime"] = str(end_time_ms)
+
+        if data_type.lower() == "metric":
+            body["componentName"] = component_name
+            body["tagsExp"] = tags_expression
+            body["fields"] = "[]"
+            body["instanceKey"] = ""
+            body["processPauseFlag"] = ""
+            body["additionalFilter"] = "[]"
+        else:
+            body["fields"] = json.dumps(selected_fields or [])
+            body["componentFields"] = json.dumps(component_fields or [])
+            body["instanceKey"] = instance_key
+            body["processPauseFlag"] = "true"
+            body["additionalQuery"] = additional_query
+            body["additionalFilter"] = json.dumps(additional_filter or [])
+
+        headers = {"X-User-Name": self.user_name, "X-API-Key": self.license_key}
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(url, data=body, headers=headers)
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Datadog addproject HTTP error {e.response.status_code}")
+            return {"success": False, "message": f"HTTP error {e.response.status_code}"}
+        except Exception as e:
+            logger.error(f"Datadog addproject error: {e}")
+            return {"success": False, "message": str(e)}
 
     async def create_jira_ticket(
         self,
