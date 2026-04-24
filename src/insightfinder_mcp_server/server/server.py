@@ -13,7 +13,7 @@ mcp_server = CustomFastMCP(
 )
 
 # Import tool definitions to ensure they are registered with the server instance
-from .tools import incident_tools, log_anomaly_tools, metric_anomaly_tools, deployment_tools, trace_tools, get_time, jira_tools
+from .tools import incident_tools, log_anomaly_tools, metric_anomaly_tools, deployment_tools, trace_tools, get_time, jira_tools, cloudwatch_tools, datadog_tools
 
 # Import resources
 from .resources import time_tool_resources
