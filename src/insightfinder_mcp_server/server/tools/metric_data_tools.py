@@ -375,7 +375,17 @@ async def get_metric_data(
         real_instance_name = display_to_real_map.get(instance_name, instance_name)
         encoded_instance_name = quote(real_instance_name, safe='')
         encoded_metrics = quote(','.join(metric_list), safe='')
-        
+
+        # Resolve display name: use instance_name if it's a display name key, otherwise reverse-lookup
+        if instance_name in display_to_real_map:
+            instance_display_name = instance_name
+        else:
+            instance_display_name = next(
+                (k for k, v in display_to_real_map.items() if v == real_instance_name),
+                real_instance_name
+            )
+        encoded_instance_display_name = quote(instance_display_name, safe='')
+
         # When the logged-in username matches the customer name, the UI expects projectName without the @customer suffix.
         # Otherwise include the customer (projectName=project@customer)
         if encoded_username == encoded_customer_name:
@@ -388,7 +398,7 @@ async def get_metric_data(
             f"&customerName={encoded_customer_name}&{project_name_param}"
             f"&startTimestamp={start_time_ms}&endTimestamp={end_time_ms}&justSelectMetric={encoded_metrics}"
             f"&sessionMetric=&justInstanceList={encoded_instance_name}&withBaseline=true&incidentInfo=&sourceInfo=&metricAnomalyMap="
-            f"&projectDisplayName={encoded_display_project_name}"
+            f"&projectDisplayName={encoded_display_project_name}&justInstanceDisplayList={encoded_instance_display_name}"
         )
 
         return {
