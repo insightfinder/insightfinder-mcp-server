@@ -274,10 +274,11 @@ async def get_metric_data(
                 "message": f"Project '{project_name}' not found. Please verify the project name or use list_all_systems_and_projects to see available projects."
             }
         
-        customer_name, actual_project_name, display_project_name, instance_list, system_id = project_info
-        
-        # Validate instance name if we have the instance list
-        if instance_list and instance_name not in instance_list:
+        customer_name, actual_project_name, display_project_name, instance_list, system_id, display_to_real_map = project_info
+
+        # Validate instance name if we have the instance list (accepts display name or real name)
+        real_names_set = set(display_to_real_map.values())
+        if instance_list and instance_name not in instance_list and instance_name not in real_names_set:
             return {
                 "status": "error",
                 "message": f"Invalid instance_name '{instance_name}'. This instance is not available in project '{actual_project_name}'.",
@@ -371,7 +372,8 @@ async def get_metric_data(
         encoded_username = quote(api_client.user_name, safe='')
         encoded_project_name = quote(actual_project_name, safe='')
         encoded_display_project_name = quote(display_project_name, safe='')
-        encoded_instance_name = quote(instance_name, safe='')
+        real_instance_name = display_to_real_map.get(instance_name, instance_name)
+        encoded_instance_name = quote(real_instance_name, safe='')
         encoded_metrics = quote(','.join(metric_list), safe='')
         
         # When the logged-in username matches the customer name, the UI expects projectName without the @customer suffix.
@@ -623,19 +625,20 @@ async def validate_instance_and_metrics(
                     "message": f"Project '{project_name}' not found. Please verify the project name or use list_all_systems_and_projects to see available projects."
                 }
             
-            customer_name, actual_project_name, display_project_name, available_instances, system_id = project_info
+            customer_name, actual_project_name, display_project_name, available_instances, system_id, display_to_real_map = project_info
             result["projectName"] = actual_project_name
-            
+
             logger.info(f"Available instances for project: {available_instances}")
             logger.info(f"Looking for instance: '{instance_name}' (type: {type(instance_name).__name__})")
             logger.info(f"Instance in list check: {instance_name in available_instances}")
-            
+
             instance_validation: Dict[str, Any] = {
                 "instanceName": instance_name
             }
-            
-            # Check if the instance exists
-            if instance_name not in available_instances:
+
+            # Check if the instance exists (accepts display name or real name)
+            real_names_set = set(display_to_real_map.values())
+            if instance_name not in available_instances and instance_name not in real_names_set:
                 instance_validation["valid"] = False
                 instance_validation["availableInstances"] = available_instances[:50]  # Show first 50
                 instance_validation["totalAvailableInstances"] = len(available_instances)
@@ -664,7 +667,7 @@ async def validate_instance_and_metrics(
                         "status": "error",
                         "message": f"Project '{project_name}' not found. Please verify the project name or use list_all_systems_and_projects to see available projects."
                     }
-                customer_name, actual_project_name, display_project_name, available_instances, system_id = project_info
+                _, actual_project_name, _, _, _, _ = project_info
                 result["projectName"] = actual_project_name
             else:
                 actual_project_name = result["projectName"]
