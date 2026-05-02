@@ -573,10 +573,67 @@ class InsightFinderAPIClient:
             logger.error(f"Unexpected error fetching system framework: {str(e)}")
             return {"status": "error", "message": f"Internal error: {str(e)}"}
 
+    async def fetch_instance_display_names(
+        self,
+        project_name: str,
+        customer_name: str
+    ) -> tuple[Dict[str, str], Dict[str, str]]:
+        """
+        Fetch instance display names for a project.
+
+        Returns:
+            Tuple of (display_to_real, real_to_display) where:
+            - display_to_real: maps display name -> first real instance name in its instanceSet
+            - real_to_display: maps each real instance name -> its display name
+        """
+        api_path = "/api/external/v1/instance-display-name"
+        url = f"{self.base_url}{api_path}"
+
+        request_list = json.dumps([{"projectName": project_name, "customerName": customer_name}])
+        params = {
+            "instanceDisplayNameRequestList": request_list,
+            "tzOffset": "-14400000"
+        }
+        headers = {
+            "X-User-Name": self.user_name,
+            "X-API-Key": self.license_key
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(url, params=params, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+
+            display_to_real: Dict[str, str] = {}
+            real_to_display: Dict[str, str] = {}
+
+            for entry in data:
+                if not isinstance(entry, list) or len(entry) < 2:
+                    continue
+                display_name_entries = entry[1]
+                if not isinstance(display_name_entries, list):
+                    continue
+                for item in display_name_entries:
+                    display_name = item.get("instanceDisplayName", "")
+                    instance_set = item.get("instanceSet", [])
+                    if not display_name or not instance_set:
+                        continue
+                    if display_name not in display_to_real:
+                        display_to_real[display_name] = instance_set[0]
+                    for real_name in instance_set:
+                        real_to_display[real_name] = display_name
+
+            return display_to_real, real_to_display
+
+        except Exception as e:
+            logger.warning(f"Could not fetch instance display names for '{project_name}': {e}")
+            return {}, {}
+
     async def get_customer_name_for_project(
         self,
         project_name: str
-    ) -> Optional[tuple[str, str, str, List[str], str]]:
+    ) -> Optional[tuple[str, str, str, List[str], str, Dict[str, str]]]:
         """
         Get the customer/user name, actual project name, and instance list for a specific project by querying the system framework.
         
@@ -646,12 +703,14 @@ class InsightFinderAPIClient:
                             proj_display_name = project.get("projectDisplayName", "")
                             instance_list = project.get("instanceList", [])
                             
-                            if (proj_name.lower() == project_name.lower() or 
+                            if (proj_name.lower() == project_name.lower() or
                                 proj_display_name.lower() == project_name.lower()):
-                                customer_name = project.get("userName")
+                                customer_name: str = str(project.get("userName", ""))
                                 actual_project_name = proj_name  # Always use the actual projectName, not display name
+                                display_to_real, real_to_display = await self.fetch_instance_display_names(actual_project_name, customer_name)
+                                display_instance_list: List[str] = [real_to_display.get(str(inst), str(inst)) for inst in instance_list if inst is not None]
                                 logger.info(f"Found project '{project_name}' (actual: '{actual_project_name}') owned by customer '{customer_name}' with {len(instance_list)} instances")
-                                return (customer_name, actual_project_name, proj_display_name, instance_list, system_id)
+                                return (customer_name, actual_project_name, proj_display_name, display_instance_list, system_id, display_to_real)
                     except (json.JSONDecodeError, KeyError) as e:
                         logger.warning(f"Error parsing owned system data: {e}")
                         continue
@@ -678,12 +737,14 @@ class InsightFinderAPIClient:
                             proj_display_name = project.get("projectDisplayName", "")
                             instance_list = project.get("instanceList", [])
                             
-                            if (proj_name.lower() == project_name.lower() or 
+                            if (proj_name.lower() == project_name.lower() or
                                 proj_display_name.lower() == project_name.lower()):
-                                customer_name = project.get("userName")
+                                customer_name = str(project.get("userName", ""))
                                 actual_project_name = proj_name  # Always use the actual projectName, not display name
+                                display_to_real, real_to_display = await self.fetch_instance_display_names(actual_project_name, customer_name)
+                                display_instance_list = [real_to_display.get(str(inst), str(inst)) for inst in instance_list if inst is not None]
                                 logger.info(f"Found project '{project_name}' (actual: '{actual_project_name}') shared from customer '{customer_name}' with {len(instance_list)} instances")
-                                return (customer_name, actual_project_name, proj_display_name, instance_list, system_id)
+                                return (customer_name, actual_project_name, proj_display_name, display_instance_list, system_id, display_to_real)
                     except (json.JSONDecodeError, KeyError) as e:
                         logger.warning(f"Error parsing shared system data: {e}")
                         continue
@@ -732,22 +793,26 @@ class InsightFinderAPIClient:
         # Get the correct customer name and actual project name for this project
         project_info = await self.get_customer_name_for_project(project_name)
         if project_info:
-            customer_name, actual_project_name, display_project_name, instance_list, system_id = project_info
+            customer_name, actual_project_name, display_project_name, instance_list, system_id, display_to_real_map = project_info
             # Use the actual project name returned from the API (not the display name)
             project_name = actual_project_name
         else:
             logger.warning(f"Could not find owner for project '{project_name}', falling back to self.user_name")
             customer_name = self.user_name
             instance_list = []
+            display_to_real_map = {}
             # Keep the provided project_name as fallback
-        
+
+        # Resolve display name -> real instance name for the API call
+        real_instance_name = display_to_real_map.get(instance_name, instance_name)
+
         # Format metric list as JSON array string for URL parameter
         metric_list_json = json.dumps(metric_list)
-        
+
         params = {
             "customerName": customer_name,
             "projectName": project_name,
-            "instanceName": instance_name,
+            "instanceName": real_instance_name,
             "metricList": metric_list_json,
             "startTime": start_time_ms,
             "endTime": end_time_ms
@@ -771,8 +836,9 @@ class InsightFinderAPIClient:
         if not metric_list or len(metric_list) == 0:
             return {"status": "error", "message": "metric_list must contain at least one metric"}
         
-        # Validate instance name if we have the instance list
-        if instance_list and instance_name not in instance_list:
+        # Validate instance name if we have the instance list (accepts display name or real name)
+        real_names_set = set(display_to_real_map.values())
+        if instance_list and instance_name not in instance_list and instance_name not in real_names_set:
             return {
                 "status": "error",
                 "message": f"Invalid instance_name '{instance_name}'. This instance is not available in project '{project_name}'.",
@@ -852,13 +918,12 @@ class InsightFinderAPIClient:
         # Get the correct customer name and actual project name for this project
         project_info = await self.get_customer_name_for_project(project_name)
         if project_info:
-            customer_name, actual_project_name, display_project_name, instance_list, system_id = project_info
+            customer_name, actual_project_name, _, _, _, _ = project_info
             # Use the actual project name returned from the API (not the display name)
             project_name = actual_project_name
         else:
             logger.warning(f"Could not find owner for project '{project_name}', falling back to self.user_name")
             customer_name = self.user_name
-            instance_list = []
             # Keep the provided project_name as fallback
         
         params = {
