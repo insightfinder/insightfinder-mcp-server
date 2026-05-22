@@ -52,10 +52,12 @@ async def get_metric_anomalies_overview(
 ) -> Dict[str, Any]:
     """
     Layer 0: Ultra-compact overview of metric anomalies.
-    
+
     Provides the most condensed view possible - just essential counts and high-level patterns.
     Perfect for initial assessment and determining if deeper investigation is needed.
-    
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 20", "March 5") without a year, always default to year 2026.
+
     ⚠️ NOTE FOR LLMs: If displaying individual anomalies from this data, always include project names.
     Each anomaly contains projectName and projectDisplayName fields.
     
@@ -224,6 +226,8 @@ async def get_metric_anomalies_list(
     """
     Enhanced metric anomaly list with comprehensive information.
     This is the main tool for getting metric anomaly details - combines basic info with detailed data.
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 20", "March 5") without a year, always default to year 2026.
 
     ⚠️ CRITICAL FOR LLMs/AI ASSISTANTS: When displaying metric anomalies to users, you MUST include
     the project_name field for EVERY SINGLE anomaly in your output. Do not omit this field because project name and instance information are crucial for understanding the context of each anomaly.
@@ -445,10 +449,12 @@ async def get_metric_anomalies_statistics(
 ) -> Dict[str, Any]:
     """
     Layer 5: Comprehensive statistics for metric anomalies across a time period.
-    
+
     Provides detailed statistical analysis, trends, and insights across all metric anomalies
     in the time range. Use this for understanding patterns, system health, and to compare
     anomalies between different time periods.
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 20", "March 5") without a year, always default to year 2026.
 
     ⚠️ RELATIVE DATE KEYWORDS SUPPORTED:
     You can use simple keywords instead of explicit dates:
@@ -697,7 +703,9 @@ async def fetch_metric_anomalies(
     """
     Fetches metric anomaly timeline data from InsightFinder for a specific system within a given time range.
     Use this tool when a user asks for metric anomalies, performance issues, or infrastructure monitoring data.
-    
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 20", "March 5") without a year, always default to year 2026.
+
     IMPORTANT: Each returned anomaly includes projectName and projectDisplayName fields which identify 
     the project the anomaly belongs to. These fields are CRITICAL for distinguishing anomalies when 
     a system contains multiple projects.
@@ -786,7 +794,9 @@ async def get_project_metric_anomalies(
     """
     Fetches metric anomalies specifically for a given project within a system.
     Use this tool when the user specifies both a system name and project name.
-    
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 20", "March 5") without a year, always default to year 2026.
+
     IMPORTANT: Each anomaly returned MUST include the project_name field. This is essential
     for identifying which project the anomaly belongs to.
     
