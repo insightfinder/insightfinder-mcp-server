@@ -1,8 +1,10 @@
 """
 ARI configuration tools for the InsightFinder MCP server.
 
-This module provides tools for setting up ARI (AI/LLM) configurations:
-- setupARIConfiguration: Configure MCP model settings for ARI
+Tools:
+- getARIModelInfo: Fetch supported model types and/or versions
+- setupARIConfiguration: Create or update ARI (LLM) model settings
+- deleteARIConfiguration: Delete an ARI model configuration
 """
 
 import logging
@@ -15,12 +17,121 @@ from ...api_client.client_factory import get_current_api_client
 
 logger = logging.getLogger(__name__)
 
-# Default LLM server URLs per model type
 LLM_SERVER_URLS = {
     "gemini": "https://gemini.google.com",
     "openai": "https://openai.com",
     "anthropic": "https://api.anthropic.com",
+    "aws bedrock": "https://bedrock.amazonaws.com",
 }
+
+_ARI_BASE = "/api/external/v1"
+
+
+def _get_api_client():
+    api_client = get_current_api_client()
+    if not api_client:
+        return None, {
+            "status": "error",
+            "message": "No API client configured. Please configure your InsightFinder credentials.",
+        }
+    return api_client, None  # type: ignore[return-value]
+
+
+async def _fetch_valid_types(base_url: str, headers: dict) -> tuple[list, Optional[dict]]:
+    """Returns (valid_types_list, error_dict_or_None)."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{base_url}{_ARI_BASE}/mcp-model-types", headers=headers, timeout=15.0)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        return [], {"status": "error", "message": f"Failed to fetch model types: {e}"}
+
+    if data.get("success") and isinstance(data.get("result"), list):
+        return data["result"], None
+    return [], {"status": "error", "message": "Unexpected response format from mcp-model-types."}
+
+
+async def _fetch_valid_versions(base_url: str, headers: dict, model_type: str) -> tuple[list, list, Optional[dict]]:
+    """Returns (versions_list, groups_list, error_dict_or_None).
+    versions_list is a flat list of valid version IDs.
+    groups_list is the raw grouped structure from the API.
+    """
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{base_url}{_ARI_BASE}/mcp-model-versions",
+                params={"modelType": model_type},
+                headers=headers,
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        return [], [], {"status": "error", "message": f"Failed to fetch model versions: {e}"}
+
+    if data.get("success") and isinstance(data.get("result"), list):
+        groups = data["result"]
+        versions = [v for group in groups for v in group.get("versions", [])]
+        return versions, groups, None
+    return [], [], {"status": "error", "message": "Unexpected response format from mcp-model-versions."}
+
+
+@mcp_server.tool()
+async def getARIModelInfo(modelType: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Retrieve supported ARI model types and/or versions from InsightFinder.
+
+    **When to use this tool:**
+    - To discover which LLM providers (OpenAI, Anthropic, Gemini) are supported
+    - To list available model versions for a specific provider before configuring ARI
+    - To look up valid modelVersion values required by setupARIConfiguration
+
+    Args:
+        modelType: Optional. If omitted, returns all supported provider types.
+                   If provided (e.g. "OpenAI", "Anthropic", "Gemini"), returns the
+                   grouped model versions (default + fine-tuned) for that provider.
+
+    Returns:
+        - Without modelType: {"status": "success", "modelTypes": ["OpenAI", "Anthropic", "Gemini"]}
+        - With modelType:    {"status": "success", "modelType": "OpenAI", "modelGroups": [...]}
+    """
+    api_client, err = _get_api_client()
+    if err:
+        return err
+    assert api_client is not None
+
+    base_url = api_client.base_url
+    headers = api_client.headers
+
+    if not modelType:
+        valid_types, err = await _fetch_valid_types(base_url, headers)
+        if err:
+            return err
+        return {"status": "success", "modelTypes": valid_types}
+
+    # Validate the modelType first
+    valid_types, err = await _fetch_valid_types(base_url, headers)
+    if err:
+        return err
+
+    matched_type = next((t for t in valid_types if t.lower() == modelType.lower()), None)
+    if not matched_type:
+        return {
+            "status": "error",
+            "message": f"Invalid modelType '{modelType}'. Valid types: {', '.join(valid_types)}",
+            "validModelTypes": valid_types,
+        }
+
+    _, groups, err = await _fetch_valid_versions(base_url, headers, matched_type)
+    if err:
+        return err
+
+    return {
+        "status": "success",
+        "modelType": matched_type,
+        "modelGroups": groups,
+    }
 
 
 @mcp_server.tool()
@@ -31,190 +142,216 @@ async def setupARIConfiguration(
     mcpServerUrl: str = "https://mcp.insightfinder.com",
     mcpApiKey: str = "insightfinder_api-9eb2a1defb591408",
     llmServerUrl: Optional[str] = None,
+    update: bool = False,
 ) -> Dict[str, Any]:
     """
-    Set up ARI (LLM) configuration by registering model settings with InsightFinder.
+    Create or update the ARI (LLM) model configuration in InsightFinder.
 
-    This tool validates the provided model type and version against InsightFinder's
-    supported models, then submits the configuration via the mcp-model-setting API.
+    This tool validates the model type and version against InsightFinder's supported
+    models, then submits the configuration via the mcp-model-setting API.
 
     **When to use this tool:**
-    - To configure which LLM model ARI should use
-    - When setting up a new AI/LLM integration for InsightFinder ARI
-    - When changing the active model or API key for ARI
+    - To configure which LLM model ARI should use (new setup)
+    - To change the active model, API key, or server URL (update existing config)
 
     **Supported model types:** OpenAI, Anthropic, Gemini
 
-    **Default LLM server URLs (auto-selected by modelType):**
-    - Gemini    → https://gemini.google.com
+    **Default LLM server URLs (auto-selected from modelType if not provided):**
     - OpenAI    → https://openai.com
     - Anthropic → https://api.anthropic.com
+    - Gemini    → https://gemini.google.com
+
+    Use getARIModelInfo to discover valid modelType and modelVersion values.
 
     Args:
-        modelType: LLM provider type. Must be one of: OpenAI, Anthropic, Gemini (required)
+        modelType: LLM provider. One of: OpenAI, Anthropic, Gemini (required)
         llmApiKey: API key for the LLM provider (required)
-        modelVersion: Model version to use. Must be a valid version from the provider's list (required)
-        mcpServerUrl: URL of the MCP server (default: https://mcp.insightfinder.com)
-        mcpApiKey: API key for the MCP server (default: insightfinder_api-9eb2a1defb591408)
-        llmServerUrl: URL of the LLM provider server. Auto-detected from modelType if not provided.
+        modelVersion: Model version ID from the provider's versions list (required).
+                      Must match a value in "versions" (not "modelVersionDisplayNames").
+        mcpServerUrl: MCP server URL (default: https://mcp.insightfinder.com)
+        mcpApiKey: MCP server API key (default: insightfinder_api-9eb2a1defb591408)
+        llmServerUrl: LLM provider base URL. Auto-detected from modelType if omitted.
+        update: Set to True to update an existing configuration (default: False = create new).
+
     Returns:
-        A dictionary with:
         - status: "success" or "error"
-        - message: Human-readable result message
-        - configuration: The submitted configuration (on success)
-
-    Example:
-        result = await setupARIConfiguration(
-            modelType="OpenAI",
-            llmApiKey="sk-...",
-            modelVersion="gpt-4o"
-        )
+        - message: Human-readable result
+        - configuration: The submitted config (on success)
+        - serverResponse: Raw response from InsightFinder (on success)
     """
-    try:
-        api_client = get_current_api_client()
-        if not api_client:
-            return {
-                "status": "error",
-                "message": "No API client configured. Please configure your InsightFinder credentials."
-            }
+    api_client, err = _get_api_client()
+    if err:
+        return err
+    assert api_client is not None
 
-        base_url = api_client.base_url
-        headers = api_client.headers  # contains X-User-Name and X-License-Key
+    base_url = api_client.base_url
+    headers = api_client.headers
 
-        # --- Validate modelType ---
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{base_url}/v1/mcp-model-types",
-                    headers=headers,
-                    timeout=15.0
-                )
-                response.raise_for_status()
-                types_data = response.json()
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to fetch valid model types from InsightFinder: {e}"
-            }
+    # Validate modelType
+    valid_types, err = await _fetch_valid_types(base_url, headers)
+    if err:
+        return err
 
-        valid_types = []
-        if types_data.get("success") and isinstance(types_data.get("result"), list):
-            valid_types = types_data["result"]
+    matched_type = next((t for t in valid_types if t.lower() == modelType.lower()), None)
+    if not matched_type:
+        return {
+            "status": "error",
+            "message": f"Invalid modelType '{modelType}'. Valid types: {', '.join(valid_types)}",
+            "validModelTypes": valid_types,
+        }
+    modelType = matched_type
 
-        matched_type = next(
-            (t for t in valid_types if t.lower() == modelType.lower()), None
-        )
-        if not matched_type:
-            return {
-                "status": "error",
-                "message": (
-                    f"Invalid modelType '{modelType}'. "
-                    f"Valid types are: {', '.join(valid_types)}"
-                ),
-                "validModelTypes": valid_types,
-            }
-        modelType = matched_type  # normalise to server's canonical casing
-
-        # --- Resolve llmServerUrl ---
+    # Resolve llmServerUrl
+    if not llmServerUrl:
+        llmServerUrl = LLM_SERVER_URLS.get(modelType.lower())
         if not llmServerUrl:
-            llmServerUrl = LLM_SERVER_URLS.get(modelType.lower())
-            if not llmServerUrl:
-                return {
-                    "status": "error",
-                    "message": (
-                        f"Could not determine llmServerUrl for modelType '{modelType}'. "
-                        "Please provide it explicitly."
-                    ),
-                }
-
-        # --- Validate modelVersion ---
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{base_url}/v1/mcp-model-types",
-                    params={"modelType": modelType},
-                    headers=headers,
-                    timeout=15.0
-                )
-                response.raise_for_status()
-                versions_data = response.json()
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to fetch valid model versions from InsightFinder: {e}"
-            }
-
-        valid_versions = []
-        if versions_data.get("success") and isinstance(versions_data.get("result"), list):
-            for group in versions_data["result"]:
-                valid_versions.extend(group.get("versions", []))
-
-        if modelVersion not in valid_versions:
             return {
                 "status": "error",
                 "message": (
-                    f"Invalid modelVersion '{modelVersion}' for modelType '{modelType}'. "
-                    f"Valid versions are: {', '.join(valid_versions)}"
+                    f"Could not determine llmServerUrl for modelType '{modelType}'. "
+                    "Please provide it explicitly."
                 ),
-                "validVersions": valid_versions,
             }
 
-        # --- Submit configuration ---
-        form_data = {
+    # Validate modelVersion against the versions list (not display names)
+    valid_versions, _, err = await _fetch_valid_versions(base_url, headers, modelType)
+    if err:
+        return err
+
+    if modelVersion not in valid_versions:
+        return {
+            "status": "error",
+            "message": (
+                f"Invalid modelVersion '{modelVersion}' for modelType '{modelType}'. "
+                f"Use getARIModelInfo(modelType='{modelType}') to see valid versions."
+            ),
+            "validVersions": valid_versions,
+        }
+
+    # Submit configuration
+    form_data = {
+        "mcpServerUrl": mcpServerUrl,
+        "mcpApiKey": mcpApiKey,
+        "modelType": modelType,
+        "llmServerUrl": llmServerUrl,
+        "llmApiKey": llmApiKey,
+        "isCreated": "false" if update else "true",
+        "modelVersion": modelVersion,
+        "modelVersionDisplayName": modelVersion,
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{base_url}{_ARI_BASE}/mcp-model-setting",
+                data=form_data,
+                headers=headers,
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            result_data = resp.json()
+    except httpx.HTTPStatusError as e:
+        return {
+            "status": "error",
+            "message": f"InsightFinder returned HTTP {e.response.status_code}: {e.response.text}",
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to submit configuration: {e}"}
+
+    if not result_data.get("success", False):
+        return {
+            "status": "error",
+            "message": result_data.get("message", "InsightFinder rejected the configuration."),
+            "serverResponse": result_data,
+        }
+
+    action = "updated" if update else "created"
+    return {
+        "status": "success",
+        "message": f"ARI configuration {action} successfully. Model: {modelType} / {modelVersion}",
+        "configuration": {
             "mcpServerUrl": mcpServerUrl,
             "mcpApiKey": mcpApiKey,
             "modelType": modelType,
             "llmServerUrl": llmServerUrl,
-            "llmApiKey": llmApiKey,
-            "isCreated": "true",
             "modelVersion": modelVersion,
-            "modelVersionDisplayName": modelVersion,
-        }
+        },
+        "serverResponse": result_data,
+    }
 
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{base_url}/v1/mcp-model-setting",
-                    data=form_data,
-                    headers=headers,
-                    timeout=15.0
-                )
-                response.raise_for_status()
-                result_data = response.json()
-        except httpx.HTTPStatusError as e:
-            return {
-                "status": "error",
-                "message": f"InsightFinder returned an error: {e.response.status_code} {e.response.text}",
-            }
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": f"Failed to submit configuration to InsightFinder: {e}",
-            }
 
-        if not result_data.get("success", False):
-            return {
-                "status": "error",
-                "message": result_data.get("message", "InsightFinder rejected the configuration."),
-                "serverResponse": result_data,
-            }
+@mcp_server.tool()
+async def deleteARIConfiguration(
+    modelType: str,
+    modelVersion: str,
+) -> Dict[str, Any]:
+    """
+    Delete an ARI model configuration from InsightFinder.
 
+    **When to use this tool:**
+    - To remove an existing LLM model configuration for ARI
+    - When decommissioning or replacing a model setup
+
+    Use getARIModelInfo to confirm valid modelType and modelVersion values before deleting.
+
+    Args:
+        modelType: LLM provider type of the configuration to delete (e.g. "OpenAI")
+        modelVersion: Exact model version ID of the configuration to delete (e.g. "gpt-4o")
+
+    Returns:
+        - status: "success" or "error"
+        - message: Human-readable result
+        - serverResponse: Raw response from InsightFinder (on success)
+    """
+    api_client, err = _get_api_client()
+    if err:
+        return err
+    assert api_client is not None
+
+    base_url = api_client.base_url
+    headers = api_client.headers
+
+    # Validate modelType
+    valid_types, err = await _fetch_valid_types(base_url, headers)
+    if err:
+        return err
+
+    matched_type = next((t for t in valid_types if t.lower() == modelType.lower()), None)
+    if not matched_type:
         return {
-            "status": "success",
-            "message": f"ARI configuration successfully set up. Model: {modelType} / {modelVersion}",
-            "configuration": {
-                "mcpServerUrl": mcpServerUrl,
-                "mcpApiKey": mcpApiKey,
-                "modelType": modelType,
-                "llmServerUrl": llmServerUrl,
-                "modelVersion": modelVersion,
-            },
+            "status": "error",
+            "message": f"Invalid modelType '{modelType}'. Valid types: {', '.join(valid_types)}",
+            "validModelTypes": valid_types,
+        }
+    modelType = matched_type
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.delete(
+                f"{base_url}{_ARI_BASE}/mcp-model-setting",
+                params={"modelType": modelType, "modelVersion": modelVersion},
+                headers=headers,
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            result_data = resp.json()
+    except httpx.HTTPStatusError as e:
+        return {
+            "status": "error",
+            "message": f"InsightFinder returned HTTP {e.response.status_code}: {e.response.text}",
+        }
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to delete configuration: {e}"}
+
+    if not result_data.get("success", False):
+        return {
+            "status": "error",
+            "message": result_data.get("message", "InsightFinder rejected the delete request."),
             "serverResponse": result_data,
         }
 
-    except Exception as e:
-        logger.error(f"Unexpected error in setupARIConfiguration: {e}", exc_info=True)
-        return {
-            "status": "error",
-            "message": f"Unexpected error: {e}",
-        }
+    return {
+        "status": "success",
+        "message": f"ARI configuration deleted. Model: {modelType} / {modelVersion}",
+        "serverResponse": result_data,
+    }
