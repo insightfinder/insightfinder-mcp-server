@@ -30,6 +30,8 @@ async def get_incidents_overview(
     This is the most compact view, ideal for initial exploration and comparisons.
     Use this tool when a user first asks about incidents to get a quick overview or to compare time periods.
 
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
+
     ⚠️ RELATIVE DATE KEYWORDS SUPPORTED:
     You can use simple keywords instead of explicit dates:
     - "thisweek" or "this_week": Monday to today
@@ -181,6 +183,8 @@ async def get_incidents_list(
     Fetches a compact list of incidents with basic information only.
     Use this after getting the overview to see individual incidents without overwhelming detail.
 
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
+
     Args:
         system_name (str): The name of the system to query for incidents.
         start_time (str): Optional. The start of the time window.
@@ -316,6 +320,8 @@ async def get_incidents_summary(
     """
     Fetches a detailed summary of incidents including root cause information.
     Use this when you need more detail about specific incidents after reviewing the compact list.
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
 
     Args:
         system_name (str): The name of the system to query for incidents.
@@ -493,6 +499,8 @@ async def get_incident_details(
     """
     Fetches complete information about a specific incident, excluding raw data to keep response manageable.
     Use this after identifying a specific incident from the list or summary layers.
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
 
     Note - Important Policy:
     - Always fetch and display the **entire root cause analysis (RCA) chain**.  
@@ -780,6 +788,8 @@ async def get_incident_raw_data(
     Fetches the raw data (logs, stack traces) for a specific incident.
     Use this only when you need to examine the actual error logs or stack traces.
 
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
+
     Args:
         system_name (str): The name of the system to query.
         incident_timestamp (str): The timestamp of the specific incident.
@@ -877,6 +887,8 @@ async def get_incidents_statistics(
     Provides statistical analysis of incidents for a system over a time period.
     Use this tool to understand incident patterns, frequency, and impact across components.
     Ideal for comparing incidents between time periods.
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
 
     ⚠️ RELATIVE DATE KEYWORDS SUPPORTED:
     You can use simple keywords instead of explicit dates:
@@ -1001,6 +1013,8 @@ async def fetch_traces(
     Fetches trace timeline data from InsightFinder for a specific system within a given time range.
     Use this tool when a user asks for traces, distributed tracing, or application performance data.
 
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
+
     Args:
         system_name (str): The name of the system to query for traces.
         start_time (str): Optional. The start of the time window.
@@ -1054,6 +1068,8 @@ async def fetch_log_anomalies(
     Fetches log anomaly timeline data from InsightFinder for a specific system within a given time range.
     Use this tool when a user asks for log anomalies, unusual log patterns, or log-based issues.
 
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
+
     Args:
         system_name (str): The name of the system to query for log anomalies.
         start_time (str): Optional. The start of the time window.
@@ -1106,6 +1122,8 @@ async def fetch_deployments(
     """
     Fetches deployment timeline data from InsightFinder for a specific system within a given time range.
     Use this tool when a user asks for deployments, releases, or change events.
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
 
     Args:
         system_name (str): The name of the system to query for deployments.
@@ -1163,7 +1181,9 @@ async def get_project_incidents(
     """
     Fetches incidents specifically for a given project within a system.
     Use this tool when the user specifies both a system name and project name.
-    
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
+
     Example usage:
     - "show me incidents for project demo-kpi-metrics-2 in system InsightFinder Demo System (APP)"
     - "get incidents after timestamp for project X in system Y"
@@ -1302,7 +1322,9 @@ async def predict_incidents(
     Predicts future incidents for a system in a given time window.
     Uses the InsightFinder prediction API to fetch predicted incidents.
     This will include recommendations for each predicted incident if available.
-    
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
+
     Note:
         The timestamp for each predicted incident is always taken from the top-level 'timestamp_prediction' field of the incident object.
 
