@@ -139,8 +139,8 @@ async def setupARIConfiguration(
     modelType: str,
     llmApiKey: str,
     modelVersion: str,
+    mcpApiKey: str,
     mcpServerUrl: str = "https://mcp.insightfinder.com",
-    mcpApiKey: str = "insightfinder_api-9eb2a1defb591408",
     llmServerUrl: Optional[str] = None,
     update: bool = False,
 ) -> Dict[str, Any]:
@@ -168,8 +168,8 @@ async def setupARIConfiguration(
         llmApiKey: API key for the LLM provider (required)
         modelVersion: Model version ID from the provider's versions list (required).
                       Must match a value in "versions" (not "modelVersionDisplayNames").
+        mcpApiKey: API key for the MCP server (required)
         mcpServerUrl: MCP server URL (default: https://mcp.insightfinder.com)
-        mcpApiKey: MCP server API key (default: insightfinder_api-9eb2a1defb591408)
         llmServerUrl: LLM provider base URL. Auto-detected from modelType if omitted.
         update: Set to True to update an existing configuration (default: False = create new).
 
