@@ -82,6 +82,8 @@ async def get_log_anomalies_overview(
     This is the most compact view, ideal for initial exploration.
     Use this tool when a user first asks about log anomalies to get a quick overview.
 
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 17", "March 5") without a year, always default to year 2026.
+
     Args:
         system_name (str): The name of the system to query for log anomalies.
         start_time (Optional[Union[str, int]]): The start of the time window.
@@ -212,7 +214,9 @@ async def get_log_anomalies_list(
     """
     Fetches a detailed list of log anomalies with comprehensive information.
     This is the main tool for getting log anomaly details - combines basic info with parsed raw data.
-    
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 17", "March 5") without a year, always default to year 2026.
+
     The response includes parsed raw data fields (e.g., _id, cdn, status_code, url, name, etc.) and formatted summaries.
 
     Args:
@@ -382,6 +386,8 @@ async def get_log_anomalies_statistics(
     Use this tool to understand anomaly patterns, frequency, distribution, and impact across components.
     Ideal for comparing log anomalies between time periods.
 
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 17", "March 5") without a year, always default to year 2026.
+
     ⚠️ RELATIVE DATE KEYWORDS SUPPORTED:
     You can use simple keywords instead of explicit dates:
     - "thisweek" or "this_week": Monday to today
@@ -545,6 +551,8 @@ async def get_project_log_anomalies(
     Fetches log anomalies specifically for a given project within a system with pagination support.
     This function includes detailed raw data and comprehensive information for each anomaly.
     Use this tool when the user specifies both a system name and project name.
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 17", "March 5") without a year, always default to year 2026.
     
     The response includes full anomaly details with:
     - Basic anomaly information (timestamp, component, instance, pattern, zone, score)
