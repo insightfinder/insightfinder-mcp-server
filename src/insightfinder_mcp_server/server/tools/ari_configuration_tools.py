@@ -4,6 +4,7 @@ ARI configuration tools for the InsightFinder MCP server.
 Tools:
 - getARIModelInfo: Fetch supported model types and/or versions
 - setupARIConfiguration: Create or update ARI (LLM) model settings
+- setDefaultARIModel: Set an already-configured model as the active default
 - deleteARIConfiguration: Delete an ARI model configuration
 """
 
@@ -134,6 +135,58 @@ async def getARIModelInfo(modelType: Optional[str] = None) -> Dict[str, Any]:
     }
 
 
+async def _verify_configuration_saved(base_url: str, headers: dict, model_type: str, model_version: str) -> tuple[bool, Optional[dict]]:
+    """Returns (found, error_dict_or_None). Calls GET /mcp-model-setting to confirm the entry persisted."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{base_url}{_ARI_BASE}/mcp-model-setting",
+                headers=headers,
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        return False, {"status": "error", "message": f"Failed to verify configuration was saved: {e}"}
+
+    if not data.get("success"):
+        return False, {"status": "error", "message": "Verification call to mcp-model-setting did not return success."}
+
+    # API returns the list under "settings" (not "result")
+    result = data.get("settings") or data.get("result", [])
+    if not isinstance(result, list):
+        result = [result] if result else []
+
+    found = any(
+        str(entry.get("modelType", "")).lower() == model_type.lower()
+        and str(entry.get("modelVersion", "")) == model_version
+        for entry in result
+    )
+    return found, None
+
+
+async def _set_default_model(base_url: str, headers: dict, model_type: str, model_version: str) -> Optional[dict]:
+    """Calls POST /mcp-model-setting-used-model to mark model as default. Returns error dict or None."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{base_url}{_ARI_BASE}/mcp-model-setting-used-model",
+                data={"modelType": model_type, "modelVersion": model_version, "isCurrentUserModel": "true"},
+                headers=headers,
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPStatusError as e:
+        return {"status": "error", "message": f"Failed to set default model — HTTP {e.response.status_code}: {e.response.text}"}
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to set default model: {e}"}
+
+    if not data.get("success", False):
+        return {"status": "error", "message": data.get("message", "Server rejected the set-default request."), "serverResponse": data}
+    return None
+
+
 @mcp_server.tool()
 async def setupARIConfiguration(
     modelType: str,
@@ -143,12 +196,14 @@ async def setupARIConfiguration(
     mcpServerUrl: str = "https://mcp.insightfinder.com",
     llmServerUrl: Optional[str] = None,
     update: bool = False,
+    isCurrentUserModel: bool = False,
 ) -> Dict[str, Any]:
     """
     Create or update the ARI (LLM) model configuration in InsightFinder.
 
     This tool validates the model type and version against InsightFinder's supported
-    models, then submits the configuration via the mcp-model-setting API.
+    models, then submits the configuration via the mcp-model-setting API. After saving,
+    it verifies the configuration was persisted before returning success.
 
     **When to use this tool:**
     - To configure which LLM model ARI should use (new setup)
@@ -172,6 +227,7 @@ async def setupARIConfiguration(
         mcpServerUrl: MCP server URL (default: https://mcp.insightfinder.com)
         llmServerUrl: LLM provider base URL. Auto-detected from modelType if omitted.
         update: Set to True to update an existing configuration (default: False = create new).
+        isCurrentUserModel: Set to True to mark this model as the active default after saving.
 
     Returns:
         - status: "success" or "error"
@@ -265,18 +321,95 @@ async def setupARIConfiguration(
             "serverResponse": result_data,
         }
 
+    # Verify the configuration was actually persisted in the database
+    saved, err = await _verify_configuration_saved(base_url, headers, modelType, modelVersion)
+    if err:
+        return err
+    if not saved:
+        return {
+            "status": "error",
+            "message": (
+                f"Configuration POST succeeded but the entry for {modelType}/{modelVersion} "
+                "was not found when verifying. The setting may not have been saved."
+            ),
+            "serverResponse": result_data,
+        }
+
+    # Optionally mark this model as the default
+    if isCurrentUserModel:
+        err = await _set_default_model(base_url, headers, modelType, modelVersion)
+        if err:
+            return err
+
     action = "updated" if update else "created"
+    default_note = " Set as default model." if isCurrentUserModel else ""
     return {
         "status": "success",
-        "message": f"ARI configuration {action} successfully. Model: {modelType} / {modelVersion}",
+        "message": f"ARI configuration {action} successfully. Model: {modelType} / {modelVersion}.{default_note}",
         "configuration": {
             "mcpServerUrl": mcpServerUrl,
             "mcpApiKey": mcpApiKey,
             "modelType": modelType,
             "llmServerUrl": llmServerUrl,
             "modelVersion": modelVersion,
+            "isCurrentUserModel": isCurrentUserModel,
         },
         "serverResponse": result_data,
+    }
+
+
+@mcp_server.tool()
+async def setDefaultARIModel(
+    modelType: str,
+    modelVersion: str,
+) -> Dict[str, Any]:
+    """
+    Set an already-configured ARI model as the active default.
+
+    **When to use this tool:**
+    - To switch which configured model ARI uses by default
+    - When multiple models are configured and you want to change the active one
+
+    Use getARIModelInfo to discover valid modelType and modelVersion values.
+    The model must already be configured via setupARIConfiguration before calling this.
+
+    Args:
+        modelType: LLM provider of the target configuration (e.g. "OpenAI")
+        modelVersion: Exact model version ID to set as default (e.g. "gpt-4.1")
+
+    Returns:
+        - status: "success" or "error"
+        - message: Human-readable result
+        - serverResponse: Raw response from InsightFinder (on success)
+    """
+    api_client, err = _get_api_client()
+    if err:
+        return err
+    assert api_client is not None
+
+    base_url = api_client.base_url
+    headers = api_client.headers
+
+    # Confirm the configuration actually exists before trying to set it as default
+    saved, err = await _verify_configuration_saved(base_url, headers, modelType, modelVersion)
+    if err:
+        return err
+    if not saved:
+        return {
+            "status": "error",
+            "message": (
+                f"No existing configuration found for {modelType}/{modelVersion}. "
+                "Use setupARIConfiguration to add it first."
+            ),
+        }
+
+    err = await _set_default_model(base_url, headers, modelType, modelVersion)
+    if err:
+        return err
+
+    return {
+        "status": "success",
+        "message": f"{modelType}/{modelVersion} is now the active default ARI model.",
     }
 
 
