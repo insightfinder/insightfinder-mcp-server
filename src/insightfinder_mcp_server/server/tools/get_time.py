@@ -988,6 +988,17 @@ def parse_time_parameters(
         # Neither are keywords, parse normally
         start_time_ms = convert_to_ms(start_time, "start_time", tz_name)
         end_time_ms = convert_to_ms(end_time, "end_time", tz_name)
-    
+
+    # If start and end resolve to the same millisecond (e.g. user provided the same
+    # date string for both), expand to cover the full day: 00:00:00.000 – 23:59:59.999.
+    # The fake-UTC epoch encodes wall-clock as UTC, so reading it back as UTC gives
+    # the correct wall-clock date.
+    if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+        dt = datetime.fromtimestamp(start_time_ms / 1000, tz=timezone.utc)
+        start_naive = datetime(dt.year, dt.month, dt.day, 0, 0, 0)
+        end_naive = datetime(dt.year, dt.month, dt.day, 23, 59, 59)
+        start_time_ms = int(calendar.timegm(start_naive.timetuple()) * 1000)
+        end_time_ms = int(calendar.timegm(end_naive.timetuple()) * 1000)
+
     return start_time_ms, end_time_ms
 
