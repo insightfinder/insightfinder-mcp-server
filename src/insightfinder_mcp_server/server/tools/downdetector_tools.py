@@ -50,16 +50,25 @@ def _extract_chart_data(html: str) -> list:
 
 
 def _classify_status(current: float, baseline: Optional[float]) -> str:
+    """Classify service status based on current reports vs baseline.
+
+    | Status       | Condition                              |
+    |--------------|----------------------------------------|
+    | operational  | Reports at or near baseline (<2×)      |
+    | degraded     | Reports 2×–10× above baseline          |
+    | major_outage | Reports 10× or more above baseline     |
+    | unknown      | No chart data (Cloudflare-blocked)     |
+    """
     if baseline is None or baseline == 0:
-        if current > 100:
+        if current > 500:
             return "major_outage"
-        if current > 20:
+        if current > 50:
             return "degraded"
         return "operational"
     ratio = current / baseline
-    if ratio >= 3.0:
+    if ratio >= 10.0:
         return "major_outage"
-    if ratio >= 1.5:
+    if ratio >= 2.0:
         return "degraded"
     return "operational"
 
@@ -139,9 +148,14 @@ async def downdetector(
 ) -> Dict[str, Any]:
     """Check current status and outage reports for a service from Downdetector.
 
-    Returns current report count, baseline, status classification
-    (operational / degraded / major_outage), and the last 10 data points.
-    Uses a real headless browser to bypass Cloudflare protection.
+    Returns current report count, baseline, status classification, and the last
+    10 data points. Uses a real headless browser to bypass Cloudflare protection.
+
+    Status is derived by comparing the current report count to the baseline:
+      - operational  : reports < 2× baseline — no significant issues
+      - degraded     : reports 2×–10× baseline — possible issues
+      - major_outage : reports ≥ 10× baseline — significant outage
+      - unknown      : page returned no chart data (likely Cloudflare-blocked)
 
     If you don't know the exact slug, call downdetector_search_slug first to find it.
 
