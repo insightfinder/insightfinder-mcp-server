@@ -102,16 +102,25 @@ def create_api_client_from_request(request: Request) -> InsightFinderAPIClient:
 _current_api_client: contextvars.ContextVar[Optional[InsightFinderAPIClient]] = contextvars.ContextVar('api_client', default=None)
 _current_request: contextvars.ContextVar[Optional[Request]] = contextvars.ContextVar('request', default=None)
 _current_jira_client: contextvars.ContextVar[Optional[JiraAPIClient]] = contextvars.ContextVar('jira_client', default=None)
+_current_weatherapi_key: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar('weatherapi_key', default=None)
+
+def extract_weatherapi_key_from_headers(request: Request) -> Optional[str]:
+    """Extract WeatherAPI key from the X-WeatherAPI-Key request header."""
+    return request.headers.get("X-WeatherAPI-Key") or None
+
+def get_current_weatherapi_key() -> Optional[str]:
+    """Get the WeatherAPI key for the current request context."""
+    return _current_weatherapi_key.get()
 
 def set_request_context(request: Request, api_client: InsightFinderAPIClient):
     """Store the current request context for tools to access.
-    
+
     Uses contextvars which properly propagates across async boundaries,
     unlike thread-local storage which can fail when async tasks switch threads.
     """
     _current_request.set(request)
     _current_api_client.set(api_client)
-    
+
     # Also try to create and set JIRA client if credentials are provided
     jira_credentials = extract_jira_credentials_from_headers(request)
     if jira_credentials:
@@ -123,20 +132,24 @@ def set_request_context(request: Request, api_client: InsightFinderAPIClient):
         _current_jira_client.set(None)
         set_current_jira_client(None)
 
+    # Extract and store WeatherAPI key if provided
+    _current_weatherapi_key.set(extract_weatherapi_key_from_headers(request))
+
 def get_current_api_client() -> Optional[InsightFinderAPIClient]:
     """Get the API client for the current request context.
-    
+
     Uses contextvars which properly propagates across async boundaries.
     """
     return _current_api_client.get()
 
 def clear_request_context():
     """Clear the current request context.
-    
+
     This resets the context variables for the current async context.
     """
     _current_request.set(None)
     _current_api_client.set(None)
     _current_jira_client.set(None)
+    _current_weatherapi_key.set(None)
     # Also clear in the jira_client module's global storage for compatibility
     set_current_jira_client(None)
