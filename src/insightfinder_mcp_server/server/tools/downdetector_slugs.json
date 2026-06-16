@@ -24,6 +24,10 @@
     "slug": "alibaba-cloud"
   },
   {
+    "name": "AWS",
+    "slug": "aws-amazon-web-services"
+  },
+  {
     "name": "Amazon Web Services",
     "slug": "aws-amazon-web-services"
   },
@@ -34,6 +38,10 @@
   {
     "name": "Among Us",
     "slug": "among-us"
+  },
+  {
+    "name": "Anthropic",
+    "slug": "claude-ai"
   },
   {
     "name": "Anydesk",
@@ -146,6 +154,10 @@
   {
     "name": "Choice Hotels",
     "slug": "choicehotels"
+  },
+  {
+    "name": "Claude",
+    "slug": "claude-ai"
   },
   {
     "name": "Cloudflare",
