@@ -67,14 +67,23 @@ def _classify_status(current: float, baseline: Optional[float]) -> str:
 async def _fetch_with_browser(url: str) -> tuple:
     """Launch a headless Chromium browser and return (html, status_code).
 
-    Using a real browser bypasses Cloudflare JS challenges.
+    Uses stealth flags and waits for the Cloudflare JS challenge to resolve
+    before reading the page content. Cloudflare serves a challenge page first
+    (HTTP 200) from datacenter IPs; waiting for networkidle + chartData
+    ensures we get the real content after the JS redirect completes.
     """
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox"],
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ],
         )
         context = await browser.new_context(
             user_agent=(
@@ -83,17 +92,37 @@ async def _fetch_with_browser(url: str) -> tuple:
                 "Chrome/124.0.0.0 Safari/537.36"
             ),
             viewport={"width": 1280, "height": 800},
+            # Mask common headless-browser fingerprints
+            java_script_enabled=True,
+            bypass_csp=True,
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+        )
+        # Hide navigator.webdriver flag
+        await context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
         page = await context.new_page()
-        response = await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+
+        # Use 'load' so we wait past the Cloudflare JS challenge redirect
+        response = await page.goto(url, wait_until="load", timeout=45_000)
         status = response.status if response else 0
+
+        # Wait for the Next.js RSC payload (contains chartData) — up to 20s
         try:
             await page.wait_for_function(
                 "() => document.body.innerHTML.includes('chartData')",
-                timeout=10_000,
+                timeout=20_000,
             )
         except Exception:
-            pass
+            # If chartData never appears, try waiting for networkidle as a last resort
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10_000)
+            except Exception:
+                pass
+
         html = await page.content()
         await browser.close()
     return html, status
