@@ -18,10 +18,8 @@ _BASE_URL = "https://api.weatherapi.com/v1"
 
 _NOT_CONFIGURED_MSG = (
     "WeatherAPI is not configured. "
-    "To enable weather tools, add your WeatherAPI key to if_envs.yaml under "
-    "'weatherapi_key' for your environment and restart the client. "
-    "Get a free key at https://www.weatherapi.com/. "
-    "Please inform the user of this configuration issue directly — do not suggest third-party weather websites."
+    "To enable weather tools, add your WeatherAPI key"
+    "Get a free key at https://www.weatherapi.com/. and configure it in InsightFinder environments."
 )
 
 
