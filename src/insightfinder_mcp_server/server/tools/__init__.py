@@ -7,5 +7,7 @@ from . import trace_tools
 from . import get_time
 from . import system_info_tools
 from . import ari_configuration_tools
+from . import weather_tools
+from . import downdetector_tools
 
-__all__ = ['incident_tools', 'log_anomaly_tools', 'metric_anomaly_tools', 'metric_data_tools', 'deployment_tools', 'trace_tools', 'get_time', 'system_info_tools', 'ari_configuration_tools']
+__all__ = ['incident_tools', 'log_anomaly_tools', 'metric_anomaly_tools', 'metric_data_tools', 'deployment_tools', 'trace_tools', 'get_time', 'system_info_tools', 'ari_configuration_tools', 'weather_tools', 'downdetector_tools']

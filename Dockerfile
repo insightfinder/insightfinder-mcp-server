@@ -12,6 +12,11 @@ RUN apt-get update && apt-get install -y \
 COPY docker-requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install Playwright Chromium and its system dependencies
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+RUN python -m playwright install chromium --with-deps \
+    && chmod -R 755 /opt/playwright
+
 # Copy the application source code
 COPY src/ ./src/
 COPY pyproject.toml* ./
