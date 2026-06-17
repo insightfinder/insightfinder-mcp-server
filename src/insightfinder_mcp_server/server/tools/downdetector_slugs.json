@@ -112,6 +112,14 @@
     "slug": "battle-net"
   },
   {
+    "name": "ATT",
+    "slug": "att"
+  },
+  {
+    "name": "AT&T",
+    "slug": "att"
+  },
+  {
     "name": "Bluehost",
     "slug": "bluehost"
   },
@@ -740,6 +748,10 @@
     "slug": "splunk"
   },
   {
+    "name": "Spectrum",
+    "slug": "spectrum"
+  },
+  {
     "name": "Squarespace",
     "slug": "squarespace"
   },
@@ -938,5 +950,41 @@
   {
     "name": "Zscaler",
     "slug": "zscaler"
+  },
+  {
+    "name": "Verizon",
+    "slug": "verizon"
+  },
+  {
+    "name": "t-mobile",
+    "slug": "t-mobile"
+  },
+  {
+    "name": "TMobile",
+    "slug": "t-mobile"
+  },
+  {
+    "name": "xfinity",
+    "slug": "xfinity"
+  },
+  {
+    "name": "cox-communications",
+    "slug": "cox-communications"
+  },
+  {
+    "name": "Cox",
+    "slug": "cox-communications"
+  },
+  {
+    "name": "The Weather Channel",
+    "slug": "the-weather-channel"
+  },
+  {
+    "name": "Weather Channel",
+    "slug": "the-weather-channel"
+  },
+  {
+    "name": "Weather",
+    "slug": "the-weather-channel"
   }
 ]
