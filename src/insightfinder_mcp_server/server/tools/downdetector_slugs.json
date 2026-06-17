@@ -1,0 +1,942 @@
+[
+  {
+    "name": "8x8",
+    "slug": "8x8"
+  },
+  {
+    "name": "ABB",
+    "slug": "abb"
+  },
+  {
+    "name": "Accor Hotels",
+    "slug": "accorhotels"
+  },
+  {
+    "name": "Airbnb",
+    "slug": "airbnb"
+  },
+  {
+    "name": "Akamai",
+    "slug": "akamai"
+  },
+  {
+    "name": "Alibaba Cloud",
+    "slug": "alibaba-cloud"
+  },
+  {
+    "name": "AWS",
+    "slug": "aws-amazon-web-services"
+  },
+  {
+    "name": "Amazon Web Services",
+    "slug": "aws-amazon-web-services"
+  },
+  {
+    "name": "American Express",
+    "slug": "americanexpress"
+  },
+  {
+    "name": "Among Us",
+    "slug": "among-us"
+  },
+  {
+    "name": "Anthropic",
+    "slug": "claude-ai"
+  },
+  {
+    "name": "Anydesk",
+    "slug": "anydesk"
+  },
+  {
+    "name": "Apex Legends",
+    "slug": "apex-legends"
+  },
+  {
+    "name": "App Store",
+    "slug": "app-store"
+  },
+  {
+    "name": "AppDynamics",
+    "slug": "appdynamics"
+  },
+  {
+    "name": "Apple Maps",
+    "slug": "apple-maps"
+  },
+  {
+    "name": "Apple Pay",
+    "slug": "apple-pay"
+  },
+  {
+    "name": "Apple Store",
+    "slug": "apple-store"
+  },
+  {
+    "name": "Astra Security",
+    "slug": "astra-security"
+  },
+  {
+    "name": "Atlassian",
+    "slug": "atlassian"
+  },
+  {
+    "name": "Auth0",
+    "slug": "auth0"
+  },
+  {
+    "name": "Autodesk",
+    "slug": "autodesk"
+  },
+  {
+    "name": "Azercell",
+    "slug": "azercell"
+  },
+  {
+    "name": "Aztelekom",
+    "slug": "aztelekom"
+  },
+  {
+    "name": "Bakcell",
+    "slug": "bakcell"
+  },
+  {
+    "name": "Baktelecom",
+    "slug": "baktelecom"
+  },
+  {
+    "name": "Bing",
+    "slug": "bing"
+  },
+  {
+    "name": "Blizzard Battle.net",
+    "slug": "battle-net"
+  },
+  {
+    "name": "Bluehost",
+    "slug": "bluehost"
+  },
+  {
+    "name": "Board Game Arena",
+    "slug": "boardgamearena"
+  },
+  {
+    "name": "Booking.com",
+    "slug": "booking-com"
+  },
+  {
+    "name": "BYD",
+    "slug": "byd"
+  },
+  {
+    "name": "CacheFly",
+    "slug": "cachefly"
+  },
+  {
+    "name": "Call of Duty",
+    "slug": "call-of-duty"
+  },
+  {
+    "name": "Candy Crush",
+    "slug": "candy-crush"
+  },
+  {
+    "name": "Candy Crush Soda Saga",
+    "slug": "candy-crush-soda"
+  },
+  {
+    "name": "Canva",
+    "slug": "canva"
+  },
+  {
+    "name": "CDN77",
+    "slug": "cdn77"
+  },
+  {
+    "name": "Choice Hotels",
+    "slug": "choicehotels"
+  },
+  {
+    "name": "Claude",
+    "slug": "claude-ai"
+  },
+  {
+    "name": "Cloudflare",
+    "slug": "cloudflare"
+  },
+  {
+    "name": "Continue with Facebook",
+    "slug": "continue-with-facebook"
+  },
+  {
+    "name": "Continue with Google",
+    "slug": "continue-with-google"
+  },
+  {
+    "name": "Currencies Direct",
+    "slug": "currenciesdirect"
+  },
+  {
+    "name": "CurrencyFair",
+    "slug": "currencyfair"
+  },
+  {
+    "name": "cursor",
+    "slug": "cursor"
+  },
+  {
+    "name": "CyberArk",
+    "slug": "cyberark"
+  },
+  {
+    "name": "Datadog",
+    "slug": "datadog"
+  },
+  {
+    "name": "Dead By Daylight",
+    "slug": "dead-by-daylight"
+  },
+  {
+    "name": "Destiny",
+    "slug": "destiny"
+  },
+  {
+    "name": "Diablo",
+    "slug": "diablo"
+  },
+  {
+    "name": "Diablo II Remastered",
+    "slug": "diablo-ii-remastered"
+  },
+  {
+    "name": "Diablo III",
+    "slug": "diablo-iii"
+  },
+  {
+    "name": "Diablo IV",
+    "slug": "diablo-iv"
+  },
+  {
+    "name": "Digicert",
+    "slug": "digicert"
+  },
+  {
+    "name": "DigitalOcean",
+    "slug": "digitalocean"
+  },
+  {
+    "name": "Discogs",
+    "slug": "discogs"
+  },
+  {
+    "name": "Discord",
+    "slug": "discord"
+  },
+  {
+    "name": "DNS4EU",
+    "slug": "dns4eu"
+  },
+  {
+    "name": "Dota 2",
+    "slug": "dota-2"
+  },
+  {
+    "name": "DreamHost",
+    "slug": "dreamhost"
+  },
+  {
+    "name": "Droplr",
+    "slug": "droplr"
+  },
+  {
+    "name": "Duckduckgo",
+    "slug": "duckduckgo"
+  },
+  {
+    "name": "EA",
+    "slug": "ea"
+  },
+  {
+    "name": "EA App",
+    "slug": "eaapp"
+  },
+  {
+    "name": "EA Sports FC",
+    "slug": "fifa"
+  },
+  {
+    "name": "EA Sports UFC",
+    "slug": "ea-sport-ufc"
+  },
+  {
+    "name": "Elastic (ELK Stack)",
+    "slug": "elasticelkstack"
+  },
+  {
+    "name": "Entrust",
+    "slug": "entrust"
+  },
+  {
+    "name": "Epic Games Store",
+    "slug": "epic-games-store"
+  },
+  {
+    "name": "Euronet",
+    "slug": "euronet"
+  },
+  {
+    "name": "Facebook",
+    "slug": "facebook"
+  },
+  {
+    "name": "Facebook Messenger",
+    "slug": "facebook-messenger"
+  },
+  {
+    "name": "Faceit",
+    "slug": "faceit"
+  },
+  {
+    "name": "Facetime",
+    "slug": "facetime"
+  },
+  {
+    "name": "Fall Guys",
+    "slug": "fall-guys"
+  },
+  {
+    "name": "Fastly",
+    "slug": "fastly"
+  },
+  {
+    "name": "FIFA",
+    "slug": "fifa-official"
+  },
+  {
+    "name": "Fortnite",
+    "slug": "fortnite"
+  },
+  {
+    "name": "Forza",
+    "slug": "forza-motorsport"
+  },
+  {
+    "name": "GeForce Now",
+    "slug": "geforce-now"
+  },
+  {
+    "name": "GitHub",
+    "slug": "github"
+  },
+  {
+    "name": "GlobalSign",
+    "slug": "globalsign"
+  },
+  {
+    "name": "Gmail",
+    "slug": "gmail"
+  },
+  {
+    "name": "Go Daddy",
+    "slug": "go-daddy"
+  },
+  {
+    "name": "GOG.com",
+    "slug": "gog-com"
+  },
+  {
+    "name": "Google",
+    "slug": "google"
+  },
+  {
+    "name": "Google Cloud",
+    "slug": "google-cloud"
+  },
+  {
+    "name": "Google Drive",
+    "slug": "google-drive"
+  },
+  {
+    "name": "Google Maps",
+    "slug": "google-maps"
+  },
+  {
+    "name": "Google NotebookLM",
+    "slug": "google-notebooklm"
+  },
+  {
+    "name": "Google Play",
+    "slug": "google-play"
+  },
+  {
+    "name": "Google Public DNS",
+    "slug": "googlepublicdns"
+  },
+  {
+    "name": "Google Store",
+    "slug": "google-store"
+  },
+  {
+    "name": "Google Wallet",
+    "slug": "google-wallet"
+  },
+  {
+    "name": "Google Workspace",
+    "slug": "googleworkspace"
+  },
+  {
+    "name": "Grafana Labs",
+    "slug": "grafana"
+  },
+  {
+    "name": "GTA 5",
+    "slug": "gta5"
+  },
+  {
+    "name": "Halo",
+    "slug": "halo"
+  },
+  {
+    "name": "Halo Infinite",
+    "slug": "haloinfinite"
+  },
+  {
+    "name": "Honda Link",
+    "slug": "honda"
+  },
+  {
+    "name": "HostGator",
+    "slug": "hostgator"
+  },
+  {
+    "name": "Hotels.com",
+    "slug": "hotels-com"
+  },
+  {
+    "name": "IBM Cloud",
+    "slug": "ibm-cloud"
+  },
+  {
+    "name": "iCloud",
+    "slug": "icloud"
+  },
+  {
+    "name": "iCount",
+    "slug": "icount"
+  },
+  {
+    "name": "iMessage",
+    "slug": "imessage"
+  },
+  {
+    "name": "Instagram",
+    "slug": "instagram"
+  },
+  {
+    "name": "IONOS",
+    "slug": "ionos"
+  },
+  {
+    "name": "Kapital Bank",
+    "slug": "kapital-bank"
+  },
+  {
+    "name": "KeyCDN",
+    "slug": "keycdn"
+  },
+  {
+    "name": "Kia Connect",
+    "slug": "kiaconnect"
+  },
+  {
+    "name": "League of Legends",
+    "slug": "league-of-legends"
+  },
+  {
+    "name": "League of Legends: Wild Rift",
+    "slug": "league-of-legends-wild-rift"
+  },
+  {
+    "name": "Let's Encrypt",
+    "slug": "letsencrypt"
+  },
+  {
+    "name": "Life360",
+    "slug": "life360"
+  },
+  {
+    "name": "Limelight Networks",
+    "slug": "limelight"
+  },
+  {
+    "name": "Liquid Web",
+    "slug": "liquid-web"
+  },
+  {
+    "name": "Lucidchart",
+    "slug": "lucidchart"
+  },
+  {
+    "name": "Mario Kart 8: Deluxe",
+    "slug": "mariokart8deluxe"
+  },
+  {
+    "name": "Mario Kart Tour",
+    "slug": "mariokarttour"
+  },
+  {
+    "name": "Mastercard",
+    "slug": "mastercard"
+  },
+  {
+    "name": "Mastodon",
+    "slug": "mastodon"
+  },
+  {
+    "name": "Mercedes Me",
+    "slug": "mercedes"
+  },
+  {
+    "name": "Microsoft 365",
+    "slug": "microsoft-365"
+  },
+  {
+    "name": "Microsoft Azure",
+    "slug": "windows-azure"
+  },
+  {
+    "name": "Microsoft Defender XDR",
+    "slug": "microsoft-defender-xdr"
+  },
+  {
+    "name": "Microsoft Dynamics",
+    "slug": "microsoft-dynamics"
+  },
+  {
+    "name": "Microsoft OneDrive",
+    "slug": "microsoftonedrive"
+  },
+  {
+    "name": "Minecraft",
+    "slug": "minecraft"
+  },
+  {
+    "name": "MoneyCorp",
+    "slug": "moneycorp"
+  },
+  {
+    "name": "MoneyGram",
+    "slug": "moneygram"
+  },
+  {
+    "name": "Monster Hunter",
+    "slug": "monster-hunter"
+  },
+  {
+    "name": "MooMoo Financial",
+    "slug": "moomoo-financial"
+  },
+  {
+    "name": "My BMW",
+    "slug": "mybmw"
+  },
+  {
+    "name": "My Hyundai",
+    "slug": "my-hyundai"
+  },
+  {
+    "name": "My Peugeot",
+    "slug": "my-peugeot"
+  },
+  {
+    "name": "My Porsche",
+    "slug": "porsche"
+  },
+  {
+    "name": "My Renault",
+    "slug": "renault"
+  },
+  {
+    "name": "My Toyota",
+    "slug": "toyota"
+  },
+  {
+    "name": "MyGov",
+    "slug": "mygovaz"
+  },
+  {
+    "name": "Nar (Azerfon)",
+    "slug": "nar-azerfon"
+  },
+  {
+    "name": "Netflix",
+    "slug": "netflix"
+  },
+  {
+    "name": "Netlify",
+    "slug": "netlify"
+  },
+  {
+    "name": "Nintendo eShop",
+    "slug": "nintendo-eshop"
+  },
+  {
+    "name": "Nintendo Switch Online",
+    "slug": "nintendo-switch-online"
+  },
+  {
+    "name": "Nissan Connect",
+    "slug": "nissan"
+  },
+  {
+    "name": "No Man's Sky",
+    "slug": "no-mans-sky"
+  },
+  {
+    "name": "OFX",
+    "slug": "ofx"
+  },
+  {
+    "name": "Okta",
+    "slug": "okta"
+  },
+  {
+    "name": "OpenClaw",
+    "slug": "openclaw"
+  },
+  {
+    "name": "OpenDNS",
+    "slug": "opendns"
+  },
+  {
+    "name": "Oracle Cloud",
+    "slug": "oracle-cloud"
+  },
+  {
+    "name": "Overcooked 2",
+    "slug": "overcooked2"
+  },
+  {
+    "name": "OVHcloud",
+    "slug": "ovh"
+  },
+  {
+    "name": "PASHA Bank",
+    "slug": "pasha-bank"
+  },
+  {
+    "name": "Path of Titans",
+    "slug": "path-of-titans"
+  },
+  {
+    "name": "PayEm",
+    "slug": "payem"
+  },
+  {
+    "name": "Payoneer",
+    "slug": "payoneer"
+  },
+  {
+    "name": "Paypal",
+    "slug": "paypal"
+  },
+  {
+    "name": "Pingdom",
+    "slug": "pingdom"
+  },
+  {
+    "name": "Playstation Network",
+    "slug": "playstation-network"
+  },
+  {
+    "name": "Pokemon Go",
+    "slug": "pokemon-go"
+  },
+  {
+    "name": "Postman",
+    "slug": "postman"
+  },
+  {
+    "name": "Prometheus (Grafana Labs)",
+    "slug": "prometheusgrafanalabs"
+  },
+  {
+    "name": "Proofpoint",
+    "slug": "proofpoint"
+  },
+  {
+    "name": "Quad9",
+    "slug": "quad9"
+  },
+  {
+    "name": "Qualys",
+    "slug": "qualys"
+  },
+  {
+    "name": "Rainbow Six Siege",
+    "slug": "rainbow-six"
+  },
+  {
+    "name": "Reddit",
+    "slug": "reddit"
+  },
+  {
+    "name": "Remitly",
+    "slug": "remitly"
+  },
+  {
+    "name": "RingCentral",
+    "slug": "ringcentral"
+  },
+  {
+    "name": "Roblox",
+    "slug": "roblox"
+  },
+  {
+    "name": "Rocket League",
+    "slug": "rocket-league"
+  },
+  {
+    "name": "Roku",
+    "slug": "roku"
+  },
+  {
+    "name": "Runpod",
+    "slug": "runpod"
+  },
+  {
+    "name": "Sea of Thieves",
+    "slug": "sea-of-thieves"
+  },
+  {
+    "name": "Sectigo",
+    "slug": "sectigo"
+  },
+  {
+    "name": "ServiceNow",
+    "slug": "service-now"
+  },
+  {
+    "name": "Shein",
+    "slug": "shein"
+  },
+  {
+    "name": "Sign in with Apple",
+    "slug": "sign-in-with-apple"
+  },
+  {
+    "name": "Skills.sh",
+    "slug": "skills-sh"
+  },
+  {
+    "name": "Snapchat",
+    "slug": "snapchat"
+  },
+  {
+    "name": "SolarWinds",
+    "slug": "solarwinds"
+  },
+  {
+    "name": "Splunk",
+    "slug": "splunk"
+  },
+  {
+    "name": "Squarespace",
+    "slug": "squarespace"
+  },
+  {
+    "name": "StackPath",
+    "slug": "stackpath"
+  },
+  {
+    "name": "Stardew Valley",
+    "slug": "stardewvalley"
+  },
+  {
+    "name": "Steam",
+    "slug": "steam"
+  },
+  {
+    "name": "Stripe",
+    "slug": "stripe"
+  },
+  {
+    "name": "Sumo Logic",
+    "slug": "sumologic"
+  },
+  {
+    "name": "Suno",
+    "slug": "suno"
+  },
+  {
+    "name": "Super Smash Bros. Ultimate",
+    "slug": "supersmashbrosultimate"
+  },
+  {
+    "name": "Tableau",
+    "slug": "tableau"
+  },
+  {
+    "name": "Team Fortress 2",
+    "slug": "team-fortress-2"
+  },
+  {
+    "name": "Telegram",
+    "slug": "telegram"
+  },
+  {
+    "name": "Temu",
+    "slug": "temu"
+  },
+  {
+    "name": "Tencent Cloud",
+    "slug": "tencent-cloud"
+  },
+  {
+    "name": "Terraform Cloud",
+    "slug": "terraformcloud"
+  },
+  {
+    "name": "Tesla",
+    "slug": "tesla"
+  },
+  {
+    "name": "The Last Of Us",
+    "slug": "the-last-of-us"
+  },
+  {
+    "name": "The Sims 4",
+    "slug": "the-sims-4"
+  },
+  {
+    "name": "Threads",
+    "slug": "threads"
+  },
+  {
+    "name": "TikTok",
+    "slug": "tiktok"
+  },
+  {
+    "name": "TransferMate",
+    "slug": "transfermate"
+  },
+  {
+    "name": "Twitch",
+    "slug": "twitch"
+  },
+  {
+    "name": "Uber",
+    "slug": "uber"
+  },
+  {
+    "name": "Ubisoft Connect",
+    "slug": "uplay"
+  },
+  {
+    "name": "Ubuntu",
+    "slug": "ubuntu"
+  },
+  {
+    "name": "Uncharted",
+    "slug": "uncharted"
+  },
+  {
+    "name": "Valheim",
+    "slug": "valheim"
+  },
+  {
+    "name": "Valorant",
+    "slug": "valorant"
+  },
+  {
+    "name": "Venice",
+    "slug": "venice"
+  },
+  {
+    "name": "Verisign Public DNS",
+    "slug": "verisignpublicdns"
+  },
+  {
+    "name": "Viber",
+    "slug": "viber"
+  },
+  {
+    "name": "Vimeo",
+    "slug": "vimeo"
+  },
+  {
+    "name": "Visa",
+    "slug": "visa"
+  },
+  {
+    "name": "Volvo",
+    "slug": "volvo"
+  },
+  {
+    "name": "Vonage",
+    "slug": "vonage"
+  },
+  {
+    "name": "VW We Connect",
+    "slug": "we-connect"
+  },
+  {
+    "name": "Waze",
+    "slug": "waze"
+  },
+  {
+    "name": "Whatsapp",
+    "slug": "whatsapp"
+  },
+  {
+    "name": "Wikipedia",
+    "slug": "wikipedia"
+  },
+  {
+    "name": "Wise",
+    "slug": "transferwise"
+  },
+  {
+    "name": "Wordle",
+    "slug": "wordle"
+  },
+  {
+    "name": "Wordpress.com",
+    "slug": "wordpresscom"
+  },
+  {
+    "name": "WorldRemit",
+    "slug": "worldremit"
+  },
+  {
+    "name": "WP Engine",
+    "slug": "wp-engine"
+  },
+  {
+    "name": "X (Twitter)",
+    "slug": "twitter"
+  },
+  {
+    "name": "Xbox Network (Xbox Live)",
+    "slug": "xbox-live"
+  },
+  {
+    "name": "Yahoo Mail",
+    "slug": "yahoo-mail"
+  },
+  {
+    "name": "YouTube",
+    "slug": "youtube"
+  },
+  {
+    "name": "Z.ai",
+    "slug": "zai"
+  },
+  {
+    "name": "Zoom",
+    "slug": "zoom"
+  },
+  {
+    "name": "Zscaler",
+    "slug": "zscaler"
+  }
+]
