@@ -282,7 +282,11 @@ async def get_incidents_list(
                 "is_incident": incident.get("isIncident", False),
                 "status": incident.get("status", "unknown")
             })
-            
+
+            snow = _extract_servicenow_info(incident)
+            if snow:
+                incident_info["servicenow_ticket"] = snow
+
             incident_list.append(incident_info)
 
         return {
@@ -457,7 +461,11 @@ async def get_incidents_summary(
                 
                 if root_cause_info:
                     summary["root_cause_info"] = root_cause_info
-            
+
+            snow = _extract_servicenow_info(incident)
+            if snow:
+                summary["servicenow_ticket"] = snow
+
             incidents_summary.append(summary)
 
         return {
@@ -609,6 +617,7 @@ async def get_incident_details(
         if "rootCause" in incident_data and incident_data["rootCause"] and "metricName" in incident_data["rootCause"]:
             metric_name = incident_data["rootCause"]["metricName"]
 
+        snow = _extract_servicenow_info(incident_data)
         result = {
             "metricName": metric_name,
             "incident": result_incident,
@@ -622,7 +631,8 @@ async def get_incident_details(
             "isIncident": incident_data.get("isIncident"),
             "active": incident_data.get("active"),
             "projectDisplayName": incident_data.get("projectDisplayName", "Unknown"),
-            "realProjectName": incident_data.get("projectName", "Unknown")
+            "realProjectName": incident_data.get("projectName", "Unknown"),
+            "servicenow_ticket": snow
         }
 
         # Check if root cause analysis is available and requested
@@ -1284,7 +1294,11 @@ async def get_project_incidents(
                     "percentage": root_cause.get("percentage", 0),
                     "sign": root_cause.get("sign", "unknown")
                 }
-            
+
+            snow = _extract_servicenow_info(incident)
+            if snow:
+                incident_info["servicenow_ticket"] = snow
+
             incident_list.append(incident_info)
 
         return {
@@ -1425,6 +1439,10 @@ async def predict_incidents(
                 except Exception as e:
                     pass # Ignore recommendation fetch errors
 
+            snow = _extract_servicenow_info(incident)
+            if snow:
+                incident_info["servicenow_ticket"] = snow
+
             incident_list.append(incident_info)
 
         # Optionally fetch recommendations for each predicted incident
@@ -1462,6 +1480,19 @@ async def predict_incidents(
         if settings.ENABLE_DEBUG_MESSAGES:
             print(error_message)
         return {"status": "error", "message": error_message}
+
+def _extract_servicenow_info(incident: dict) -> Optional[dict]:
+    """Extract ServiceNow ticket number and hyperlink from an incident, if present."""
+    snow = incident.get("serviceNowTimelineInfo")
+    if not snow:
+        return None
+    result = {}
+    if snow.get("number"):
+        result["ticket_number"] = snow["number"]
+    if snow.get("hyperLink"):
+        result["hyperlink"] = snow["hyperLink"]
+    return result or None
+
 
 def _get_api_client():
     """
