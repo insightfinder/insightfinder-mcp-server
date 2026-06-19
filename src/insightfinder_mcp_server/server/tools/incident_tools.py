@@ -170,10 +170,9 @@ async def get_incidents_overview(
                 for rid in incident.get("relatedTimelineIdList", []):
                     c = consolidated_index.get(rid)
                     if c:
-                        flag = str(c.get("dampeningFlagInfo", {}).get("flag", "unknown"))
-                        flag_counts[flag] = flag_counts.get(flag, 0) + 1
-            flag_summary = {DAMPENING_FLAG_LABELS.get(k, f"flag={k}"): v for k, v in flag_counts.items()}
-            summary["consolidation_breakdown"] = flag_summary
+                        flag_desc = c.get("dampeningFlagInfo", {}).get("flagDesc", "unknown")
+                        flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
+            summary["consolidation_breakdown"] = flag_counts
 
         return {
             "status": "success",
@@ -1046,12 +1045,12 @@ async def get_incidents_statistics(
                     c_instances[c.get("instanceName", "Unknown")] = c_instances.get(c.get("instanceName", "Unknown"), 0) + 1
                     c_patterns[c.get("patternName", "Unknown")] = c_patterns.get(c.get("patternName", "Unknown"), 0) + 1
                     c_projects[c.get("projectDisplayName", "Unknown")] = c_projects.get(c.get("projectDisplayName", "Unknown"), 0) + 1
-                    flag = str(c.get("dampeningFlagInfo", {}).get("flag", "unknown"))
-                    flag_counts[flag] = flag_counts.get(flag, 0) + 1
+                    flag_desc = c.get("dampeningFlagInfo", {}).get("flagDesc", "unknown")
+                    flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
 
             statistics["consolidated_breakdown"] = {
                 "total_consolidated": referenced_consolidated_count,
-                "consolidation_type_breakdown": {DAMPENING_FLAG_LABELS.get(k, f"flag={k}"): v for k, v in flag_counts.items()},
+                "consolidation_type_breakdown": flag_counts,
                 "top_affected_components": dict(sorted(c_components.items(), key=lambda x: x[1], reverse=True)[:10]),
                 "top_affected_instances": dict(sorted(c_instances.items(), key=lambda x: x[1], reverse=True)[:10]),
                 "top_patterns": dict(sorted(c_patterns.items(), key=lambda x: x[1], reverse=True)[:10]),
@@ -1560,10 +1559,8 @@ async def get_consolidated_incidents_report(
     - "how many incidents were suppressed before June 11 vs after June 18"
     - "what got consolidated under each primary incident today"
 
-    Each consolidated incident has a consolidation type:
-    - "Instance level dampening": suppressed because the same instance already has an open incident
-    - "Component level dampening": suppressed because the same component already has an open incident
-    - "Component level content based consolidation": content-similar incident grouped under a primary one
+    Each consolidated incident carries a consolidation_type derived from the API's flagDesc field,
+    e.g. "COMPONENT_CONTENT_SIMILARITY_CONSOLIDATION", "INSTANCE_DAMPENING", etc.
 
     ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
 
@@ -1573,8 +1570,9 @@ async def get_consolidated_incidents_report(
         system_name (str): The name of the system to query.
         start_time (str): Optional start of the time window.
         end_time (str): Optional end of the time window.
-        consolidation_type (str): Optional filter by consolidation type. Accepted values:
-            "instance_dampening", "component_dampening", "content_consolidation"
+        consolidation_type (str): Optional. Case-insensitive substring match against the flagDesc
+            value, e.g. "CONTENT_SIMILARITY" to filter only content-based consolidations.
+            Leave empty to return all types.
         limit (int): Maximum number of consolidated incidents to return (default: 50).
 
     Returns:
@@ -1627,14 +1625,6 @@ async def get_consolidated_incidents_report(
         referenced_ids = set(id_to_primary.keys())
         referenced_consolidated_count = len(referenced_ids)
 
-        # Resolve flag filter
-        flag_filter_map = {
-            "instance_dampening": "1",
-            "component_dampening": "2",
-            "content_consolidation": "7",
-        }
-        flag_filter = flag_filter_map.get(consolidation_type or "", None) if consolidation_type else None
-
         # Build report entries from referenced consolidated incidents only
         report_entries = []
         flag_counts: Dict[str, int] = {}
@@ -1643,10 +1633,11 @@ async def get_consolidated_incidents_report(
             c = consolidated_index.get(rid)
             if not c:
                 continue
-            flag = str(c.get("dampeningFlagInfo", {}).get("flag", ""))
-            flag_counts[flag] = flag_counts.get(flag, 0) + 1
+            flag_desc = c.get("dampeningFlagInfo", {}).get("flagDesc", "")
+            flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
 
-            if flag_filter and flag != flag_filter:
+            # Filter by consolidation_type if provided — match against flagDesc (case-insensitive)
+            if consolidation_type and consolidation_type.upper() not in flag_desc.upper():
                 continue
 
             entry = _summarize_consolidated(c, tz_name)
@@ -1664,8 +1655,6 @@ async def get_consolidated_incidents_report(
         report_entries.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
         report_entries = report_entries[:limit]
 
-        type_breakdown = {DAMPENING_FLAG_LABELS.get(k, f"flag={k}"): v for k, v in flag_counts.items()}
-
         return {
             "status": "success",
             "system_name": system_name,
@@ -1682,7 +1671,7 @@ async def get_consolidated_incidents_report(
                 "primary_incident_count": len(primary_incidents),
                 "total_incidents": len(primary_incidents) + referenced_consolidated_count,
                 "consolidated_incident_count": referenced_consolidated_count,
-                "consolidation_type_breakdown": type_breakdown,
+                "consolidation_type_breakdown": flag_counts,
                 "suppression_ratio": round(referenced_consolidated_count / max(len(primary_incidents), 1), 2)
             },
             "returned_count": len(report_entries),
@@ -1696,13 +1685,6 @@ async def get_consolidated_incidents_report(
         return {"status": "error", "message": error_message}
 
 
-DAMPENING_FLAG_LABELS = {
-    "1": "Instance level dampening",
-    "2": "Component level dampening",
-    "7": "Component level content based consolidation",
-}
-
-
 def _build_consolidated_index(consolidated_data: list) -> dict:
     """Build a dict mapping incident id -> consolidated incident record."""
     return {item["id"]: item for item in consolidated_data if "id" in item}
@@ -1711,7 +1693,6 @@ def _build_consolidated_index(consolidated_data: list) -> dict:
 def _summarize_consolidated(consolidated_incident: dict, tz_name: str) -> dict:
     """Return a compact summary of a consolidated incident for embedding in a parent."""
     dampening = consolidated_incident.get("dampeningFlagInfo", {})
-    flag = str(dampening.get("flag", ""))
     summary = {
         "id": consolidated_incident.get("id"),
         "instance": consolidated_incident.get("instanceName", "Unknown"),
@@ -1721,7 +1702,7 @@ def _summarize_consolidated(consolidated_incident: dict, tz_name: str) -> dict:
         "anomaly_score": round(consolidated_incident.get("anomalyScore", 0), 2),
         "pattern": consolidated_incident.get("patternName", "Unknown"),
         "project": consolidated_incident.get("projectDisplayName", "Unknown"),
-        "consolidation_type": DAMPENING_FLAG_LABELS.get(flag, f"flag={flag}"),
+        "consolidation_type": dampening.get("flagDesc", ""),
         "consolidation_info": dampening.get("info", ""),
     }
     snow = _extract_servicenow_info(consolidated_incident)
