@@ -23,7 +23,8 @@ async def get_incidents_overview(
     system_name: str,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
-    project_name: Optional[str] = None
+    project_name: Optional[str] = None,
+    include_consolidated: bool = False
 ) -> Dict[str, Any]:
     """
     Fetches a very high-level overview of incidents - just counts and basic metrics.
@@ -59,6 +60,8 @@ async def get_incidents_overview(
             - Relative keywords: "thisweek", "lastweek", "thismonth", "lastmonth", "today", "yesterday"
             - Absolute dates: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds
         project_name (str): Optional. Filter results to only include incidents from this specific project.
+        include_consolidated (bool): If True, include counts of consolidated (dampened) incidents
+            that were suppressed under primary incidents. Default is False.
 
     Returns:
         Dict with status and overview containing incident counts and basic statistics.
@@ -119,16 +122,20 @@ async def get_incidents_overview(
             return result
 
         incidents = result["data"]
-        
+        consolidated_data = result.get("consolidated_data", [])
+        consolidated_index = _build_consolidated_index(consolidated_data)
+
         # Filter by project name if specified
         if project_name:
             incidents = [i for i in incidents if i.get("projectName", "").lower() == project_name.lower() or i.get("projectDisplayName", "").lower() == project_name.lower()]
-        
-        # Basic counts and metrics
-        total_events = len(incidents)
-        true_incidents = len([i for i in incidents if i.get("isIncident", False)])
-        
-        # Time range analysis
+
+        # Total = primary incidents + their referenced consolidated children
+        # (relatedTimelineIdList on each primary points into consolidatedTimelineList)
+        primary_count = len(incidents)
+        consolidated_count = sum(len(i.get("relatedTimelineIdList", [])) for i in incidents)
+        total_incidents = primary_count + consolidated_count
+
+        # Time range analysis (primaries only for first/last timestamps)
         if incidents:
             timestamps = [incident["timestamp"] for incident in incidents]
             first_incident = min(timestamps)
@@ -136,11 +143,37 @@ async def get_incidents_overview(
         else:
             first_incident = last_incident = None
 
-        # Component and instance analysis (just unique counts)
+        # Unique dimension counts across primary incidents
         unique_components = len(set(incident.get("componentName", "Unknown") for incident in incidents))
         unique_instances = len(set(incident.get("instanceName", "Unknown") for incident in incidents))
         unique_patterns = len(set(incident.get("patternName", "Unknown") for incident in incidents))
         unique_projects = len(set(incident.get("projectDisplayName", "Unknown") for incident in incidents))
+
+        summary = {
+            "total_incidents": total_incidents,
+            "primary_incidents": primary_count,
+            "consolidated_incidents": consolidated_count,
+            "primaries_with_consolidation": sum(1 for i in incidents if i.get("relatedTimelineIdList")),
+            "unique_components": unique_components,
+            "unique_instances": unique_instances,
+            "unique_patterns": unique_patterns,
+            "unique_projects": unique_projects,
+            "first_event": format_api_timestamp_corrected(first_incident, tz_name) if first_incident else None,
+            "last_event": format_api_timestamp_corrected(last_incident, tz_name) if last_incident else None,
+            "has_incidents": total_incidents > 0
+        }
+
+        if include_consolidated:
+            # Tally dampening flag types only for incidents actually referenced by primaries
+            flag_counts: Dict[str, int] = {}
+            for incident in incidents:
+                for rid in incident.get("relatedTimelineIdList", []):
+                    c = consolidated_index.get(rid)
+                    if c:
+                        flag = str(c.get("dampeningFlagInfo", {}).get("flag", "unknown"))
+                        flag_counts[flag] = flag_counts.get(flag, 0) + 1
+            flag_summary = {DAMPENING_FLAG_LABELS.get(k, f"flag={k}"): v for k, v in flag_counts.items()}
+            summary["consolidation_breakdown"] = flag_summary
 
         return {
             "status": "success",
@@ -150,20 +183,9 @@ async def get_incidents_overview(
                 "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
                 "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
             },
-            "summary": {
-                "total_events": total_events,
-                "true_incidents": true_incidents,
-                "non_incident_events": total_events - true_incidents,
-                "unique_components": unique_components,
-                "unique_instances": unique_instances,
-                "unique_patterns": unique_patterns,
-                "unique_projects": unique_projects,
-                "first_event": format_api_timestamp_corrected(first_incident, tz_name) if first_incident else None,
-                "last_event": format_api_timestamp_corrected(last_incident, tz_name) if last_incident else None,
-                "has_incidents": true_incidents > 0
-            }
+            "summary": summary
         }
-        
+
     except Exception as e:
         error_message = f"Error in get_incidents_overview: {str(e)}"
         if settings.ENABLE_DEBUG_MESSAGES:
@@ -177,7 +199,8 @@ async def get_incidents_list(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     limit: int = 10,
-    only_true_incidents: bool = True
+    only_true_incidents: bool = True,
+    include_consolidated: bool = False
 ) -> Dict[str, Any]:
     """
     Fetches a compact list of incidents with basic information only.
@@ -200,7 +223,9 @@ async def get_incidents_list(
                 - For rolling windows (except "last 24 hours"), always include time precision when passing values. Do NOT pass date-only values for rolling ranges.
         limit (int): Maximum number of incidents to return (default: 10).
         only_true_incidents (bool): If True, only return events marked as true incidents. default is True.
-    
+        include_consolidated (bool): If True, each incident will include a list of consolidated
+            (dampened/suppressed) incidents that were grouped under it. Default is False.
+
     Note: All timestamps are in the Owner User Timezone. Display times using the
     "timezone" field from the response, never label as UTC.
     """
@@ -250,11 +275,13 @@ async def get_incidents_list(
             return result
 
         incidents = result["data"]
-        
+        consolidated_data = result.get("consolidated_data", [])
+        consolidated_index = _build_consolidated_index(consolidated_data)
+
         # Filter for true incidents if requested
         if only_true_incidents:
             incidents = [i for i in incidents if i.get("isIncident", False)]
-        
+
         # Sort by timestamp (most recent first) and limit
         incidents = sorted(incidents, key=lambda x: x["timestamp"], reverse=True)[:limit]
 
@@ -270,11 +297,11 @@ async def get_incidents_list(
                 "component": incident.get("componentName", "Unknown"),
                 "instance": incident.get("instanceName", "Unknown"),
             }
-            
+
             # Add metric name right after instance only if available
             if "rootCause" in incident and incident["rootCause"] and "metricName" in incident["rootCause"]:
                 incident_info["metricName"] = incident["rootCause"]["metricName"]
-            
+
             # Add remaining fields
             incident_info.update({
                 "pattern": incident.get("patternName", "Unknown"),
@@ -287,14 +314,20 @@ async def get_incidents_list(
             if snow:
                 incident_info["servicenow_ticket"] = snow
 
+            if include_consolidated:
+                consolidated = _attach_consolidated(incident, consolidated_index, tz_name)
+                incident_info["consolidated_incidents"] = consolidated
+                incident_info["consolidated_count"] = len(consolidated)
+
             incident_list.append(incident_info)
 
-        return {
+        response = {
             "status": "success",
             "system_name": system_name,
             "filters": {
                 "only_true_incidents": only_true_incidents,
-                "limit": limit
+                "limit": limit,
+                "include_consolidated": include_consolidated
             },
             "time_range": {
                 "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
@@ -304,7 +337,10 @@ async def get_incidents_list(
             "returned_count": len(incident_list),
             "incidents": incident_list
         }
-        
+        if include_consolidated:
+            response["total_consolidated_found"] = len(consolidated_data)
+        return response
+
     except Exception as e:
         error_message = f"Error in get_incidents_list: {str(e)}"
         if settings.ENABLE_DEBUG_MESSAGES:
@@ -319,7 +355,8 @@ async def get_incidents_summary(
     end_time: Optional[str] = None,
     limit: int = 5,
     only_true_incidents: bool = True,
-    include_root_cause_info: bool = True
+    include_root_cause_info: bool = True,
+    include_consolidated: bool = False
 ) -> Dict[str, Any]:
     """
     Fetches a detailed summary of incidents including root cause information.
@@ -338,6 +375,8 @@ async def get_incidents_summary(
         limit (int): Maximum number of incidents to return (default: 5).
         only_true_incidents (bool): If True, only return events marked as true incidents (default: True).
         include_root_cause_info (bool): If True, include information about root cause availability (default: True).
+        include_consolidated (bool): If True, each incident will include a list of consolidated
+            (dampened/suppressed) incidents grouped under it, with consolidation type and info. Default is False.
 
     Note: All timestamps are in the Owner User Timezone. Display times using the
     "timezone" field from the response, never label as UTC.
@@ -388,33 +427,34 @@ async def get_incidents_summary(
             return result
 
         incidents = result["data"]
-        
+        consolidated_data = result.get("consolidated_data", [])
+        consolidated_index = _build_consolidated_index(consolidated_data)
+
         # Filter for true incidents if requested
         if only_true_incidents:
             incidents = [i for i in incidents if i.get("isIncident", False)]
-        
+
         # Sort by timestamp (most recent first) and limit
         incidents = sorted(incidents, key=lambda x: x["timestamp"], reverse=True)[:limit]
 
         # Extract detailed summary information
         incidents_summary = []
         for incident in incidents:
-            # Convert timestamp to human readable
             timestamp_str = format_api_timestamp_corrected(incident["timestamp"], tz_name)
-            
+
             summary = {
-                "incident_id": len(incidents_summary) + 1,  # Simple ID for reference
+                "incident_id": len(incidents_summary) + 1,
                 "timestamp": incident["timestamp"],
                 "timestamp_human": timestamp_str,
                 "projectDisplayName": incident.get("projectDisplayName", "Unknown"),
                 "realProjectName": incident.get("projectName", "Unknown"),
                 "instanceName": incident.get("instanceName", "Unknown"),
             }
-            
+
             # Add metric name right after instanceName only if available
             if "rootCause" in incident and incident["rootCause"] and "metricName" in incident["rootCause"]:
                 summary["metricName"] = incident["rootCause"]["metricName"]
-            
+
             # Add remaining fields
             summary.update({
                 "componentName": incident.get("componentName", "Unknown"),
@@ -425,40 +465,25 @@ async def get_incidents_summary(
                 "has_raw_data": "rawData" in incident and incident["rawData"] is not None,
                 "has_root_cause": incident.get('rootCauseResultInfo', {}).get('hasPrecedingEvent', False) or ("rootCause" in incident and incident["rootCause"] is not None),
             })
-            
+
             # Add root cause information if available
             if include_root_cause_info:
                 root_cause_info = {}
-                
-                # Basic root cause info from the incident
-                # if "rootCause" in incident and incident["rootCause"]:
-                #     root_cause = incident["rootCause"]
-                #     root_cause_info["summary"] = {
-                #         "metricName": root_cause.get("metricName", "Unknown"),
-                #         "metricType": root_cause.get("metricType", "Unknown"),
-                #         "anomalyValue": root_cause.get("anomalyValue", 0),
-                #         "percentage": root_cause.get("percentage", 0),
-                #         "sign": root_cause.get("sign", "unknown"),
-                #         "isAlert": root_cause.get("isAlert", False)
-                #     }
-                
-                # Add root cause result info if available
+
                 if "rootCauseResultInfo" in incident and incident["rootCauseResultInfo"]:
                     root_cause_info["result_info"] = {
                         "hasPrecedingEvent": incident["rootCauseResultInfo"].get("hasPrecedingEvent", False),
                         "hasTrailingEvent": incident["rootCauseResultInfo"].get("hasTrailingEvent", False),
                         "causedByChangeEvent": incident["rootCauseResultInfo"].get("causedByChangeEvent", False),
-                        # "leadToIncident": incident["rootCauseResultInfo"].get("leadToIncident", False)
                     }
-                
-                # Add root cause info key if available (used for fetching full RCA chain)
+
                 if "rootCauseInfoKey" in incident and incident["rootCauseInfoKey"]:
                     root_cause_info["info_key"] = {
                         "projectName": incident["rootCauseInfoKey"].get("projectName"),
                         "instanceName": incident["rootCauseInfoKey"].get("instanceName"),
                         "incidentTimestamp": incident["rootCauseInfoKey"].get("incidentTimestamp")
                     }
-                
+
                 if root_cause_info:
                     summary["root_cause_info"] = root_cause_info
 
@@ -466,14 +491,20 @@ async def get_incidents_summary(
             if snow:
                 summary["servicenow_ticket"] = snow
 
+            if include_consolidated:
+                consolidated = _attach_consolidated(incident, consolidated_index, tz_name)
+                summary["consolidated_incidents"] = consolidated
+                summary["consolidated_count"] = len(consolidated)
+
             incidents_summary.append(summary)
 
-        return {
+        response = {
             "status": "success",
             "system_name": system_name,
             "filters": {
                 "only_true_incidents": only_true_incidents,
-                "limit": limit
+                "limit": limit,
+                "include_consolidated": include_consolidated
             },
             "time_range": {
                 "start": start_time_ms,
@@ -485,7 +516,10 @@ async def get_incidents_summary(
             "returned_count": len(incidents_summary),
             "incidents": incidents_summary
         }
-        
+        if include_consolidated:
+            response["total_consolidated_found"] = len(consolidated_data)
+        return response
+
     except Exception as e:
         error_message = f"Error in get_incidents_summary: {str(e)}"
         if settings.ENABLE_DEBUG_MESSAGES:
@@ -892,6 +926,7 @@ async def get_incidents_statistics(
     system_name: str,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
+    include_consolidated: bool = False
 ) -> Dict[str, Any]:
     """
     Provides statistical analysis of incidents for a system over a time period.
@@ -926,7 +961,9 @@ async def get_incidents_statistics(
         end_time (Optional[Union[str, int]]): The end of the time window.
             - Relative keywords: "thisweek", "lastweek", "thismonth", "lastmonth", "today", "yesterday"
             - Absolute dates: "2026-02-12T11:05:00", "2026-02-12", "02/12/2026", or milliseconds
-    
+        include_consolidated (bool): If True, also compute statistics over consolidated
+            (dampened/suppressed) incidents and include a consolidation breakdown. Default is False.
+
     Returns:
         Statistical breakdown with top affected components, instances, patterns, and projects.
     """
@@ -959,33 +996,67 @@ async def get_incidents_statistics(
             return result
 
         incidents = result["data"]
-        
-        # Calculate statistics
-        total_incidents = len(incidents)
-        true_incidents = len([i for i in incidents if i.get("isIncident", False)])
-        
-        # Group by component
-        components = {}
-        instances = {}
-        patterns = {}
-        projects = {}
-        
+        consolidated_data = result.get("consolidated_data", [])
+        consolidated_index = _build_consolidated_index(consolidated_data)
+
+        # Total = primaries + their referenced consolidated children
+        primary_count = len(incidents)
+        referenced_consolidated_count = sum(len(i.get("relatedTimelineIdList", [])) for i in incidents)
+        total_incident_count = primary_count + referenced_consolidated_count
+
+        components: Dict[str, int] = {}
+        instances: Dict[str, int] = {}
+        patterns: Dict[str, int] = {}
+        projects: Dict[str, int] = {}
+
         for incident in incidents:
-            # Component analysis
             component = incident.get("componentName", "Unknown")
             components[component] = components.get(component, 0) + 1
-            
-            # Instance analysis
             instance = incident.get("instanceName", "Unknown")
             instances[instance] = instances.get(instance, 0) + 1
-            
-            # Pattern analysis
             pattern = incident.get("patternName", "Unknown")
             patterns[pattern] = patterns.get(pattern, 0) + 1
-            
-            # Project analysis
             project = incident.get("projectDisplayName", "Unknown")
             projects[project] = projects.get(project, 0) + 1
+
+        statistics: Dict[str, Any] = {
+            "total_incidents": total_incident_count,
+            "primary_incidents": primary_count,
+            "consolidated_incidents": referenced_consolidated_count,
+            "top_affected_components": dict(sorted(components.items(), key=lambda x: x[1], reverse=True)[:10]),
+            "top_affected_instances": dict(sorted(instances.items(), key=lambda x: x[1], reverse=True)[:10]),
+            "top_patterns": dict(sorted(patterns.items(), key=lambda x: x[1], reverse=True)[:10]),
+            "top_affected_projects": dict(sorted(projects.items(), key=lambda x: x[1], reverse=True)[:10])
+        }
+
+        if include_consolidated:
+            # Only count consolidated incidents actually referenced by primaries
+            c_components: Dict[str, int] = {}
+            c_instances: Dict[str, int] = {}
+            c_patterns: Dict[str, int] = {}
+            c_projects: Dict[str, int] = {}
+            flag_counts: Dict[str, int] = {}
+
+            for incident in incidents:
+                for rid in incident.get("relatedTimelineIdList", []):
+                    c = consolidated_index.get(rid)
+                    if not c:
+                        continue
+                    c_components[c.get("componentName", "Unknown")] = c_components.get(c.get("componentName", "Unknown"), 0) + 1
+                    c_instances[c.get("instanceName", "Unknown")] = c_instances.get(c.get("instanceName", "Unknown"), 0) + 1
+                    c_patterns[c.get("patternName", "Unknown")] = c_patterns.get(c.get("patternName", "Unknown"), 0) + 1
+                    c_projects[c.get("projectDisplayName", "Unknown")] = c_projects.get(c.get("projectDisplayName", "Unknown"), 0) + 1
+                    flag = str(c.get("dampeningFlagInfo", {}).get("flag", "unknown"))
+                    flag_counts[flag] = flag_counts.get(flag, 0) + 1
+
+            statistics["consolidated_breakdown"] = {
+                "total_consolidated": referenced_consolidated_count,
+                "consolidation_type_breakdown": {DAMPENING_FLAG_LABELS.get(k, f"flag={k}"): v for k, v in flag_counts.items()},
+                "top_affected_components": dict(sorted(c_components.items(), key=lambda x: x[1], reverse=True)[:10]),
+                "top_affected_instances": dict(sorted(c_instances.items(), key=lambda x: x[1], reverse=True)[:10]),
+                "top_patterns": dict(sorted(c_patterns.items(), key=lambda x: x[1], reverse=True)[:10]),
+                "top_affected_projects": dict(sorted(c_projects.items(), key=lambda x: x[1], reverse=True)[:10])
+            }
 
         return {
             "status": "success",
@@ -995,17 +1066,9 @@ async def get_incidents_statistics(
                 "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
                 "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
             },
-            "statistics": {
-                "total_events": total_incidents,
-                "true_incidents": true_incidents,
-                "non_incident_events": total_incidents - true_incidents,
-                "top_affected_components": dict(sorted(components.items(), key=lambda x: x[1], reverse=True)[:10]),
-                "top_affected_instances": dict(sorted(instances.items(), key=lambda x: x[1], reverse=True)[:10]),
-                "top_patterns": dict(sorted(patterns.items(), key=lambda x: x[1], reverse=True)[:10]),
-                "top_affected_projects": dict(sorted(projects.items(), key=lambda x: x[1], reverse=True)[:10])
-            }
+            "statistics": statistics
         }
-        
+
     except Exception as e:
         error_message = f"Error in get_incidents_statistics: {str(e)}"
         if settings.ENABLE_DEBUG_MESSAGES:
@@ -1480,6 +1543,203 @@ async def predict_incidents(
         if settings.ENABLE_DEBUG_MESSAGES:
             print(error_message)
         return {"status": "error", "message": error_message}
+
+@mcp_server.tool()
+async def get_consolidated_incidents_report(
+    system_name: str,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    consolidation_type: Optional[str] = None,
+    limit: int = 50
+) -> Dict[str, Any]:
+    """
+    Returns a focused report on consolidated (dampened/suppressed) incidents for a system.
+    Use this tool when the user wants to understand noise reduction, suppression patterns,
+    or asks questions like:
+    - "show me the consolidated incidents last week vs this week"
+    - "how many incidents were suppressed before June 11 vs after June 18"
+    - "what got consolidated under each primary incident today"
+
+    Each consolidated incident has a consolidation type:
+    - "Instance level dampening": suppressed because the same instance already has an open incident
+    - "Component level dampening": suppressed because the same component already has an open incident
+    - "Component level content based consolidation": content-similar incident grouped under a primary one
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
+
+    ⚠️ RELATIVE DATE KEYWORDS SUPPORTED: "thisweek", "lastweek", "thismonth", "lastmonth", "today", "yesterday"
+
+    Args:
+        system_name (str): The name of the system to query.
+        start_time (str): Optional start of the time window.
+        end_time (str): Optional end of the time window.
+        consolidation_type (str): Optional filter by consolidation type. Accepted values:
+            "instance_dampening", "component_dampening", "content_consolidation"
+        limit (int): Maximum number of consolidated incidents to return (default: 50).
+
+    Returns:
+        Dict with consolidated incident list, type breakdown, and the primary incidents they belong to.
+    """
+    try:
+        tz_name, system_name = await resolve_system_timezone(system_name)
+
+        try:
+            start_time_ms, end_time_ms = parse_time_parameters(start_time, end_time, tz_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
+        if end_time_ms is None or start_time_ms is None:
+            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
+            if end_time_ms is None:
+                end_time_ms = default_end_ms
+            if start_time_ms is None:
+                start_time_ms = default_start_ms
+
+        if start_time_ms is not None and end_time_ms is not None and start_time_ms == end_time_ms:
+            import datetime
+            dt = datetime.datetime.fromtimestamp(start_time_ms / 1000, tz=datetime.timezone.utc)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
+            start_time_ms = int(start_dt.timestamp() * 1000)
+            end_time_ms = int(end_dt.timestamp() * 1000)
+
+        api_client = _get_api_client()
+        result = await api_client.get_incidents(
+            system_name=system_name,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+        )
+
+        if result["status"] != "success":
+            return result
+
+        primary_incidents = result["data"]
+        consolidated_data = result.get("consolidated_data", [])
+        consolidated_index = _build_consolidated_index(consolidated_data)
+
+        # Only consider consolidated incidents that are actually referenced by a primary
+        # via relatedTimelineIdList — those are the real suppressed incidents.
+        id_to_primary: Dict[int, dict] = {}
+        for primary in primary_incidents:
+            for rid in primary.get("relatedTimelineIdList", []):
+                id_to_primary[rid] = primary
+
+        referenced_ids = set(id_to_primary.keys())
+        referenced_consolidated_count = len(referenced_ids)
+
+        # Resolve flag filter
+        flag_filter_map = {
+            "instance_dampening": "1",
+            "component_dampening": "2",
+            "content_consolidation": "7",
+        }
+        flag_filter = flag_filter_map.get(consolidation_type or "", None) if consolidation_type else None
+
+        # Build report entries from referenced consolidated incidents only
+        report_entries = []
+        flag_counts: Dict[str, int] = {}
+
+        for rid, primary in id_to_primary.items():
+            c = consolidated_index.get(rid)
+            if not c:
+                continue
+            flag = str(c.get("dampeningFlagInfo", {}).get("flag", ""))
+            flag_counts[flag] = flag_counts.get(flag, 0) + 1
+
+            if flag_filter and flag != flag_filter:
+                continue
+
+            entry = _summarize_consolidated(c, tz_name)
+            entry["primary_incident"] = {
+                "instance": primary.get("instanceName", "Unknown"),
+                "component": primary.get("componentName", "Unknown"),
+                "timestamp": primary.get("timestamp"),
+                "timestamp_human": format_api_timestamp_corrected(primary.get("timestamp", 0), tz_name),
+                "project": primary.get("projectDisplayName", "Unknown"),
+                "anomaly_score": round(primary.get("anomalyScore", 0), 2),
+            }
+            report_entries.append(entry)
+
+        # Sort by timestamp descending, apply limit
+        report_entries.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+        report_entries = report_entries[:limit]
+
+        type_breakdown = {DAMPENING_FLAG_LABELS.get(k, f"flag={k}"): v for k, v in flag_counts.items()}
+
+        return {
+            "status": "success",
+            "system_name": system_name,
+            "timezone": tz_name,
+            "time_range": {
+                "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
+            },
+            "filters": {
+                "consolidation_type": consolidation_type,
+                "limit": limit
+            },
+            "summary": {
+                "primary_incident_count": len(primary_incidents),
+                "total_incidents": len(primary_incidents) + referenced_consolidated_count,
+                "consolidated_incident_count": referenced_consolidated_count,
+                "consolidation_type_breakdown": type_breakdown,
+                "suppression_ratio": round(referenced_consolidated_count / max(len(primary_incidents), 1), 2)
+            },
+            "returned_count": len(report_entries),
+            "consolidated_incidents": report_entries
+        }
+
+    except Exception as e:
+        error_message = f"Error in get_consolidated_incidents_report: {str(e)}"
+        if settings.ENABLE_DEBUG_MESSAGES:
+            print(error_message, file=sys.stderr)
+        return {"status": "error", "message": error_message}
+
+
+DAMPENING_FLAG_LABELS = {
+    "1": "Instance level dampening",
+    "2": "Component level dampening",
+    "7": "Component level content based consolidation",
+}
+
+
+def _build_consolidated_index(consolidated_data: list) -> dict:
+    """Build a dict mapping incident id -> consolidated incident record."""
+    return {item["id"]: item for item in consolidated_data if "id" in item}
+
+
+def _summarize_consolidated(consolidated_incident: dict, tz_name: str) -> dict:
+    """Return a compact summary of a consolidated incident for embedding in a parent."""
+    dampening = consolidated_incident.get("dampeningFlagInfo", {})
+    flag = str(dampening.get("flag", ""))
+    summary = {
+        "id": consolidated_incident.get("id"),
+        "instance": consolidated_incident.get("instanceName", "Unknown"),
+        "component": consolidated_incident.get("componentName", "Unknown"),
+        "timestamp": consolidated_incident.get("timestamp"),
+        "timestamp_human": format_api_timestamp_corrected(consolidated_incident.get("timestamp", 0), tz_name),
+        "anomaly_score": round(consolidated_incident.get("anomalyScore", 0), 2),
+        "pattern": consolidated_incident.get("patternName", "Unknown"),
+        "project": consolidated_incident.get("projectDisplayName", "Unknown"),
+        "consolidation_type": DAMPENING_FLAG_LABELS.get(flag, f"flag={flag}"),
+        "consolidation_info": dampening.get("info", ""),
+    }
+    snow = _extract_servicenow_info(consolidated_incident)
+    if snow:
+        summary["servicenow_ticket"] = snow
+    return summary
+
+
+def _attach_consolidated(incident: dict, consolidated_index: dict, tz_name: str) -> list:
+    """Return consolidated incident summaries for a primary incident."""
+    related_ids = incident.get("relatedTimelineIdList", [])
+    result = []
+    for rid in related_ids:
+        consolidated = consolidated_index.get(rid)
+        if consolidated:
+            result.append(_summarize_consolidated(consolidated, tz_name))
+    return result
+
 
 def _extract_servicenow_info(incident: dict) -> Optional[dict]:
     """Extract ServiceNow ticket number and hyperlink from an incident, if present."""
