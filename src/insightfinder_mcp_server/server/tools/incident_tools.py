@@ -129,11 +129,10 @@ async def get_incidents_overview(
         if project_name:
             incidents = [i for i in incidents if i.get("projectName", "").lower() == project_name.lower() or i.get("projectDisplayName", "").lower() == project_name.lower()]
 
-        # Total = primary incidents + their referenced consolidated children
-        # (relatedTimelineIdList on each primary points into consolidatedTimelineList)
+        # primary_count is the number of primary incident objects; total uses count fields
         primary_count = len(incidents)
-        consolidated_count = sum(len(i.get("relatedTimelineIdList", [])) for i in incidents)
-        total_incidents = primary_count + consolidated_count
+        consolidated_count = sum(c.get("count", 0) for c in consolidated_data)
+        total_incidents = sum(i.get("count", 0) for i in incidents) + consolidated_count
 
         # Time range analysis (primaries only for first/last timestamps)
         if incidents:
@@ -151,8 +150,8 @@ async def get_incidents_overview(
 
         summary = {
             "total_incidents": total_incidents,
-            "primary_incidents": primary_count,
-            "consolidated_incidents": consolidated_count,
+            "consolidated_incidents": primary_count,
+            "suppressed_incidents": total_incidents - primary_count,
             "primaries_with_consolidation": sum(1 for i in incidents if i.get("relatedTimelineIdList")),
             "unique_components": unique_components,
             "unique_instances": unique_instances,
@@ -164,14 +163,18 @@ async def get_incidents_overview(
         }
 
         if include_consolidated:
-            # Tally dampening flag types only for incidents actually referenced by primaries
+            # Tally flagDesc across all items in both timelineList and consolidatedTimelineList
             flag_counts: Dict[str, int] = {}
-            for incident in incidents:
-                for rid in incident.get("relatedTimelineIdList", []):
-                    c = consolidated_index.get(rid)
-                    if c:
-                        flag_desc = c.get("dampeningFlagInfo", {}).get("flagDesc", "unknown")
-                        flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
+            for item in incidents:
+                flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Consolidated by Log Analysis"
+                flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
+            for item in consolidated_data:
+                flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Consolidated by Log Analysis"
+                flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
+            # Remaining = total_incidents - total object count; represents count-field excess with no known type
+            excess = total_incidents - (len(incidents) + len(consolidated_data))
+            if excess > 0:
+                flag_counts["Consolidated by Log Analysis"] = flag_counts.get("Consolidated by Log Analysis", 0) + excess
             summary["consolidation_breakdown"] = flag_counts
 
         return {
@@ -996,12 +999,11 @@ async def get_incidents_statistics(
 
         incidents = result["data"]
         consolidated_data = result.get("consolidated_data", [])
-        consolidated_index = _build_consolidated_index(consolidated_data)
 
-        # Total = primaries + their referenced consolidated children
+        # primary_count is the number of primary incident objects; total uses count fields
         primary_count = len(incidents)
-        referenced_consolidated_count = sum(len(i.get("relatedTimelineIdList", [])) for i in incidents)
-        total_incident_count = primary_count + referenced_consolidated_count
+        referenced_consolidated_count = sum(c.get("count", 0) for c in consolidated_data)
+        total_incident_count = sum(i.get("count", 0) for i in incidents) + referenced_consolidated_count
 
         components: Dict[str, int] = {}
         instances: Dict[str, int] = {}
@@ -1020,8 +1022,8 @@ async def get_incidents_statistics(
 
         statistics: Dict[str, Any] = {
             "total_incidents": total_incident_count,
-            "primary_incidents": primary_count,
-            "consolidated_incidents": referenced_consolidated_count,
+            "consolidated_incidents": primary_count,
+            "suppressed_incidents": total_incident_count - primary_count,
             "top_affected_components": dict(sorted(components.items(), key=lambda x: x[1], reverse=True)[:10]),
             "top_affected_instances": dict(sorted(instances.items(), key=lambda x: x[1], reverse=True)[:10]),
             "top_patterns": dict(sorted(patterns.items(), key=lambda x: x[1], reverse=True)[:10]),
@@ -1029,27 +1031,30 @@ async def get_incidents_statistics(
         }
 
         if include_consolidated:
-            # Only count consolidated incidents actually referenced by primaries
             c_components: Dict[str, int] = {}
             c_instances: Dict[str, int] = {}
             c_patterns: Dict[str, int] = {}
             c_projects: Dict[str, int] = {}
             flag_counts: Dict[str, int] = {}
 
-            for incident in incidents:
-                for rid in incident.get("relatedTimelineIdList", []):
-                    c = consolidated_index.get(rid)
-                    if not c:
-                        continue
-                    c_components[c.get("componentName", "Unknown")] = c_components.get(c.get("componentName", "Unknown"), 0) + 1
-                    c_instances[c.get("instanceName", "Unknown")] = c_instances.get(c.get("instanceName", "Unknown"), 0) + 1
-                    c_patterns[c.get("patternName", "Unknown")] = c_patterns.get(c.get("patternName", "Unknown"), 0) + 1
-                    c_projects[c.get("projectDisplayName", "Unknown")] = c_projects.get(c.get("projectDisplayName", "Unknown"), 0) + 1
-                    flag_desc = c.get("dampeningFlagInfo", {}).get("flagDesc", "unknown")
-                    flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
+            # Tally flagDesc across all items in both timelineList and consolidatedTimelineList
+            for item in incidents:
+                flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Consolidated by Log Analysis"
+                flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
+            for item in consolidated_data:
+                c_components[item.get("componentName", "Unknown")] = c_components.get(item.get("componentName", "Unknown"), 0) + 1
+                c_instances[item.get("instanceName", "Unknown")] = c_instances.get(item.get("instanceName", "Unknown"), 0) + 1
+                c_patterns[item.get("patternName", "Unknown")] = c_patterns.get(item.get("patternName", "Unknown"), 0) + 1
+                c_projects[item.get("projectDisplayName", "Unknown")] = c_projects.get(item.get("projectDisplayName", "Unknown"), 0) + 1
+                flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Consolidated by Log Analysis"
+                flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
+            # Remaining = total_incidents - total object count; represents count-field excess with no known type
+            excess = total_incident_count - (len(incidents) + len(consolidated_data))
+            if excess > 0:
+                flag_counts["Consolidated by Log Analysis"] = flag_counts.get("Consolidated by Log Analysis", 0) + excess
 
             statistics["consolidated_breakdown"] = {
-                "total_consolidated": referenced_consolidated_count,
+                "total_suppressed": referenced_consolidated_count,
                 "consolidation_type_breakdown": flag_counts,
                 "top_affected_components": dict(sorted(c_components.items(), key=lambda x: x[1], reverse=True)[:10]),
                 "top_affected_instances": dict(sorted(c_instances.items(), key=lambda x: x[1], reverse=True)[:10]),
@@ -1622,20 +1627,30 @@ async def get_consolidated_incidents_report(
             for rid in primary.get("relatedTimelineIdList", []):
                 id_to_primary[rid] = primary
 
-        referenced_ids = set(id_to_primary.keys())
-        referenced_consolidated_count = len(referenced_ids)
+        referenced_consolidated_count = sum(c.get("count", 0) for c in consolidated_data)
 
         # Build report entries from referenced consolidated incidents only
         report_entries = []
         flag_counts: Dict[str, int] = {}
 
+        # Tally flagDesc across all items in both timelineList and consolidatedTimelineList
+        for item in primary_incidents:
+            flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Consolidated by Log Analysis"
+            flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
+        for item in consolidated_data:
+            flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Consolidated by Log Analysis"
+            flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
+        # Remaining = total_incidents - total object count; represents count-field excess with no known type
+        total_incidents_val = sum(i.get("count", 0) for i in primary_incidents) + referenced_consolidated_count
+        excess = total_incidents_val - (len(primary_incidents) + len(consolidated_data))
+        if excess > 0:
+            flag_counts["Consolidated by Log Analysis"] = flag_counts.get("Consolidated by Log Analysis", 0) + excess
+
         for rid, primary in id_to_primary.items():
             c = consolidated_index.get(rid)
             if not c:
                 continue
-            flag_desc = c.get("dampeningFlagInfo", {}).get("flagDesc", "")
-            flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
-
+            flag_desc = (c.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Consolidated by Log Analysis"
             # Filter by consolidation_type if provided — match against flagDesc (case-insensitive)
             if consolidation_type and consolidation_type.upper() not in flag_desc.upper():
                 continue
@@ -1668,11 +1683,11 @@ async def get_consolidated_incidents_report(
                 "limit": limit
             },
             "summary": {
-                "primary_incident_count": len(primary_incidents),
-                "total_incidents": len(primary_incidents) + referenced_consolidated_count,
-                "consolidated_incident_count": referenced_consolidated_count,
+                "consolidated_incidents": len(primary_incidents),
+                "total_incidents": total_incidents_val,
+                "suppressed_incidents": total_incidents_val - len(primary_incidents),
                 "consolidation_type_breakdown": flag_counts,
-                "suppression_ratio": round(referenced_consolidated_count / max(len(primary_incidents), 1), 2)
+                "suppression_ratio": round((total_incidents_val - len(primary_incidents)) / max(len(primary_incidents), 1), 2)
             },
             "returned_count": len(report_entries),
             "consolidated_incidents": report_entries
