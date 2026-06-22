@@ -239,16 +239,20 @@ class InsightFinderAPIClient:
                     return {"status": "error", "message": f"Invalid JSON response: {response_text}"}
                     
                 timeline_list = raw_data.get("timelineList", [])
-                
+                consolidated_list = raw_data.get("consolidatedTimelineList", [])
+
                 # Limit number of items to prevent memory issues
                 if len(timeline_list) > 5000:
                     timeline_list = timeline_list[:5000]
-                
-                print(f"Successfully fetched {len(timeline_list)} {timeline_event_type} records for {system_name}")
-                
+                if len(consolidated_list) > 5000:
+                    consolidated_list = consolidated_list[:5000]
+
+                print(f"Successfully fetched {len(timeline_list)} {timeline_event_type} records for {system_name} ({len(consolidated_list)} consolidated)")
+
                 return {
-                    "status": "success", 
+                    "status": "success",
                     "data": timeline_list,
+                    "consolidated_data": consolidated_list,
                     "total_count": len(timeline_list),
                     "event_type": timeline_event_type
                 }
