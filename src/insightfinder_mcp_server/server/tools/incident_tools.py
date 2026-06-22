@@ -14,6 +14,7 @@ from .get_time import (
     format_api_timestamp_corrected,
     convert_to_ms,
     parse_time_parameters,
+    parse_relative_date_keyword,
 )
 
 
@@ -1592,7 +1593,7 @@ async def get_consolidated_incidents_report(
             return {"status": "error", "message": str(e)}
 
         if end_time_ms is None or start_time_ms is None:
-            default_start_ms, default_end_ms = get_time_range_ms(tz_name, 1)
+            default_start_ms, default_end_ms = parse_relative_date_keyword("today", tz_name)
             if end_time_ms is None:
                 end_time_ms = default_end_ms
             if start_time_ms is None:
