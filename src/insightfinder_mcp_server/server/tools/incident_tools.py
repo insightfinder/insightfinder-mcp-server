@@ -1568,14 +1568,18 @@ async def get_consolidated_incidents_report(
     Each consolidated incident carries a consolidation_type derived from the API's flagDesc field,
     e.g. "COMPONENT_CONTENT_SIMILARITY_CONSOLIDATION", "INSTANCE_DAMPENING", etc.
 
+    ⚠️ DEFAULT TIME RANGE: If no start_time or end_time is provided, defaults to TODAY
+    (midnight to end of day in the system's timezone). Do NOT pass explicit dates unless
+    the user specifies a different time period.
+
     ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
 
     ⚠️ RELATIVE DATE KEYWORDS SUPPORTED: "thisweek", "lastweek", "thismonth", "lastmonth", "today", "yesterday"
 
     Args:
         system_name (str): The name of the system to query.
-        start_time (str): Optional start of the time window.
-        end_time (str): Optional end of the time window.
+        start_time (str): Optional start of the time window. Leave empty to default to today.
+        end_time (str): Optional end of the time window. Leave empty to default to today.
         consolidation_type (str): Optional. Case-insensitive substring match against the flagDesc
             value, e.g. "CONTENT_SIMILARITY" to filter only content-based consolidations.
             Leave empty to return all types.
@@ -1606,6 +1610,9 @@ async def get_consolidated_incidents_report(
             end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999000)
             start_time_ms = int(start_dt.timestamp() * 1000)
             end_time_ms = int(end_dt.timestamp() * 1000)
+
+        if start_time_ms is None or end_time_ms is None:
+            return {"status": "error", "message": "Could not determine time range."}
 
         api_client = _get_api_client()
         result = await api_client.get_incidents(
