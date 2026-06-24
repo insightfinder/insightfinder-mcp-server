@@ -167,15 +167,15 @@ async def get_incidents_overview(
             # Tally flagDesc across all items in both timelineList and consolidatedTimelineList
             flag_counts: Dict[str, int] = {}
             for item in incidents:
-                flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Content similarity consolidation"
+                flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Instance level content similarity consolidation"
                 flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
             for item in consolidated_data:
-                flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Content similarity consolidation"
+                flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Instance level content similarity consolidation"
                 flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
             # Remaining = total_incidents - total object count; represents count-field excess with no known type
             excess = total_incidents - (len(incidents) + len(consolidated_data))
             if excess > 0:
-                flag_counts["Content similarity consolidation"] = flag_counts.get("Content similarity consolidation", 0) + excess
+                flag_counts["Instance level content similarity consolidation"] = flag_counts.get("Instance level content similarity consolidation", 0) + excess
             summary["consolidation_breakdown"] = flag_counts
 
         return {
@@ -1040,19 +1040,19 @@ async def get_incidents_statistics(
 
             # Tally flagDesc across all items in both timelineList and consolidatedTimelineList
             for item in incidents:
-                flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Content similarity consolidation"
+                flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Instance level content similarity consolidation"
                 flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
             for item in consolidated_data:
                 c_components[item.get("componentName", "Unknown")] = c_components.get(item.get("componentName", "Unknown"), 0) + 1
                 c_instances[item.get("instanceName", "Unknown")] = c_instances.get(item.get("instanceName", "Unknown"), 0) + 1
                 c_patterns[item.get("patternName", "Unknown")] = c_patterns.get(item.get("patternName", "Unknown"), 0) + 1
                 c_projects[item.get("projectDisplayName", "Unknown")] = c_projects.get(item.get("projectDisplayName", "Unknown"), 0) + 1
-                flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Content similarity consolidation"
+                flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Instance level content similarity consolidation"
                 flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
             # Remaining = total_incidents - total object count; represents count-field excess with no known type
             excess = total_incident_count - (len(incidents) + len(consolidated_data))
             if excess > 0:
-                flag_counts["Content similarity consolidation"] = flag_counts.get("Content similarity consolidation", 0) + excess
+                flag_counts["Instance level content similarity consolidation"] = flag_counts.get("Instance level content similarity consolidation", 0) + excess
 
             statistics["consolidated_breakdown"] = {
                 "total_suppressed": referenced_consolidated_count,
@@ -1643,22 +1643,22 @@ async def get_consolidated_incidents_report(
 
         # Tally flagDesc across all items in both timelineList and consolidatedTimelineList
         for item in primary_incidents:
-            flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Content similarity consolidation"
+            flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Instance level content similarity consolidation"
             flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
         for item in consolidated_data:
-            flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Content similarity consolidation"
+            flag_desc = (item.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Instance level content similarity consolidation"
             flag_counts[flag_desc] = flag_counts.get(flag_desc, 0) + 1
         # Remaining = total_incidents - total object count; represents count-field excess with no known type
         total_incidents_val = sum(i.get("count", 0) for i in primary_incidents) + referenced_consolidated_count
         excess = total_incidents_val - (len(primary_incidents) + len(consolidated_data))
         if excess > 0:
-            flag_counts["Content similarity consolidation"] = flag_counts.get("Content similarity consolidation", 0) + excess
+            flag_counts["Instance level content similarity consolidation"] = flag_counts.get("Instance level content similarity consolidation", 0) + excess
 
         for rid, primary in id_to_primary.items():
             c = consolidated_index.get(rid)
             if not c:
                 continue
-            flag_desc = (c.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Content similarity consolidation"
+            flag_desc = (c.get("dampeningFlagInfo") or {}).get("flagDesc", "") or "Instance level content similarity consolidation"
             # Filter by consolidation_type if provided — match against flagDesc (case-insensitive)
             if consolidation_type and consolidation_type.upper() not in flag_desc.upper():
                 continue
