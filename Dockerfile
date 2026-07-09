@@ -8,6 +8,10 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Upgrade the pip toolchain (pip/setuptools/wheel) to pull in patched
+# jaraco.* transitive deps bundled with the base image's preinstalled setuptools
+RUN pip install --no-cache-dir --upgrade pip==26.1.2 setuptools wheel==0.47.0
+
 # Copy requirements and install Python dependencies
 COPY docker-requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
@@ -16,6 +20,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 RUN python -m playwright install chromium --with-deps \
     && chmod -R 755 /opt/playwright
+
+# Patch OS packages (incl. xserver-common/xvfb pulled in above) to latest security fixes
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
 # Copy the application source code
 COPY src/ ./src/
