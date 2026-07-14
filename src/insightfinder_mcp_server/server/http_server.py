@@ -18,6 +18,44 @@ from ..api_client.client_factory import (
     clear_request_context
 )
 from .server import mcp_server
+from .tools.ui_url import build_systemrootcause_url
+
+# Result keys whose first record is used to build a systemrootcause citation URL.
+_EVENT_RECORD_KEYS = ("anomalies", "incidents", "deployments", "traces",
+                      "consolidated_incidents", "data", "items", "results")
+
+
+async def _inject_event_ui_url(result, api_client):
+    """Central citation-URL injection: if a tool result is a dict with a record list
+    and no ui-url of its own, add a `/ui/global/systemrootcause` day-view URL built
+    from the first record (system_id + zone + day). Tools that set their own ui-url
+    (incident details, metric linecharts) are left untouched. Covers log/metric-anomaly/
+    trace/deployment/consolidated-report tools without per-tool edits.
+    """
+    try:
+        if not isinstance(result, dict) or result.get("ui-url") or api_client is None:
+            return result
+        records = None
+        for key in _EVENT_RECORD_KEYS:
+            value = result.get(key)
+            if isinstance(value, list) and value and isinstance(value[0], dict):
+                records = value
+                break
+        if not records:
+            return result
+        rec = records[0]
+        normalized = {
+            "projectName": rec.get("projectName") or rec.get("project") or rec.get("realProjectName"),
+            "zoneName": rec.get("zoneName") or rec.get("zone"),
+            "timestamp": rec.get("timestamp"),
+            "userName": rec.get("userName"),
+        }
+        url = await build_systemrootcause_url(api_client, normalized)
+        if url:
+            result["ui-url"] = url
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"event ui-url injection failed: {e}")
+    return result
 
 logger = logging.getLogger(__name__)
 
@@ -658,10 +696,11 @@ class HTTPMCPServer:
             tool_func = getattr(tool, 'fn', tool)
             
             if getattr(tool, 'is_async', False):
-                return await tool_func(**tool_args)
+                result = await tool_func(**tool_args)
             else:
-                return tool_func(**tool_args)
-                
+                result = tool_func(**tool_args)
+            return await _inject_event_ui_url(result, api_client)
+
         finally:
             # Always clean up request context if we set it up
             if request and api_client:

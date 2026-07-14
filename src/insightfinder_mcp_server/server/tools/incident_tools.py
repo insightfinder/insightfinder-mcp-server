@@ -2,6 +2,7 @@ import sys
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone, timedelta
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 from ..server import mcp_server
@@ -16,6 +17,7 @@ from .get_time import (
     parse_time_parameters,
     parse_relative_date_keyword,
 )
+from .ui_url import build_systemrootcause_url
 
 
 # Layer 0: Ultra-compact incident overview (just counts and basic info)
@@ -657,6 +659,7 @@ async def get_incident_details(
         snow = _extract_servicenow_info(incident_data)
         result = {
             "metricName": metric_name,
+            "ui-url": await build_systemrootcause_url(client, incident_data),
             "incident": result_incident,
             "raw_data_available": True,  # Indicate that raw data can be fetched separately
             "root_cause_available": False,
