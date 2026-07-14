@@ -1711,13 +1711,13 @@ async def get_consolidated_incidents_report(
 def _get_flag_desc(item: dict) -> str:
     """Return the effective consolidation flagDesc for tallying.
 
-    Custom consolidations that span multiple projects (isCrossProject=True) are
+    Consolidations that span multiple projects (isCrossProject=True) are
     broken out into their own "Cross Datasource Consolidation" category
-    instead of being lumped in with same-project "Custom consolidation".
+    regardless of their underlying flagDesc.
     """
     dampening = item.get("dampeningFlagInfo") or {}
     flag_desc = dampening.get("flagDesc", "") or "Instance level content similarity consolidation"
-    if flag_desc == "Custom consolidation" and dampening.get("isCrossProject"):
+    if dampening.get("isCrossProject"):
         return "Cross datasource consolidation"
     return flag_desc
 
