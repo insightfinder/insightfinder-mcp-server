@@ -1718,7 +1718,7 @@ def _get_flag_desc(item: dict) -> str:
     dampening = item.get("dampeningFlagInfo") or {}
     flag_desc = dampening.get("flagDesc", "") or "Instance level content similarity consolidation"
     if flag_desc == "Custom consolidation" and dampening.get("isCrossProject"):
-        return "Cross Datasource Consolidation"
+        return "Cross datasource consolidation"
     return flag_desc
 
 
