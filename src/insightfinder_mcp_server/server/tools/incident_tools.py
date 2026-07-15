@@ -659,7 +659,7 @@ async def get_incident_details(
         snow = _extract_servicenow_info(incident_data)
         result = {
             "metricName": metric_name,
-            "ui-url": await build_systemrootcause_url(client, incident_data),
+            "ui-url": await build_systemrootcause_url(client, incident_data, event_category="incident"),
             "incident": result_incident,
             "raw_data_available": True,  # Indicate that raw data can be fetched separately
             "root_cause_available": False,
