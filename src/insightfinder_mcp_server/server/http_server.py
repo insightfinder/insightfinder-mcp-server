@@ -18,6 +18,78 @@ from ..api_client.client_factory import (
     clear_request_context
 )
 from .server import mcp_server
+from .tools.ui_url import build_systemrootcause_url
+
+# Result keys whose first record is used to build a systemrootcause citation URL.
+_EVENT_RECORD_KEYS = ("anomalies", "incidents", "deployments", "traces",
+                      "consolidated_incidents", "data", "items", "results")
+
+
+def _event_category_for_tool(tool_name):
+    """Map a tool name to the systemrootcause `eventCategory` (tab it lands on).
+
+    The record-list key alone can't distinguish metric- vs log-anomaly tools (both use
+    `anomalies`), so the tab is derived from the tool name. Returns None when unknown
+    (URL still lands on the default view).
+    """
+    n = (tool_name or "").lower()
+    if "log" in n:
+        return "log"
+    if "metric" in n:
+        return "metric"
+    if "trace" in n:
+        return "trace"
+    if "deploy" in n or "change" in n:
+        return "deployment"
+    if "incident" in n or "consolidat" in n or "rootcause" in n or "root_cause" in n:
+        return "incident"
+    return None
+
+
+def _date_part(value):
+    """The ``YYYY-MM-DD`` prefix of an ISO timestamp arg (e.g. "2026-07-13T00:00:00"),
+    else None. Used to date the URL from the CALL's time window rather than a record."""
+    if isinstance(value, str) and len(value) >= 10 and value[4:5] == "-":
+        return value[:10]
+    return None
+
+
+async def _inject_event_ui_url(result, api_client, tool_name=None, tool_args=None):
+    """Central citation-URL injection: if a tool result is a dict with a record list
+    and no ui-url of its own, add a `/ui/global/systemrootcause` URL built from the first
+    record (system_id + zone) with the correct `eventCategory` tab for the tool. The day
+    range comes from the CALL's `start_time`/`end_time` args when present (so a multi-day
+    list reflects the queried window, not one arbitrary record's day); otherwise the first
+    record's day. Tools that set their own ui-url (incident details, metric linecharts) are
+    left untouched. Covers log/metric-anomaly/trace/deployment/consolidated tools.
+    """
+    try:
+        if not isinstance(result, dict) or result.get("ui-url") or api_client is None:
+            return result
+        records = None
+        for key in _EVENT_RECORD_KEYS:
+            value = result.get(key)
+            if isinstance(value, list) and value and isinstance(value[0], dict):
+                records = value
+                break
+        if not records:
+            return result
+        # Prefer the call's own time window for the URL date range.
+        args = tool_args or {}
+        if isinstance(args.get("kwargs"), dict):
+            args = args["kwargs"]
+        start_day = _date_part(args.get("start_time"))
+        end_day = _date_part(args.get("end_time"))
+        # Pass the raw first record straight through — the builder reads projectName,
+        # zoneName, timestamp, patternId, instanceName, componentName itself.
+        url = await build_systemrootcause_url(
+            api_client, records[0], event_category=_event_category_for_tool(tool_name),
+            start_day=start_day, end_day=end_day)
+        if url:
+            result["ui-url"] = url
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"event ui-url injection failed: {e}")
+    return result
 
 logger = logging.getLogger(__name__)
 
@@ -658,10 +730,12 @@ class HTTPMCPServer:
             tool_func = getattr(tool, 'fn', tool)
             
             if getattr(tool, 'is_async', False):
-                return await tool_func(**tool_args)
+                result = await tool_func(**tool_args)
             else:
-                return tool_func(**tool_args)
-                
+                result = tool_func(**tool_args)
+            return await _inject_event_ui_url(result, api_client, tool_name=tool_name,
+                                              tool_args=tool_args)
+
         finally:
             # Always clean up request context if we set it up
             if request and api_client:
