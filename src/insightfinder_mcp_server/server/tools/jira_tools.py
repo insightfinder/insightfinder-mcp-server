@@ -147,7 +147,7 @@ async def preview_jira_ticket(
       assignee_account_id: Account ID of the assignee
       summary: Ticket title/summary
       description: Ticket description/body text
-      issue_type: Issue type name (default: 'Task')
+      issue_type: Issue type name (default: 'Task'). Must be one of the project's issue types — call list_jira_issue_types first if unsure; invalid values are rejected with the list of valid types.
       fix_version_id: Optional fix version ID
     
     Returns:
@@ -177,7 +177,11 @@ async def preview_jira_ticket(
         issue_types = await jira_client.get_issue_types(resolved_project_key)
         issue_type_info = next((it for it in issue_types if it["name"].lower() == issue_type.lower()), None)
         if not issue_type_info:
-            return {"status": "error", "message": f"Issue type '{issue_type}' not found for project {project_key}"}
+            valid_types = ", ".join(it["name"] for it in issue_types)
+            return {"status": "error",
+                    "message": (f"Issue type '{issue_type}' not found for project {project_key}. "
+                                f"Valid issue types: {valid_types}. Retry with one of these."),
+                    "valid_issue_types": [it["name"] for it in issue_types]}
 
         # Get fix version info if provided
         fix_version_info = None
@@ -213,7 +217,7 @@ JIRA Ticket Preview
 Project: {project['name']} ({project['key']})
 Summary: {summary}
 Issue Type: {issue_type_info['name']}
-Assignee: {assignee['displayName']} ({assignee.get('emailAddress', '')})
+Assignee: {assignee['displayName']}{f" ({assignee['emailAddress']})" if assignee.get('emailAddress') else ""}
 {f"Fix Version: {fix_version_info['name']}" if fix_version_info else "Fix Version: None"}
 
 Description:
@@ -261,7 +265,7 @@ async def create_jira_ticket(
       assignee_account_id: Account ID of the assignee
       summary: Ticket title/summary
       description: Ticket description/body text
-      issue_type: Issue type name (default: 'Task')
+      issue_type: Issue type name (default: 'Task'). Must be one of the project's issue types — call list_jira_issue_types first if unsure; invalid values are rejected with the list of valid types.
       fix_version_id: Optional fix version ID
       user_confirmation: Boolean flag indicating user has confirmed ticket creation (default: False)
 
