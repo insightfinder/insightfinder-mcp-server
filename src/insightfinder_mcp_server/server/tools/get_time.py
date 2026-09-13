@@ -282,6 +282,75 @@ async def resolve_system_timezone(system_name: Optional[str] = None) -> Tuple[st
     return _FALLBACK_TZ, original_name
 
 
+def _system_matches(system: dict, wanted: str, fuzzy: bool) -> bool:
+    display_name = (system.get("systemDisplayName") or "").lower()
+    sys_id = (system.get("systemKey", {}) or {}).get("systemName", "").lower()
+    w = wanted.lower()
+    if display_name == w or sys_id == w:
+        return True
+    if fuzzy:
+        return bool(display_name and (w in display_name or display_name in w)) or \
+               bool(sys_id and (w in sys_id or sys_id in w))
+    return False
+
+
+def _system_owner(system: dict, default: str) -> str:
+    key = system.get("systemKey", {}) or {}
+    return (key.get("userName")
+            or (key.get("systemPartitionKey", {}) or {}).get("userName")
+            or system.get("owner")
+            or system.get("userName")
+            or default)
+
+
+async def resolve_system_identity(system_name: str) -> dict:
+    """
+    Resolve a system display name (or id) to the identifiers the id-keyed backend APIs need.
+
+    Returns a dict:
+        matched (bool)      - whether a system was found
+        tz_name (str)       - IANA timezone (falls back to UTC)
+        display_name (str)  - exact systemDisplayName, or the input when not found
+        system_id (str|None)- systemKey.systemName hash, None when not found
+        owner (str|None)    - account that owns the system (customerName for the backend),
+                              None when not found
+    """
+    result = {"matched": False, "tz_name": _FALLBACK_TZ, "display_name": system_name or "",
+              "system_id": None, "owner": None}
+    api_client = get_current_api_client()
+    if not api_client or not system_name:
+        return result
+    try:
+        framework_data = await api_client.get_system_framework()
+        if framework_data.get("status") != "success":
+            return result
+        systems = []
+        for raw in framework_data.get("ownSystemArr", []) + framework_data.get("shareSystemArr", []):
+            try:
+                systems.append(json.loads(raw) if isinstance(raw, str) else raw)
+            except (json.JSONDecodeError, TypeError):
+                continue
+        match = next((s for s in systems if _system_matches(s, system_name, fuzzy=False)), None)
+        if match is None:
+            match = next((s for s in systems if _system_matches(s, system_name, fuzzy=True)), None)
+        if match is None:
+            logger.warning("resolve_system_identity: system '%s' not found", system_name)
+            return result
+        tz = _normalize_tz(match.get("timezone", _FALLBACK_TZ)) or _FALLBACK_TZ
+        result.update({
+            "matched": True,
+            "tz_name": tz,
+            "display_name": match.get("systemDisplayName") or system_name,
+            "system_id": (match.get("systemKey", {}) or {}).get("systemName") or None,
+            "owner": _system_owner(match, api_client.user_name),
+        })
+        logger.info("resolve_system_identity: '%s' -> id=%s owner=%s tz=%s", system_name,
+                    result["system_id"], result["owner"], tz)
+    except Exception as e:
+        logger.warning(f"Error resolving identity for system '{system_name}': {e}")
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Public utility functions used by all tool modules
 # ---------------------------------------------------------------------------
