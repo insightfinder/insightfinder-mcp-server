@@ -61,6 +61,8 @@ class Settings:
     SSE_MAX_CONNECTIONS: int = int(os.getenv("SSE_MAX_CONNECTIONS", "100"))
     SSE_CORS_HEADERS: str = os.getenv("SSE_CORS_HEADERS", "Cache-Control,Content-Type")
     SSE_HEARTBEAT_ENABLED: bool = os.getenv("SSE_HEARTBEAT_ENABLED", "true").lower() == "true"
+    # Seconds between heartbeat events while a tool is executing on /tools/{name}/stream.
+    TOOL_HEARTBEAT_INTERVAL: float = float(os.getenv("TOOL_HEARTBEAT_INTERVAL", "10"))
 
 # Create a singleton instance of the settings
 settings = Settings()

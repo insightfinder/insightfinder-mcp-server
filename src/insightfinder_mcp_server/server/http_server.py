@@ -11,6 +11,7 @@ from sse_starlette.sse import EventSourceResponse
 import json
 import logging
 from ..config.settings import settings
+from .progress import set_progress_sink, reset_progress_sink
 from ..security import security_manager, AuthenticationError, AuthorizationError, RateLimitError
 from ..api_client.client_factory import (
     create_api_client_from_request, 
@@ -597,8 +598,68 @@ class HTTPMCPServer:
                 })
             }
             
-            # Execute the tool directly - let the tool handle its own streaming logic
-            result = await self._execute_tool_direct(tool_name, tool_args, request)
+            # Execute the tool directly - let the tool handle its own streaming logic.
+            # While it runs, emit heartbeats so a long tool call (e.g. paging through a day of
+            # anomalies) never leaves the SSE connection silent long enough for the client's
+            # read timeout to fire. Clients ignore the `heartbeat` event.
+            # Tools report progress through a context-var sink (see server/progress.py); the
+            # task created below inherits the context, so its reports land in this queue and are
+            # forwarded as `progress` events while the tool is still running.
+            progress_queue: asyncio.Queue = asyncio.Queue()
+            sink_token = set_progress_sink(progress_queue)
+            try:
+                task = asyncio.ensure_future(
+                    self._execute_tool_direct(tool_name, tool_args, request))
+            finally:
+                reset_progress_sink(sink_token)
+            started = time.time()
+
+            def progress_event(item: Dict[str, Any]) -> Dict[str, Any]:
+                return {
+                    "event": "progress",
+                    "data": json.dumps({
+                        "tool": tool_name,
+                        "elapsed_s": round(time.time() - started, 1),
+                        "connection_id": connection_id,
+                        **item,
+                    }, default=str)
+                }
+
+            try:
+                getter: Optional[asyncio.Task] = None
+                while True:
+                    if getter is None:
+                        getter = asyncio.ensure_future(progress_queue.get())
+                    done, _ = await asyncio.wait({task, getter}, timeout=settings.TOOL_HEARTBEAT_INTERVAL,
+                                                 return_when=asyncio.FIRST_COMPLETED)
+                    if getter in done:
+                        yield progress_event(getter.result())
+                        getter = None
+                    if task in done:
+                        break
+                    if not done:
+                        if await request.is_disconnected():
+                            task.cancel()
+                            return
+                        if settings.SSE_HEARTBEAT_ENABLED:
+                            yield {
+                                "event": "heartbeat",
+                                "data": json.dumps({
+                                    "tool": tool_name,
+                                    "elapsed_s": round(time.time() - started, 1),
+                                    "timestamp": time.time(),
+                                    "connection_id": connection_id
+                                })
+                            }
+                if getter is not None and not getter.done():
+                    getter.cancel()
+                # Flush reports that arrived just before the tool finished.
+                while not progress_queue.empty():
+                    yield progress_event(progress_queue.get_nowait())
+            except asyncio.CancelledError:
+                task.cancel()
+                raise
+            result = task.result()
             
             # Stream the result with optional batching for large datasets
             async for chunk in self._stream_result(request, tool_name, result):

@@ -1,4 +1,7 @@
+import asyncio
 import httpx
+
+from ..server.progress import report_progress
 import json
 import logging
 from datetime import datetime, timezone
@@ -276,6 +279,298 @@ class InsightFinderAPIClient:
                 logger.error(error_msg)
                 print(f"ERROR: {error_msg}")
                 return {"status": "error", "message": f"Internal error: {str(e)}"}
+
+    # ------------------------------------------------------------------
+    # Paged timeline API (license-key external endpoints)
+    # ------------------------------------------------------------------
+
+    TIMELINE_PAGE_SIZE = 1000
+
+    @staticmethod
+    def _progress_unit(timeline_event_type: str) -> str:
+        return {"loganomaly": "log anomalies", "metricanomaly": "metric anomalies",
+                "incident": "incidents", "trace": "traces", "deployment": "change events"
+                }.get(timeline_event_type, "records")
+
+    def _external_timeline_zone(self, system_id: str, zone_name: Optional[str]) -> str:
+        return zone_name if zone_name else f"zone_{system_id}"
+
+    async def get_timeline_index(
+        self,
+        customer_name: str,
+        system_id: str,
+        start_time_ms: int,
+        end_time_ms: int,
+        timeline_event_type: str,
+        zone_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Fetch the per-day timeline index for a system from the external paged timeline API.
+
+        Calls GET /api/external/v1/timeline/index. The response lists, for every day in the range
+        that has data, the id chunks stored for that day. Use it to discover which days to page
+        through with get_timeline_page.
+
+        Returns:
+            {"status": "success", "by_day": {day_ms: {...}}, "signatures": {...}}
+            {"status": "empty"} when no day in the range has data (HTTP 404)
+            {"status": "error", "message": ...} otherwise
+        """
+        url = f"{self.base_url}/api/external/v1/timeline/index"
+        params = {
+            "customerName": customer_name,
+            "systemId": system_id,
+            "startTime": start_time_ms,
+            "endTime": end_time_ms,
+            "eventType": timeline_event_type,
+            "zoneName": self._external_timeline_zone(system_id, zone_name),
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                response = await client.get(url, params=params, headers=self.headers)
+                # The backend answers 204 (ContentNotFound) when no day in the range has data.
+                if response.status_code in (204, 404) or not response.content.strip():
+                    return {"status": "empty", "by_day": {}, "signatures": {}}
+                response.raise_for_status()
+                raw = response.json()
+                return {
+                    "status": "success",
+                    "by_day": raw.get("byDay", {}) or {},
+                    "signatures": raw.get("signatures", {}) or {},
+                }
+            except httpx.HTTPStatusError as e:
+                logger.error(f"timeline index API error {e.response.status_code}: {e}")
+                return {"status": "error", "message": f"API request failed: {e.response.status_code}"}
+            except httpx.RequestError as e:
+                logger.error(f"timeline index network error: {e}")
+                return {"status": "error", "message": f"Network error: {str(e)}"}
+            except Exception as e:
+                logger.error(f"timeline index unexpected error: {e}")
+                return {"status": "error", "message": f"Internal error: {str(e)}"}
+
+    async def get_timeline_page(
+        self,
+        customer_name: str,
+        system_id: str,
+        day_time_ms: int,
+        timeline_event_type: str,
+        page_number: int = 0,
+        page_size: int = TIMELINE_PAGE_SIZE,
+        zone_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Fetch one page of timelines for a single day from GET /api/external/v1/timeline/paged.
+
+        Pages are ordered by timeline id (write order), not by time. page_size is clamped
+        server-side to 1000.
+
+        Returns:
+            {"status": "success", "timelines": [...], "total_count": n, "page_number": p,
+             "page_size": s, "page_numbers": [0, 1, ...]}
+            {"status": "empty", "timelines": [], "total_count": 0, ...} when the day has no data
+            {"status": "error", "message": ...} otherwise
+        """
+        url = f"{self.base_url}/api/external/v1/timeline/paged"
+        params = {
+            "customerName": customer_name,
+            "systemId": system_id,
+            "dayTimeMillis": day_time_ms,
+            "eventType": timeline_event_type,
+            "zoneName": self._external_timeline_zone(system_id, zone_name),
+            "pageNumber": page_number,
+            "pageSize": page_size,
+        }
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            try:
+                response = await client.get(url, params=params, headers=self.headers)
+                # 204 (ContentNotFound) when the day has no records for this event type.
+                if response.status_code in (204, 404) or not response.content.strip():
+                    return {"status": "empty", "timelines": [], "total_count": 0,
+                            "page_number": page_number, "page_size": page_size, "page_numbers": []}
+                response.raise_for_status()
+                raw = response.json()
+                return {
+                    "status": "success",
+                    "timelines": raw.get("timelines", []) or [],
+                    "total_count": int(raw.get("totalCount", 0) or 0),
+                    "page_number": int(raw.get("pageNumber", page_number)),
+                    "page_size": int(raw.get("pageSize", page_size)),
+                    "page_numbers": raw.get("pageNumbers", []) or [],
+                }
+            except httpx.HTTPStatusError as e:
+                logger.error(f"timeline page API error {e.response.status_code}: {e}")
+                return {"status": "error", "message": f"API request failed: {e.response.status_code}"}
+            except httpx.TimeoutException:
+                return {"status": "error", "message": "Request timeout - API took too long to respond"}
+            except httpx.RequestError as e:
+                logger.error(f"timeline page network error: {e}")
+                return {"status": "error", "message": f"Network error: {str(e)}"}
+            except Exception as e:
+                logger.error(f"timeline page unexpected error: {e}")
+                return {"status": "error", "message": f"Internal error: {str(e)}"}
+
+    @staticmethod
+    def _normalize_paged_timeline(record: Dict[str, Any], day_time_ms: int) -> Dict[str, Any]:
+        """
+        Map an AnomalyTimeLine record from the paged API onto the field names the unpaged
+        /api/v2/timeline (TimelineBase) records use, so downstream tool code can treat both
+        sources the same. Original fields are preserved; only missing aliases are added.
+        """
+        out = dict(record)
+        if "timestamp" not in out and out.get("startTimestamp") is not None:
+            out["timestamp"] = out["startTimestamp"]
+        if "endTime" not in out and out.get("endTimestamp") is not None:
+            out["endTime"] = out["endTimestamp"]
+        if not out.get("instanceName"):
+            out["instanceName"] = (out.get("realInstanceName") or out.get("anomalyLogInstance")
+                                   or out.get("projectInstanceName") or "")
+        if "zoneName" not in out and out.get("zone") is not None:
+            out["zoneName"] = out["zone"]
+        if "anomalyScore" not in out and out.get("averageAnomalyScore") is not None:
+            out["anomalyScore"] = out["averageAnomalyScore"]
+        if "projectDisplayName" not in out and out.get("projectName"):
+            # The paged store only carries the internal project name.
+            out["projectDisplayName"] = out["projectName"]
+        if "isIncident" not in out:
+            out["isIncident"] = str(out.get("timeLineType", "")).lower() == "incident"
+        out["_dayTimeMillis"] = day_time_ms
+        return out
+
+    # The backend serializes page loads (4 concurrent pages took 22-78 s each vs 8-14 s alone),
+    # so pages are fetched one at a time by default; this also keeps progress reports in order.
+    TIMELINE_PAGE_CONCURRENCY = 1
+
+    async def get_timeline_all_paged(
+        self,
+        timeline_event_type: str,
+        customer_name: str,
+        system_id: str,
+        start_time_ms: int,
+        end_time_ms: int,
+        zone_name: Optional[str] = None,
+        max_pages: int = 200,
+        concurrency: int = TIMELINE_PAGE_CONCURRENCY,
+    ) -> Dict[str, Any]:
+        """
+        Fetch every timeline of one event type for a system over a range, using the external
+        paged API: one index call, then a page loop per populated day. Page 0 of each day is
+        fetched first (it carries the page list); the remaining pages of all days are fetched
+        concurrently, `concurrency` at a time. Records are merged and de-duplicated by
+        (day, id). There is no record-count or byte-size cap on this path.
+
+        Returns the same shape as _fetch_timeline_data plus:
+            "source": "paged", "days": [day_ms...], "pages_fetched": n,
+            "total_count_by_day": {day_ms: totalCount}
+        """
+        if end_time_ms - start_time_ms > 365 * 24 * 60 * 60 * 1000:
+            return {"status": "error", "message": "Time range too large (max 1 year)"}
+
+        index = await self.get_timeline_index(customer_name, system_id, start_time_ms,
+                                              end_time_ms, timeline_event_type, zone_name)
+        if index["status"] == "error":
+            return index
+        if index["status"] == "empty":
+            return {"status": "success", "data": [], "consolidated_data": [], "total_count": 0,
+                    "event_type": timeline_event_type, "source": "paged", "days": [],
+                    "pages_fetched": 0, "total_count_by_day": {}}
+
+        days = sorted(int(d) for d in index["by_day"].keys())
+        merged: Dict[Any, Dict[str, Any]] = {}
+        total_by_day: Dict[int, int] = {}
+        pages_fetched = 0
+        sem = asyncio.Semaphore(max(1, concurrency))
+
+        async def fetch(day_ms: int, page_number: int) -> Dict[str, Any]:
+            async with sem:
+                page = await self.get_timeline_page(customer_name, system_id, day_ms,
+                                                    timeline_event_type, page_number,
+                                                    self.TIMELINE_PAGE_SIZE, zone_name)
+            page["_day"] = day_ms
+            page["_page"] = page_number
+            return page
+
+        def absorb(page: Dict[str, Any]) -> None:
+            day_ms = page["_day"]
+            total_by_day[day_ms] = max(total_by_day.get(day_ms, 0), page.get("total_count", 0))
+            for rec in page.get("timelines", []):
+                rec_id = rec.get("id")
+                key = (day_ms, rec_id) if rec_id is not None else (day_ms, id(rec))
+                merged[key] = self._normalize_paged_timeline(rec, day_ms)
+
+        unit = self._progress_unit(timeline_event_type)
+        report_progress(f"Found {len(days)} day(s) with {unit}; fetching the first page of each",
+                        stage="index", days=len(days))
+
+        # Round 1: page 0 of every day (concurrent) — tells us how many pages each day has.
+        first_pages = await asyncio.gather(*(fetch(d, 0) for d in days))
+        remaining: List[tuple] = []
+        for page in first_pages:
+            if page["status"] == "error":
+                page["partial_data"] = list(merged.values())
+                page["pages_fetched"] = pages_fetched
+                return page
+            pages_fetched += 1
+            absorb(page)
+            page_numbers = page.get("page_numbers") or []
+            last_page = min(max(page_numbers) if page_numbers else 0, max_pages - 1)
+            remaining.extend((page["_day"], n) for n in range(1, last_page + 1))
+        expected_total = sum(total_by_day.values())
+        total_pages = pages_fetched + len(remaining)
+        report_progress(f"Fetching {unit}: page {pages_fetched} of {total_pages}",
+                        current=len(merged), total=expected_total, stage="fetch",
+                        page=pages_fetched, pages=total_pages)
+
+        # Round 2: every other page of every day, `concurrency` at a time, reporting per page.
+        if remaining:
+            async def fetch_and_report(d: int, n: int) -> Dict[str, Any]:
+                page = await fetch(d, n)
+                if page["status"] != "error":
+                    absorb(page)
+                    nonlocal pages_fetched
+                    pages_fetched += 1
+                    report_progress(f"Fetching {unit}: page {pages_fetched} of {total_pages}",
+                                    current=len(merged), total=expected_total, stage="fetch",
+                                    page=pages_fetched, pages=total_pages)
+                return page
+            rest = await asyncio.gather(*(fetch_and_report(d, n) for d, n in remaining))
+            for page in rest:
+                if page["status"] == "error":
+                    page["partial_data"] = list(merged.values())
+                    page["pages_fetched"] = pages_fetched
+                    return page
+
+        data = list(merged.values())
+        # Keep only records that overlap the requested range: the index is day-granular, so a
+        # day at either edge can hold records outside a sub-day request.
+        data = [r for r in data
+                if r.get("timestamp") is None
+                or (r.get("endTime") or r.get("timestamp")) >= start_time_ms
+                and r.get("timestamp") <= end_time_ms]
+        print(f"Paged fetch: {len(data)} {timeline_event_type} records for {system_id} "
+              f"over {len(days)} day(s), {pages_fetched} page(s), concurrency {concurrency}")
+        return {
+            "status": "success",
+            "data": data,
+            "consolidated_data": [],
+            "total_count": len(data),
+            "event_type": timeline_event_type,
+            "source": "paged",
+            "days": days,
+            "pages_fetched": pages_fetched,
+            "total_count_by_day": total_by_day,
+        }
+
+    async def get_loganomaly_all(
+        self,
+        customer_name: str,
+        system_id: str,
+        start_time_ms: int,
+        end_time_ms: int,
+        zone_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fetch every log anomaly for a system over a range via the paged API (no caps)."""
+        return await self.get_timeline_all_paged("loganomaly", customer_name, system_id,
+                                                 start_time_ms, end_time_ms, zone_name)
 
     async def get_incidents(
         self,
