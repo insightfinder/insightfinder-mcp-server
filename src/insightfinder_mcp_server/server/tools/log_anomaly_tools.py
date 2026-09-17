@@ -146,6 +146,9 @@ def _summary_for_model(summary: Optional[Dict[str, Any]]) -> Optional[Dict[str, 
             } if outlier else None),
         }
     out["how_to_read"] = (
+        "A complete log-anomaly breakdown (totals, named-pattern table, unnamed groups) is appended "
+        "to the final answer automatically. Cover log anomalies in ONE sentence (total count and the "
+        "single most important finding) and do not list patterns or groups yourself. "
         "top_named_patterns are user-assigned InsightFinder pattern names. Everything under "
         "unnamed_anomalies has NO pattern name; its groups are message families and must not be "
         "presented as named patterns or merged with a similarly worded named pattern. The log "
