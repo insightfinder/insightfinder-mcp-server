@@ -704,6 +704,12 @@ async def fetch_metric_anomalies(
     Fetches metric anomaly timeline data from InsightFinder for a specific system within a given time range.
     Use this tool when a user asks for metric anomalies, performance issues, or infrastructure monitoring data.
 
+    ⚠️ SIZE: Returns EVERY raw metric-anomaly record in the window with no cap — one day on a busy
+    system can be hundreds of KB, more than fits alongside other results in a model context.
+    Do NOT use it for a broad "what happened" / summary question: use get_system_summary (one
+    system) or showallsystemssummary (all systems) instead. Use it only for a specific metric,
+    component, or instance over a narrow time window (or pass project_name to scope it).
+
     ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 20", "March 5") without a year, always default to year 2026.
 
     IMPORTANT: Each returned anomaly includes projectName and projectDisplayName fields which identify 
