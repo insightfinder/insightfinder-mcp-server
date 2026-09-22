@@ -1146,8 +1146,15 @@ async def fetch_log_anomalies(
     end_time: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Fetches log anomaly timeline data from InsightFinder for a specific system within a given time range.
+    Summarizes ALL log anomalies for a system in a time range: total, per-project counts, a
+    pattern digest (user-named patterns with counts, plus one description of the unnamed bucket)
+    and the 20 most recent anomalies. Every record in the range is retrieved via the paged API
+    and aggregated server-side, so the result stays small on any system.
     Use this tool when a user asks for log anomalies, unusual log patterns, or log-based issues.
+
+    A complete named-pattern table is appended to the final answer automatically (verbatim_markdown);
+    do not reproduce it. For the individual anomalies / raw log lines of one pattern or project,
+    use get_project_log_anomalies with project_name (and pattern_name).
 
     ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
 
@@ -1178,16 +1185,76 @@ async def fetch_log_anomalies(
             if start_time_ms is None:
                 start_time_ms = default_start_ms
 
-        # Call the InsightFinder API client with the timeline endpoint
-        api_client = _get_api_client()
-        result = await api_client.get_loganomaly(
-            system_name=system_name,
-            start_time_ms=start_time_ms,
-            end_time_ms=end_time_ms,
-        )
+        from ..progress import report_progress
+        from .get_time import resolve_system_identity, format_timestamp_in_user_timezone
+        from .log_anomaly_tools import build_pattern_summary, _summary_for_model
 
-        return result
-        
+        api_client = _get_api_client()
+        # Preferred: paged external API (every record, no cap). Fallback: unpaged timeline
+        # (capped at 5000 records / 10 MB).
+        report_progress(f"Resolving system {system_name}", stage="resolve")
+        identity = await resolve_system_identity(system_name)
+        result, data_source = None, "paged"
+        if identity.get("system_id") and identity.get("owner"):
+            result = await api_client.get_loganomaly_all(
+                customer_name=identity["owner"],
+                system_id=identity["system_id"],
+                start_time_ms=start_time_ms,
+                end_time_ms=end_time_ms,
+            )
+            if result.get("status") != "success":
+                result = None
+        if result is None:
+            data_source = "unpaged"
+            result = await api_client.get_loganomaly(
+                system_name=system_name,
+                start_time_ms=start_time_ms,
+                end_time_ms=end_time_ms,
+            )
+        if result.get("status") != "success":
+            return result
+
+        anomalies = result.get("data") or []
+        report_progress(f"Analyzing {len(anomalies):,} log anomalies into patterns",
+                        current=len(anomalies), total=len(anomalies), stage="analyze")
+
+        date_label = format_timestamp_in_user_timezone(start_time_ms, tz_name)[:10]
+        end_label = format_timestamp_in_user_timezone(end_time_ms, tz_name)[:10]
+        if end_label != date_label:
+            date_label = f"{date_label} to {end_label}"
+        summary = build_pattern_summary(anomalies, tz_name, system_name, "all projects", date_label)
+
+        by_project: Dict[str, int] = {}
+        for a in anomalies:
+            p = a.get("projectDisplayName") or a.get("projectName") or "Unknown"
+            by_project[p] = by_project.get(p, 0) + 1
+        recent = sorted(anomalies, key=lambda a: a.get("timestamp", 0) or 0, reverse=True)[:20]
+
+        return {
+            "status": "success",
+            "system_name": system_name,
+            "time_range": {
+                "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+                "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name),
+            },
+            "total_anomalies": len(anomalies),
+            "data_source": data_source,
+            "coverage": ("complete: every log anomaly in the time range was retrieved"
+                         if data_source == "paged" else
+                         "may be partial: unpaged API capped at 5000 records"),
+            "anomalies_by_project": dict(sorted(by_project.items(), key=lambda kv: -kv[1])),
+            "pattern_summary": _summary_for_model(summary),
+            "verbatim_markdown": summary.get("verbatim_markdown", ""),
+            "most_recent": [{
+                "timestamp_human": format_timestamp_in_user_timezone(a.get("timestamp", 0) or 0, tz_name),
+                "project": a.get("projectDisplayName") or a.get("projectName") or "Unknown",
+                "component": a.get("componentName", "Unknown"),
+                "instance": a.get("instanceName", "Unknown"),
+                "pattern": a.get("patternName", "Unknown"),
+                "anomaly_score": round(a.get("anomalyScore", 0) or 0, 2),
+            } for a in recent],
+        }
+
     except Exception as e:
         error_message = f"Error in fetch_log_anomalies: {str(e)}"
         if settings.ENABLE_DEBUG_MESSAGES:

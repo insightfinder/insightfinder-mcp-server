@@ -1005,6 +1005,155 @@ async def list_available_instances_for_project(
         }
 
 
+def _summary_section(title: str, res: Any, render) -> str:
+    """One markdown bullet for a sub-result; a failed sub-call becomes a one-line note."""
+    if isinstance(res, Exception):
+        return f"**{title}:** unavailable ({type(res).__name__}: {res})"
+    if not isinstance(res, dict) or res.get("status") != "success":
+        return f"**{title}:** unavailable ({(res or {}).get('message', 'no data') if isinstance(res, dict) else res})"
+    return f"**{title}:** {render(res)}"
+
+
+def _top(d: Dict[str, int], n: int = 3) -> str:
+    return ", ".join(f"{k} ({v:,})" for k, v in list(d.items())[:n]) if d else "none"
+
+
+@mcp_server.tool()
+async def get_system_summary(
+    system_name: str,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    ONE-CALL summary of everything that happened in ONE system over a time range: incidents
+    (totals, consolidated count, dominant patterns, affected projects), metric anomalies (totals,
+    top patterns), log anomalies (every record retrieved via the paged API and reduced to a
+    pattern digest) and deployments / change events. All four are fetched concurrently
+    server-side and composed into ready-to-display markdown.
+
+    **Use this tool FIRST, and usually ONLY, for a BROAD question about a named system** — one
+    that names no specific incident, metric, project or action:
+    - "What happened on 2026-06-09 in <system>?"  - "Summarize <system> for last week"
+    - "How is <system> doing today?"               - "Any issues in <system> yesterday?"
+    Do NOT also call get_incidents_overview / get_incidents_list / fetch_metric_anomalies /
+    fetch_log_anomalies / get_deployments_* for the same question — this tool already includes
+    them. For a question about ALL systems use showallsystemssummary.
+
+    **Do NOT use this tool when the request is specific** — go straight to the specific tools:
+    - a particular incident or a root cause analysis ("the incident at 02:15", "RCA") →
+      get_incidents_list / get_incident_details / get_incident_raw_data
+    - a metric line chart or a named metric → get_metric_data / get_project_metric_anomalies
+    - one project's log anomalies → get_project_log_anomalies
+    - creating or previewing a Jira ticket → preview_jira_ticket / create_jira_ticket
+    A system name plus a time range alone does NOT make a question broad.
+
+    ⚠️ The `formatted_preview` field is the finished answer. Return it as-is; do not rewrite it.
+    A complete log-anomaly pattern table is appended to the final answer automatically.
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16") without a year,
+    always default to year 2026.
+
+    Args:
+        system_name: The system to summarize.
+        start_time: Start of the window. Accepts "2026-02-12T11:05:00", "2026-02-12",
+                    "02/12/2026" or milliseconds. Default: 24 hours ago.
+        end_time: End of the window, same formats. Default: now.
+    """
+    import asyncio
+    from ..progress import report_progress
+    from .incident_tools import get_incidents_overview, get_incidents_statistics, fetch_log_anomalies
+    from .metric_anomaly_tools import get_metric_anomalies_overview
+    from .deployment_tools import get_deployments_overview
+
+    try:
+        tz_name, system_name = await resolve_system_timezone(system_name)
+        report_progress(f"Summarizing {system_name}: incidents, metrics, logs, deployments",
+                        stage="fetch")
+        inc, stats, met, logs, dep = await asyncio.gather(
+            get_incidents_overview(system_name, start_time, end_time),
+            get_incidents_statistics(system_name, start_time, end_time),
+            get_metric_anomalies_overview(system_name, start_time, end_time),
+            fetch_log_anomalies(system_name, start_time, end_time),
+            get_deployments_overview(system_name, start_time, end_time),
+            return_exceptions=True,
+        )
+
+        def render_incidents(r):
+            s = r.get("summary", {})
+            st = stats.get("statistics", {}) if isinstance(stats, dict) and stats.get("status") == "success" else {}
+            out = (f"{s.get('total_incidents', 0):,} raw incidents, consolidated into "
+                   f"{s.get('consolidated_incidents', 0):,}")
+            if st.get("top_patterns"):
+                out += f". Dominant patterns: {_top(st['top_patterns'])}"
+            if st.get("top_affected_projects"):
+                out += f". Most affected projects: {_top(st['top_affected_projects'])}"
+            if s.get("first_event") and s.get("last_event"):
+                out += f". Window {s['first_event'][11:16]} to {s['last_event'][11:16]}"
+            return out + "."
+
+        def render_metrics(r):
+            s = r.get("summary", {})
+            tops = ", ".join(f"{p['pattern'].removeprefix('metric_value_')} ({p['count']:,})"
+                             for p in (s.get("top_patterns") or [])[:3])
+            return (f"{s.get('total_anomalies', 0):,} anomalies across "
+                    f"{s.get('unique_components', 0):,} components" + (f". Top: {tops}." if tops else "."))
+
+        def render_logs(r):
+            ps = r.get("pattern_summary") or {}
+            un = ps.get("unnamed_anomalies") or {}
+            groups = ", ".join(f"{g['message_group_not_a_pattern_name']} ({g['anomalies']:,})"
+                               for g in (un.get("largest_unnamed_groups_by_message") or [])[:3])
+            def _short(name: str, limit: int = 60) -> str:
+                if len(name) <= limit:
+                    return name
+                cut = name[:limit].rsplit(" ", 1)[0].rstrip(" -,")
+                return f"{cut}…"
+            named = ", ".join(f"{_short(p['pattern_name'])} ({p['anomalies']:,})"
+                              for p in (ps.get("top_named_patterns") or [])[:2])
+            out = (f"{r.get('total_anomalies', 0):,} anomalies across "
+                   f"{ps.get('total_instances', 0):,} instances")
+            if r.get("data_source") == "paged":
+                out += " (every record retrieved)"
+            if r.get("anomalies_by_project"):
+                out += f". By project: {_top(r['anomalies_by_project'])}"
+            if named:
+                out += f". Top named patterns: {named}"
+            if groups:
+                out += f". Largest unnamed groups: {groups}"
+            return out + ". Full pattern table below."
+
+        def render_deployments(r):
+            n = (r.get("summary") or {}).get("total_deployments", 0)
+            return f"{n:,} in this window." if n else "none in this window."
+
+        tr = (inc.get("time_range") if isinstance(inc, dict) else None) or \
+             (logs.get("time_range") if isinstance(logs, dict) else None) or {}
+        window = f"{tr.get('start_human', start_time or 'last 24h')} to {tr.get('end_human', end_time or 'now')}"
+        preview = "\n\n".join([
+            f"## What happened in {system_name} — {window}",
+            _summary_section("Incidents", inc, render_incidents),
+            _summary_section("Metric anomalies", met, render_metrics),
+            _summary_section("Log anomalies", logs, render_logs),
+            _summary_section("Deployments / change events", dep, render_deployments),
+        ])
+
+        return {
+            "status": "success",
+            "system_name": system_name,
+            "timezone": tz_name,
+            "time_range": tr,
+            "formatted_preview": preview,
+            "verbatim_markdown": logs.get("verbatim_markdown", "") if isinstance(logs, dict) else "",
+            "sections_failed": [name for name, r in
+                                (("incidents", inc), ("incident_statistics", stats), ("metrics", met),
+                                 ("logs", logs), ("deployments", dep))
+                                if isinstance(r, Exception) or not (isinstance(r, dict) and r.get("status") == "success")],
+        }
+    except Exception as e:
+        logger.error(f"Error in get_system_summary: {e}", exc_info=True)
+        return {"status": "error", "message": f"Error in get_system_summary: {e}"}
+
+
 @mcp_server.tool()
 async def showallsystemssummary(
     start_time: Optional[str] = None,
@@ -1019,7 +1168,9 @@ async def showallsystemssummary(
     - "What happened on 2026-04-08?"
     - "Show me a summary for April" / "Summarise last week"
     - "What issues were there between [date] and [date]?"
-    - Any request for an overall summary over a time period
+    - Any request for an overall summary over a time period across ALL systems.
+    For a summary of ONE named system ("what happened on [date] in [system]"), use
+    get_system_summary instead — it is system-scoped and includes the log-anomaly digest.
 
     ⚠️ IMPORTANT: The result of this tool is already LLM-composed markdown. Return it
     DIRECTLY to the user WITHOUT any rewriting, reformatting, or summarising. Do not
