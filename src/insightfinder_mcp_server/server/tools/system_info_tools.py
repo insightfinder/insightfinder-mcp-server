@@ -20,7 +20,9 @@ import httpx
 
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
+from .ari_report import render_ari_digest
 from .get_time import (
+    format_timestamp_in_user_timezone,
     get_time_range_ms,
     resolve_system_timezone,
     parse_time_parameters,
@@ -1018,6 +1020,30 @@ def _top(d: Dict[str, int], n: int = 3) -> str:
     return ", ".join(f"{k} ({v:,})" for k, v in list(d.items())[:n]) if d else "none"
 
 
+def _render_ari_investigations(overview: Any) -> str:
+    """The on-call ARI section of a system summary, from get_incidents_overview's
+    summary.ari_investigations: counts by status, then each Completed investigation with its
+    report digest (overview, actions taken with links, next action). "" when ARI investigated
+    nothing in the window."""
+    if not isinstance(overview, dict) or overview.get("status") != "success":
+        return ""
+    ari = (overview.get("summary") or {}).get("ari_investigations")
+    if not ari:
+        return ""
+    by_status = ", ".join(f"{n:,} {status}" for status, n in ari.get("by_status", {}).items())
+    lines = [f"**ARI investigations:** {by_status}."]
+    for inc in ari.get("completed", []):
+        lines.append(f"- [{inc.get('timestamp_human')}]: {inc.get('component')} "
+                     f"(Instance: {inc.get('instance')}) in {inc.get('projectDisplayName')} "
+                     f"project. Detected issue: {inc.get('pattern')}.")
+        lines.extend(render_ari_digest(inc.get("ari_digest") or {}))
+    more = ari.get("completed_total", 0) - len(ari.get("completed", []))
+    if more > 0:
+        lines.append(f"- …and {more} more completed investigation(s); ask for an incident's "
+                     f"ARI report to see it.")
+    return "\n".join(lines)
+
+
 @mcp_server.tool()
 async def get_system_summary(
     system_name: str,
@@ -1028,8 +1054,9 @@ async def get_system_summary(
     ONE-CALL summary of everything that happened in ONE system over a time range: incidents
     (totals, consolidated count, dominant patterns, affected projects), metric anomalies (totals,
     top patterns), log anomalies (every record retrieved via the paged API and reduced to a
-    pattern digest) and deployments / change events. All four are fetched concurrently
-    server-side and composed into ready-to-display markdown.
+    pattern digest), deployments / change events, and on-call ARI investigations (counts by
+    status; each completed one with its overview, actions taken such as pull requests, and next
+    action). All are fetched concurrently server-side and composed into ready-to-display markdown.
 
     **Use this tool FIRST, and usually ONLY, for a BROAD question about a named system** — one
     that names no specific incident, metric, project or action:
@@ -1135,7 +1162,7 @@ async def get_system_summary(
             _summary_section("Metric anomalies", met, render_metrics),
             _summary_section("Log anomalies", logs, render_logs),
             _summary_section("Deployments / change events", dep, render_deployments),
-        ])
+        ] + ([ari_section] if (ari_section := _render_ari_investigations(inc)) else []))
 
         return {
             "status": "success",
@@ -1158,7 +1185,7 @@ async def get_system_summary(
 async def showallsystemssummary(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
-) -> str:
+) -> Dict[str, Any]:
     """
     Returns a pre-composed LLM markdown summary of all systems' incidents, anomalies, and
     change events for the specified time period.
@@ -1172,9 +1199,9 @@ async def showallsystemssummary(
     For a summary of ONE named system ("what happened on [date] in [system]"), use
     get_system_summary instead — it is system-scoped and includes the log-anomaly digest.
 
-    ⚠️ IMPORTANT: The result of this tool is already LLM-composed markdown. Return it
-    DIRECTLY to the user WITHOUT any rewriting, reformatting, or summarising. Do not
-    paraphrase or add extra commentary — the response is ready to display as-is.
+    ⚠️ IMPORTANT: The `formatted_preview` field is the finished answer (it includes each
+    incident's ARI investigation, pull request and report links). Return it as-is; do not
+    rewrite, reformat or summarise it.
 
     ⚠️ RELATIVE DATE KEYWORDS SUPPORTED:
     - "today": Today's date (full day)  [DEFAULT if omitted]
@@ -1190,13 +1217,15 @@ async def showallsystemssummary(
         end_time: End of the time window (default: today). Accepts relative keywords or absolute dates.
 
     Returns:
-        A ready-to-display markdown string with a one-line issue summary followed by
-        a per-system breakdown table and detailed incident/anomaly listings.
+        {"status": "success", "formatted_preview": ready-to-display markdown (a one-line issue
+        summary, a per-system breakdown table and detailed incident/anomaly listings),
+        "totals": {...}, "time_range": {...}, "citations": [one per listed system]}
     """
     try:
         api_client = get_current_api_client()
         if not api_client:
-            return "Error: No API client configured. Please configure your InsightFinder credentials."
+            return {"status": "error",
+                    "message": "No API client configured. Please configure your InsightFinder credentials."}
 
         # Resolve owner timezone (uses first available system)
         try:
@@ -1208,7 +1237,7 @@ async def showallsystemssummary(
         try:
             start_ms, end_ms = parse_time_parameters(start_time, end_time, tz_name)
         except ValueError as e:
-            return f"Error: {str(e)}"
+            return {"status": "error", "message": str(e)}
 
         if start_ms is None or end_ms is None:
             start_ms, end_ms = get_time_range_ms(tz_name, 1)
@@ -1252,11 +1281,30 @@ async def showallsystemssummary(
             f"{total_log} Log Anomalies, {total_change} Change Events"
         )
 
-        return f"{header_line}\n\n{summary_markdown}"
+        return {
+            "status": "success",
+            "formatted_preview": f"{header_line}\n\n{summary_markdown}",
+            "totals": {
+                "issues": total_issues,
+                "incidents": total_incidents,
+                "metric_anomalies": total_metric,
+                "log_anomalies": total_log,
+                "change_events": total_change,
+            },
+            "time_range": {
+                "start": start_ms,
+                "end": end_ms,
+                "start_human": format_timestamp_in_user_timezone(start_ms, tz_name),
+                "end_human": format_timestamp_in_user_timezone(end_ms, tz_name),
+            },
+            # Structured, one per listed system (same schema as mcp-service citations).
+            "citations": data.get("citations") or [],
+        }
 
     except httpx.HTTPStatusError as e:
         logger.error(f"HTTP error fetching all-systems summary: {e}", exc_info=True)
-        return f"Error: API request failed with status {e.response.status_code}: {e.response.text}"
+        return {"status": "error",
+                "message": f"API request failed with status {e.response.status_code}: {e.response.text}"}
     except Exception as e:
         logger.error(f"Error fetching all-systems summary: {str(e)}", exc_info=True)
-        return f"Error: Failed to fetch all-systems summary: {str(e)}"
+        return {"status": "error", "message": f"Failed to fetch all-systems summary: {str(e)}"}

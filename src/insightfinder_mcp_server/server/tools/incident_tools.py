@@ -18,6 +18,7 @@ from .get_time import (
     parse_relative_date_keyword,
 )
 from .ui_url import build_systemrootcause_url
+from .ari_report import ari_fields, ari_status_counts, strip_ari_fields, COMPLETED
 
 
 # Layer 0: Ultra-compact incident overview (just counts and basic info)
@@ -164,6 +165,29 @@ async def get_incidents_overview(
             "last_event": format_api_timestamp_corrected(last_incident, tz_name) if last_incident else None,
             "has_incidents": total_incidents > 0
         }
+
+        # On-call ARI investigations of the primary incidents: counts by status, plus the
+        # Completed ones with their report digest (most recent first) for summaries.
+        ari_counts = ari_status_counts(incidents)
+        if ari_counts:
+            completed = []
+            for inc in sorted(incidents, key=lambda x: x.get("timestamp", 0), reverse=True):
+                fields = ari_fields(inc)
+                if fields.get("ari_status") == COMPLETED and fields.get("ari_digest"):
+                    completed.append({
+                        "timestamp": inc.get("timestamp"),
+                        "timestamp_human": format_api_timestamp_corrected(inc.get("timestamp"), tz_name),
+                        "projectDisplayName": inc.get("projectDisplayName", "Unknown"),
+                        "component": inc.get("componentName", "Unknown"),
+                        "instance": inc.get("instanceName", "Unknown"),
+                        "pattern": inc.get("patternName", "Unknown"),
+                        "ari_digest": fields["ari_digest"],
+                    })
+            summary["ari_investigations"] = {
+                "by_status": ari_counts,
+                "completed": completed[:10],
+                "completed_total": len(completed),
+            }
 
         if include_consolidated:
             # Tally flagDesc across all items in both timelineList and consolidatedTimelineList
@@ -318,6 +342,8 @@ async def get_incidents_list(
             snow = _extract_servicenow_info(incident)
             if snow:
                 incident_info["servicenow_ticket"] = snow
+
+            incident_info.update(ari_fields(incident))
 
             if include_consolidated:
                 consolidated = _attach_consolidated(incident, consolidated_index, tz_name)
@@ -496,6 +522,8 @@ async def get_incidents_summary(
             if snow:
                 summary["servicenow_ticket"] = snow
 
+            summary.update(ari_fields(incident))
+
             if include_consolidated:
                 consolidated = _attach_consolidated(incident, consolidated_index, tz_name)
                 summary["consolidated_incidents"] = consolidated
@@ -532,6 +560,122 @@ async def get_incidents_summary(
         return {"status": "error", "message": error_message}
 
 # Layer 3: Full incident details (without raw data)
+ARI_REPORT_STATUSES = (COMPLETED, "Failed")  # an investigation that reached a report
+
+
+async def _fetch_llm_result(client, incident_data: dict) -> Optional[Dict[str, Any]]:
+    """The incident's LLM summary result (rca / ari_report / next_steps), or None."""
+    incident_llm_key = incident_data.get('incidentLLMKey')
+    if not incident_llm_key:
+        return None
+    root_cause_info = incident_data.get('rootCauseInfoKey')
+    timestamp = root_cause_info.get('incidentTimestamp') \
+        if root_cause_info and 'incidentTimestamp' in root_cause_info \
+        else incident_data.get('timestamp')
+    try:
+        # incidentLLMKey carries the raw project and its owner: direct lookup (~0.2 s), with the
+        # scan of every system only as a fallback.
+        fast = await client.get_project_system(incident_llm_key.get('projectName', ''),
+                                               incident_llm_key.get('userName', ''))
+        if fast:
+            system_id = fast[3]
+        else:
+            project_info = await client.get_customer_name_for_project(
+                incident_llm_key.get('projectName', ''))
+            system_id = project_info[4] if project_info else ''
+        if not system_id:
+            return None
+        return await client.fetch_incident_llm_result(
+            user_name=incident_llm_key.get('userName', ''),
+            project_name=incident_llm_key.get('projectName', ''),
+            instance_name=incident_llm_key.get('instanceName', ''),
+            timestamp=timestamp,
+            pattern_id=incident_llm_key.get('patternId', 0),
+            system_name=system_id)
+    except Exception as e:
+        logger.warning(f"Failed to fetch incident LLM summary: {str(e)}")
+        return None
+
+
+async def _locate_incident(system_name: str, incident_timestamp: str,
+                           instance_name: Optional[str] = None, pattern_id: Optional[str] = None,
+                           pattern_name: Optional[str] = None) -> Dict[str, Any]:
+    """Find one incident on the timeline around `incident_timestamp` (shared by
+    get_incident_details and get_incident_ari_report). Returns {"status": "success", "tz_name",
+    "system_name", "client", "incident"} or {"status": "error", "message"}."""
+    # Resolve owner timezone for this system
+    tz_name, system_name = await resolve_system_timezone(system_name)
+
+    # Convert any human-readable timestamp to InsightFinder fake-UTC ms
+    try:
+        timestamp_ms = convert_to_ms(incident_timestamp, "incident_timestamp", tz_name)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+
+    if timestamp_ms is None:
+        return {"status": "error", "message": "incident_timestamp is required"}
+    
+    # Use a 1-minute window around the incident timestamp
+    window_ms = 1 * 60 * 1000  # 1 minute in milliseconds
+    start_time = timestamp_ms - window_ms
+    end_time = timestamp_ms + window_ms
+    
+    client = _get_api_client()
+    incidents_response = await client._fetch_timeline_data(
+        "incident",
+        system_name,
+        start_time,
+        end_time
+    )
+
+    # Find the specific incident in the response
+    incidents = incidents_response.get('data', [])
+    
+    # Filter only true incidents
+    incidents = [i for i in incidents if i.get('isIncident', False)]
+    
+    incident_data = None
+    
+    # Check if all optional filters are None
+    if instance_name is None and pattern_id is None and pattern_name is None:
+        # Timestamp match at minute granularity (ignoring seconds and milliseconds)
+        target_timestamp_minutes = timestamp_ms // 60000  # Convert to minutes
+        for inc in incidents:
+            incident_timestamp_minutes = inc.get('timestamp', 0) // 60000  # Convert to minutes
+            if incident_timestamp_minutes == target_timestamp_minutes:
+                incident_data = inc
+                break
+    else:
+        # Filter by optional parameters within time window
+        for inc in incidents:
+            if inc.get('timestamp') >= start_time and inc.get('timestamp') <= end_time:
+                # Check all provided filters
+                match = True
+                
+                if instance_name is not None and inc.get('instanceName') != instance_name:
+                    match = False
+                
+                # pattern_id arrives as a string from the model; the record's is an int
+                if pattern_id is not None and str(inc.get('patternId')) != str(pattern_id):
+                    match = False
+                
+                if pattern_name is not None and inc.get('patternName') != pattern_name:
+                    match = False
+                
+                if match:
+                    incident_data = inc
+                    break
+        
+        # If no match found with filters, return the first incident in the time window
+        if incident_data is None and incidents:
+            incident_data = incidents[0]
+            
+    if not incident_data:
+        return {"status": "error", "message": "No incident found with the specified timestamp"}
+    return {"status": "success", "tz_name": tz_name, "system_name": system_name,
+            "client": client, "incident": incident_data}
+
+
 @mcp_server.tool()
 async def get_incident_details(
     system_name: str,
@@ -563,6 +707,19 @@ async def get_incident_details(
     - Recommendations may include suggested actions, remediation steps, or system insights.  
     - If no recommendations exist, return `recommendation_available=False`.  
 
+    On-call ARI report:
+    - When the user asks for the ARI report / ARI investigation of an incident, what ARI found or
+      did, or the fix / pull request ARI made, use get_incident_ari_report instead: it returns the
+      report ready to display, with its pull request and report links.
+    - `ari_status` is the investigation's status ("Completed", "In Progress", "Awaiting Approval",
+      "Failed", "Denied", "Skipped", "Not Configured"); absent when ARI never looked at it.
+    - `ari_report` (with `ari_report_available=True`) is the full ARI report in markdown; show it
+      in full, links included. It takes the place of the LLM next steps, so `recommendation` is
+      left empty when a report exists.
+    - `ari_digest` is the report's short overview (overview, confidence, next_action, actions).
+    - With no ARI report, say so (with `ari_status` if present) and use the root cause
+      (fetch_rca_chain=True) and recommendations (include_recommendations=True) instead.
+
     Args:
         system_name (str): The name of the system to query.
         incident_timestamp (str): The timestamp of the incident.
@@ -575,74 +732,12 @@ async def get_incident_details(
         include_recommendations (bool): Whether to include recommendations or remediation steps if available.
     """
     try:
-        # Resolve owner timezone for this system
-        tz_name, system_name = await resolve_system_timezone(system_name)
-
-        # Convert any human-readable timestamp to InsightFinder fake-UTC ms
-        try:
-            timestamp_ms = convert_to_ms(incident_timestamp, "incident_timestamp", tz_name)
-        except ValueError as e:
-            return {"status": "error", "message": str(e)}
-
-        if timestamp_ms is None:
-            return {"status": "error", "message": "incident_timestamp is required"}
-        
-        # Use a 1-minute window around the incident timestamp
-        window_ms = 1 * 60 * 1000  # 1 minute in milliseconds
-        start_time = timestamp_ms - window_ms
-        end_time = timestamp_ms + window_ms
-        
-        client = _get_api_client()
-        incidents_response = await client._fetch_timeline_data(
-            "incident",
-            system_name,
-            start_time,
-            end_time
-        )
-
-        # Find the specific incident in the response
-        incidents = incidents_response.get('data', [])
-        
-        # Filter only true incidents
-        incidents = [i for i in incidents if i.get('isIncident', False)]
-        
-        incident_data = None
-        
-        # Check if all optional filters are None
-        if instance_name is None and pattern_id is None and pattern_name is None:
-            # Timestamp match at minute granularity (ignoring seconds and milliseconds)
-            target_timestamp_minutes = timestamp_ms // 60000  # Convert to minutes
-            for inc in incidents:
-                incident_timestamp_minutes = inc.get('timestamp', 0) // 60000  # Convert to minutes
-                if incident_timestamp_minutes == target_timestamp_minutes:
-                    incident_data = inc
-                    break
-        else:
-            # Filter by optional parameters within time window
-            for inc in incidents:
-                if inc.get('timestamp') >= start_time and inc.get('timestamp') <= end_time:
-                    # Check all provided filters
-                    match = True
-                    
-                    if instance_name is not None and inc.get('instanceName') != instance_name:
-                        match = False
-                    
-                    if pattern_id is not None and inc.get('patternId') != pattern_id:
-                        match = False
-                    
-                    if pattern_name is not None and inc.get('patternName') != pattern_name:
-                        match = False
-                    
-                    if match:
-                        incident_data = inc
-                        break
-            
-            # If no match found with filters, return the first incident in the time window
-            if incident_data is None and incidents:
-                incident_data = incidents[0]
-                
-        if not incident_data:
-            return {"status": "error", "message": "No incident found with the specified timestamp"}
+        located = await _locate_incident(system_name, incident_timestamp, instance_name,
+                                         pattern_id, pattern_name)
+        if located["status"] != "success":
+            return located
+        tz_name, system_name = located["tz_name"], located["system_name"]
+        client, incident_data = located["client"], located["incident"]
 
         result_incident = incident_data.copy()  # For clarity in the result structure
         result_incident.pop('rawData', None)  # Remove raw data to keep response manageable
@@ -650,6 +745,7 @@ async def get_incident_details(
         result_incident.pop('rootCauseResultInfo', None)  # Remove root cause result info to avoid confusion
         result_incident.pop('rootCauseInfoKey', None)  # Remove root cause info key to avoid confusion
         result_incident.pop('incidentLLMKey', None)  # Remove incidentLLMKey to avoid confusion
+        strip_ari_fields(result_incident)  # Normalised into ari_* below
 
         # Extract metric name if available in rootCause
         metric_name = None
@@ -672,36 +768,29 @@ async def get_incident_details(
             "active": incident_data.get("active"),
             "projectDisplayName": incident_data.get("projectDisplayName", "Unknown"),
             "realProjectName": incident_data.get("projectName", "Unknown"),
-            "servicenow_ticket": snow
+            "servicenow_ticket": snow,
+            "ari_report_available": False,
+            "ari_report": None,
         }
+        result.update(ari_fields(incident_data))
+
+        # The on-call ARI report and the LLM summary come from the same endpoint. Read it when an
+        # investigation reached a report (Completed, or Failed with its failure report), or when
+        # the RCA chain is asked for.
+        wants_ari_report = result.get("ari_status") in ARI_REPORT_STATUSES
+        llm_result = await _fetch_llm_result(client, incident_data) \
+            if wants_ari_report or (include_root_cause and fetch_rca_chain) else None
+        if llm_result and llm_result.get("ari_report"):
+            result["ari_report_available"] = True
+            result["ari_report"] = llm_result["ari_report"]
 
         # Check if root cause analysis is available and requested
         root_cause_info = incident_data.get('rootCauseInfoKey')
         if include_root_cause and fetch_rca_chain:
             # Try the LLM summary API first
-            llm_summary = None
-            incident_llm_key = incident_data.get('incidentLLMKey')
-            # get timestamp from rootCauseInfoKey.incidentTimestamp if available, otherwise use incident timestamp
-            llm_root_cause_timestamp = root_cause_info.get('incidentTimestamp') if root_cause_info and 'incidentTimestamp' in root_cause_info else incident_data.get('timestamp')
-            if incident_llm_key:
-                try:
-                    project_info = await client.get_customer_name_for_project(
-                        incident_llm_key.get('projectName', '')
-                    )
-                    system_id = project_info[4] if project_info else ''
-                    if system_id:
-                        llm_summary = await client.fetch_incident_llm_summary(
-                            user_name=incident_llm_key.get('userName', ''),
-                            project_name=incident_llm_key.get('projectName', ''),
-                            instance_name=incident_llm_key.get('instanceName', ''),
-                            timestamp=llm_root_cause_timestamp,
-                            pattern_id=incident_llm_key.get('patternId', 0),
-                            system_name=system_id
-                        )
-                        # logger.debug(f"LLM summary fetch result: {str(llm_summary)}")
-                        logger.info(f"LLM summary fetch successful {llm_summary}")
-                except Exception as e:
-                    logger.warning(f"Failed to fetch incident LLM summary: {str(e)}")
+            llm_summary = llm_result.get("rca") if llm_result else None
+            if llm_summary:
+                logger.info(f"LLM summary fetch successful {llm_summary}")
 
             if llm_summary:
                 logger.info("RCA source: LLM summary API")
@@ -804,8 +893,10 @@ async def get_incident_details(
             if not result.get('root_cause_chain'):
                 result['root_cause_chain'] = []
         
-        # Fetch recommendations if requested and incident LLM key is available
-        if include_recommendations and 'incidentLLMKey' in incident_data and incident_data['incidentLLMKey']:
+        # Fetch recommendations if requested and incident LLM key is available. An ARI report
+        # replaces the LLM next steps, as on the incident page.
+        if include_recommendations and not result["ari_report_available"] \
+                and 'incidentLLMKey' in incident_data and incident_data['incidentLLMKey']:
             # print(f"[DEBUG] Fetching recommendations for incidentLLMKey: {incident_data['incidentLLMKey']}")
             try:
                 recommendation = await client.fetch_recommendation(
@@ -826,6 +917,96 @@ async def get_incident_details(
         if settings.ENABLE_DEBUG_MESSAGES:
             print(error_message, file=sys.stderr)
         return {"status": "error", "message": error_message}
+
+@mcp_server.tool()
+async def get_incident_ari_report(
+    system_name: str,
+    incident_timestamp: str,
+    instance_name: Optional[str] = None,
+    pattern_id: Optional[str] = None,
+    pattern_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Returns the on-call ARI (Autonomous Reliability Insights) investigation report of ONE
+    incident, ready to display: what ARI found, its confidence, what it did (pull requests,
+    branches, tickets, with links), the next action, and a link to the full report.
+
+    **Use this tool when the user asks for:** "the ARI report for <incident>", "what did ARI find /
+    do about <incident>", "the fix / PR ARI made for <incident>", "ARI investigation of
+    <incident>". Identify the incident first (get_incidents_list) if its timestamp is not known.
+
+    ⚠️ When `formatted_preview` is present it is the complete answer: return it as-is, do not
+    rewrite or summarise it (the links must reach the user), and do not call get_incident_details
+    or any other tool for this incident. Only when there is no report (`ari_report_available` is
+    false; the `message` says why) may you offer get_incident_details with fetch_rca_chain=True.
+
+    ⚠️ YEAR DEFAULT: If the user provides only a month and day without a year, default to 2026.
+
+    Args:
+        system_name: The system the incident belongs to.
+        incident_timestamp: The incident's time ("2026-10-01T02:55:55") or 13-digit milliseconds.
+        instance_name: Optional. The incident's instance, to pick it among incidents at that time.
+        pattern_id: Optional. The incident's pattern id.
+        pattern_name: Optional. The incident's pattern name.
+    """
+    try:
+        located = await _locate_incident(system_name, incident_timestamp, instance_name,
+                                         pattern_id, pattern_name)
+        if located["status"] != "success":
+            return located
+        tz_name, system_name = located["tz_name"], located["system_name"]
+        client, incident = located["client"], located["incident"]
+
+        fields = ari_fields(incident)
+        status = fields.get("ari_status")
+        digest = fields.get("ari_digest") or {}
+        when = format_api_timestamp_corrected(incident.get("timestamp"), tz_name)
+        what = (f"{incident.get('patternName', 'incident')} on {incident.get('componentName', 'Unknown')} "
+                f"(instance {incident.get('instanceName', 'Unknown')}, project "
+                f"{incident.get('projectDisplayName', incident.get('projectName', 'Unknown'))}) at {when}")
+        base = {"status": "success", "system_name": system_name, "incident_timestamp": when,
+                "ari_status": status, "ari_report_available": False}
+
+        llm_result = await _fetch_llm_result(client, incident) if status in ARI_REPORT_STATUSES else None
+        report = (llm_result or {}).get("ari_report")
+        if not report:
+            reason = (f"ARI's investigation of this incident is {status}" if status
+                      else "ARI has not investigated this incident")
+            return {**base, "message": f"No ARI report for {what}: {reason}."}
+
+        page_url = await build_systemrootcause_url(client, incident, event_category="incident")
+        report_url = f"{page_url}&eventRootCauseDetails=true" if page_url else None
+        actions = [a for a in digest.get("actions") or [] if a.get("url")]
+
+        conf = digest.get("confidence")
+        lines = [f"## ARI report — {what}",
+                 f"**Status:** {status}" + (f" · **Confidence:** {conf}" if conf else ""),
+                 report.strip()]
+        # The digest's actions come from what the agents returned; the report prose may not
+        # carry their links.
+        missing = [a for a in actions if a["url"] not in report]
+        if missing:
+            lines.append("**Actions taken:** " + ", ".join(
+                f"[{a.get('title') or a.get('type') or 'link'}]({a['url']})" for a in missing))
+        if report_url:
+            lines.append(f"[View full ARI report]({report_url})")
+
+        citations = []
+        if report_url:
+            citations.append({"source_type": "if_anomaly_detection", "format": "linked",
+                              "label": f"{system_name} — ARI report", "url": report_url})
+        for a in actions:
+            citations.append({"source_type": "code_repo", "format": "linked",
+                              "label": a.get("title") or a.get("type") or "Pull request",
+                              "url": a["url"]})
+        return {**base, "ari_report_available": True, "ari_digest": digest or None,
+                "formatted_preview": "\n\n".join(lines), "ui-url": page_url,
+                "citations": citations}
+    except Exception as e:
+        error_message = f"Error in get_incident_ari_report: {str(e)}"
+        logger.error(error_message, exc_info=True)
+        return {"status": "error", "message": error_message}
+
 
 # Layer 4: Raw data extraction (for deep investigation)
 @mcp_server.tool()

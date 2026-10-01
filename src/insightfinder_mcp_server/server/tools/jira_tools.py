@@ -1,3 +1,4 @@
+import re
 import logging
 from typing import Dict, Any, List, Optional
 import hashlib
@@ -8,6 +9,34 @@ from ...api_client.client_factory import get_current_api_client
 from ...api_client.jira_client import get_current_jira_client
 
 logger = logging.getLogger(__name__)
+
+
+# A URL the model wrote into a ticket must be a real address: models fill gaps with placeholders
+# ("https://[instance-url]/ui/...") that would ship as dead links in a real Jira ticket.
+_URL_IN_TEXT_RE = re.compile(r"https?://[^\s<>\"')]+")
+_VALID_NETLOC_RE = re.compile(r"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*(:\d{1,5})?$")
+_PLACEHOLDER_HOST_WORDS = ("instance-url", "your-", "example.com", "placeholder", "hostname")
+
+
+def _is_real_url(url: str) -> bool:
+    netloc = url.split("://", 1)[1].split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    host = netloc.split(":", 1)[0].lower()
+    return (bool(_VALID_NETLOC_RE.match(netloc)) and ("." in host or host == "localhost")
+            and not any(w in host for w in _PLACEHOLDER_HOST_WORDS))
+
+
+def _drop_placeholder_links(text: str) -> tuple:
+    """(text with every non-real URL replaced by "(link unavailable)", the URLs removed)."""
+    removed = []
+
+    def repl(m):
+        url = m.group(0).rstrip(".,;:!?]")
+        if _is_real_url(url):
+            return m.group(0)
+        removed.append(url)
+        return "(link unavailable)"
+    return _URL_IN_TEXT_RE.sub(repl, text or ""), removed
+
 
 async def resolve_project_key(project_identifier: str) -> str:
     """Resolve project key from either project key or project name.
@@ -191,6 +220,11 @@ async def preview_jira_ticket(
             if not fix_version_info:
                 return {"status": "error", "message": f"Fix version {fix_version_id} not found for project {project_key}"}
 
+        # Never put a made-up link in a ticket (see _drop_placeholder_links).
+        summary, removed_summary = _drop_placeholder_links(summary)
+        description, removed_description = _drop_placeholder_links(description)
+        removed_links = removed_summary + removed_description
+
         # Create preview
         preview = {
             "project": {
@@ -227,6 +261,10 @@ Please confirm by replying Yes or Confirm to create this JIRA ticket.
             """.strip()
         }
 
+        if removed_links:
+            preview["removed_links"] = removed_links
+            preview["formatted_preview"] += (
+                "\n\nNote: removed link(s) that were not real addresses: " + ", ".join(removed_links))
         return {"status": "success", "preview": preview}
 
     except ValueError as e:
@@ -291,6 +329,9 @@ async def create_jira_ticket(
     jira_client = get_current_jira_client()
     if not jira_client:
         return {"status": "error", "message": "JIRA client not available. Please ensure JIRA credentials are provided in headers."}
+
+    summary, _ = _drop_placeholder_links(summary)
+    description, _ = _drop_placeholder_links(description)
 
     try:
         # Prepare issue data
