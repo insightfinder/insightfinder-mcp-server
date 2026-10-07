@@ -1,9 +1,10 @@
 """
 Downdetector tools — check real-time service outage data from downdetector.com.
 
-Uses a headless Chromium browser (Playwright) to bypass Cloudflare protection.
+Uses a shared headless Chromium browser (Playwright) to bypass Cloudflare protection.
 Install Playwright browsers with: playwright install chromium
 """
+import asyncio
 import json
 import logging
 import pathlib
@@ -73,42 +74,67 @@ def _classify_status(current: float, baseline: Optional[float]) -> str:
     return "operational"
 
 
+# One Chromium process shared by every call (launching a browser per call costs
+# ~150-300MB and several seconds each time). Each call gets its own isolated
+# BrowserContext, which is cheap and is closed when the call finishes.
+_BROWSER_ARGS = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+]
+_playwright = None
+_browser = None
+_browser_lock = asyncio.Lock()
+
+
+async def _get_browser():
+    """Return the shared Chromium browser, (re)launching it if it isn't running."""
+    global _playwright, _browser
+    async with _browser_lock:
+        if _browser is not None and _browser.is_connected():
+            return _browser
+        # Browser crashed or was never started — tear down leftovers and relaunch.
+        if _browser is not None:
+            try:
+                await _browser.close()
+            except Exception:
+                pass
+            _browser = None
+        if _playwright is None:
+            from playwright.async_api import async_playwright
+            _playwright = await async_playwright().start()
+        _browser = await _playwright.chromium.launch(headless=True, args=_BROWSER_ARGS)
+        logger.info("Launched shared Chromium for Downdetector")
+        return _browser
+
+
 async def _fetch_with_browser(url: str) -> tuple:
-    """Launch a headless Chromium browser and return (html, status_code).
+    """Load url in a fresh context of the shared headless browser; return (html, status_code).
 
     Uses stealth flags and waits for the Cloudflare JS challenge to resolve
     before reading the page content. Cloudflare serves a challenge page first
     (HTTP 200) from datacenter IPs; waiting for networkidle + chartData
     ensures we get the real content after the JS redirect completes.
     """
-    from playwright.async_api import async_playwright
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-            ],
-        )
-        context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 800},
-            # Mask common headless-browser fingerprints
-            java_script_enabled=True,
-            bypass_csp=True,
-            extra_http_headers={
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            },
-        )
+    browser = await _get_browser()
+    context = await browser.new_context(
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        viewport={"width": 1280, "height": 800},
+        # Mask common headless-browser fingerprints
+        java_script_enabled=True,
+        bypass_csp=True,
+        extra_http_headers={
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+    )
+    try:
         # Hide navigator.webdriver flag
         await context.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
@@ -133,7 +159,12 @@ async def _fetch_with_browser(url: str) -> tuple:
                 pass
 
         html = await page.content()
-        await browser.close()
+    finally:
+        # Always release the context (its pages/memory) — the browser stays up.
+        try:
+            await context.close()
+        except Exception:
+            pass
     return html, status
 
 
