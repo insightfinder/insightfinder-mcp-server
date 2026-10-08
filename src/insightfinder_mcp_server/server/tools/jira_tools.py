@@ -1,6 +1,6 @@
 import re
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 import hashlib
 import time
 
@@ -159,6 +159,66 @@ async def list_jira_issue_types(project_key: str) -> Dict[str, Any]:
         logger.error(f"Failed to list JIRA issue types for project {project_key}: {e}")
         return {"status": "error", "message": str(e)}
 
+# Fields the ticket tools set themselves; Jira fills reporter.
+_SET_BY_TOOL = {"project", "summary", "description", "issuetype", "assignee", "reporter", "fixVersions"}
+
+
+def _default_fix_version(versions: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The version a ticket goes to when the project requires one and none was given: the next
+    unreleased version (earliest release date, undated last), else the latest non-archived one."""
+    live = [v for v in versions if not v.get("archived")]
+    unreleased = [v for v in live if not v.get("released")]
+    if unreleased:
+        return sorted(unreleased, key=lambda v: v.get("releaseDate") or "9999-99-99")[0]
+    return live[-1] if live else None
+
+
+async def _resolve_ticket_fields(jira_client, project_key: str, issue_type_id: str,
+                                 fix_version_id: Optional[str]) -> Dict[str, Any]:
+    """What a confirmed ticket needs beyond the caller's fields, so creation does not fail on a
+    field the project requires: the fix version (the given one, or a default when the project
+    requires one), and the first allowed value of any other required field with fixed choices.
+    Preview and create both call this, so the preview shows exactly what is created.
+
+    Returns {"fix_version": version or None, "fix_version_defaulted": bool,
+    "extra_fields": {fieldId: value}, "defaults": ["Name: value", ...], "error": str or None}."""
+    out = {"fix_version": None, "fix_version_defaulted": False, "extra_fields": {},
+           "defaults": [], "error": None}
+    versions = None
+    if fix_version_id:
+        versions = await jira_client.get_fix_versions(project_key)
+        out["fix_version"] = next((v for v in versions if str(v["id"]) == str(fix_version_id)), None)
+        if not out["fix_version"]:
+            out["error"] = f"Fix version {fix_version_id} not found for project {project_key}"
+            return out
+    try:
+        fields = await jira_client.get_create_fields(project_key, issue_type_id)
+    except Exception as e:  # createmeta unavailable: create with the caller's fields only
+        logger.warning(f"Could not read required Jira fields for {project_key}: {e}")
+        return out
+    for f in fields:
+        field_id, name = f.get("fieldId") or f.get("key"), f.get("name") or f.get("fieldId")
+        if not f.get("required") or f.get("hasDefaultValue"):
+            continue
+        if field_id == "fixVersions":
+            if out["fix_version"] is None:
+                versions = versions if versions is not None else await jira_client.get_fix_versions(project_key)
+                out["fix_version"] = _default_fix_version(versions)
+                out["fix_version_defaulted"] = out["fix_version"] is not None
+            continue
+        if field_id in _SET_BY_TOOL:
+            continue
+        allowed = f.get("allowedValues") or []
+        is_array = (f.get("schema") or {}).get("type") == "array"
+        if allowed:
+            first = allowed[0]
+            out["extra_fields"][field_id] = [{"id": first["id"]}] if is_array else {"id": first["id"]}
+            out["defaults"].append(f"{name}: {first.get('name') or first.get('value') or first['id']}")
+        elif (f.get("schema") or {}).get("type") == "string":
+            out["extra_fields"][field_id] = "N/A"
+            out["defaults"].append(f"{name}: N/A")
+    return out
+
 
 @mcp_server.tool()
 async def preview_jira_ticket(
@@ -167,9 +227,11 @@ async def preview_jira_ticket(
     summary: str,
     description: str,
     issue_type: str = "Task",
-    fix_version_id: Optional[str] = None
+    fix_version_id: Optional[Union[str, int]] = None
 ) -> Dict[str, Any]:
     """Preview a JIRA ticket before creation with all details formatted for user confirmation.
+    Fields the project requires but were not given (such as a fix version) are filled with
+    defaults and shown in the preview; create_jira_ticket applies the same defaults.
         
     Parameters:
       project_key: JIRA project key (e.g., 'II') or project name (e.g., 'InsightFinder Infrastructure')
@@ -212,13 +274,17 @@ async def preview_jira_ticket(
                                 f"Valid issue types: {valid_types}. Retry with one of these."),
                     "valid_issue_types": [it["name"] for it in issue_types]}
 
-        # Get fix version info if provided
-        fix_version_info = None
-        if fix_version_id:
-            versions = await jira_client.get_fix_versions(resolved_project_key)
-            fix_version_info = next((v for v in versions if v["id"] == fix_version_id), None)
-            if not fix_version_info:
-                return {"status": "error", "message": f"Fix version {fix_version_id} not found for project {project_key}"}
+        # Fix version (given, or defaulted when the project requires one) and other required fields
+        resolved = await _resolve_ticket_fields(jira_client, resolved_project_key,
+                                                issue_type_info["id"], fix_version_id)
+        if resolved["error"]:
+            return {"status": "error", "message": resolved["error"]}
+        fix_version_info = resolved["fix_version"]
+        fix_version_line = (f"Fix Version: {fix_version_info['name']}"
+                            + (" (default; required by this project)" if resolved["fix_version_defaulted"] else "")
+                            if fix_version_info else "Fix Version: None")
+        defaults_line = ("\nOther required fields (defaults): " + "; ".join(resolved["defaults"])
+                         if resolved["defaults"] else "")
 
         # Never put a made-up link in a ticket (see _drop_placeholder_links).
         summary, removed_summary = _drop_placeholder_links(summary)
@@ -252,7 +318,7 @@ Project: {project['name']} ({project['key']})
 Summary: {summary}
 Issue Type: {issue_type_info['name']}
 Assignee: {assignee['displayName']}{f" ({assignee['emailAddress']})" if assignee.get('emailAddress') else ""}
-{f"Fix Version: {fix_version_info['name']}" if fix_version_info else "Fix Version: None"}
+{fix_version_line}{defaults_line}
 
 Description:
 {description}
@@ -282,7 +348,7 @@ async def create_jira_ticket(
     summary: str,
     description: str,
     issue_type: str = "Task",
-    fix_version_id: Optional[str] = None,
+    fix_version_id: Optional[Union[str, int]] = None,
     user_confirmation: bool = False,
 ) -> Dict[str, Any]:
     """Create a JIRA ticket directly using JIRA API. 
@@ -343,9 +409,20 @@ async def create_jira_ticket(
             "assignee": {"accountId": assignee_account_id}
         }
 
-        # Add fix version if provided
-        if fix_version_id:
-            issue_data["fixVersions"] = [{"id": fix_version_id}]
+        # Fix version (given, or defaulted when required) and other required fields — the same
+        # resolution the preview showed.
+        issue_types = await jira_client.get_issue_types(resolved_project_key)
+        issue_type_info = next((it for it in issue_types if it["name"].lower() == issue_type.lower()), None)
+        if issue_type_info:
+            resolved = await _resolve_ticket_fields(jira_client, resolved_project_key,
+                                                    issue_type_info["id"], fix_version_id)
+            if resolved["error"]:
+                return {"status": "error", "message": resolved["error"]}
+            if resolved["fix_version"]:
+                issue_data["fixVersions"] = [{"id": str(resolved["fix_version"]["id"])}]
+            issue_data.update(resolved["extra_fields"])
+        elif fix_version_id:
+            issue_data["fixVersions"] = [{"id": str(fix_version_id)}]
 
         # Create the ticket
         result = await jira_client.create_issue(issue_data)

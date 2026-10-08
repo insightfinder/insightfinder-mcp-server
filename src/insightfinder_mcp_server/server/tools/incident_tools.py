@@ -239,18 +239,29 @@ async def get_incidents_list(
     Fetches a compact list of incidents with basic information only.
     Use this after getting the overview to see individual incidents without overwhelming detail.
 
+    ⚠️ The `formatted_preview` field is the finished answer to "list the incidents": one line per
+    incident (time, component, detected issue, ARI investigation status, ticket). Return it
+    as-is; do not rewrite or shorten it.
+
     ⚠️ YEAR DEFAULT: If the user provides only a month and day (e.g., "May 16", "March 5") without a year, always default to year 2026.
+
+    ⚠️ RELATIVE DATE KEYWORDS: for "today", "yesterday", "this week", "last week", "this month"
+    or "last month" pass the keyword itself as BOTH start_time and end_time ("today", "yesterday",
+    "thisweek", "lastweek", "thismonth", "lastmonth") — do not omit them: with no start_time
+    the window is the last 24 hours, which is not "today".
 
     Args:
         system_name (str): The name of the system to query for incidents.
         start_time (str): Optional. The start of the time window.
                 Accepts:
+                - Relative keywords: "today", "yesterday", "thisweek", "lastweek", "thismonth", "lastmonth"
                 - "2026-02-12T11:05:00" (ISO timestamp with time), "2026-02-12", "02/12/2026"
                 - If NOT provided, defaults to 24 hours ago from the current time.
                 - If the user explicitly asks for "last 24 hours", DO NOT pass start_time or end_time. Leave both unset so the system uses the default 24-hour window.
                 - If the user asks for rolling windows other than 24 hours (e.g., "last 48 hours", "last 72 hours", "last 7 days"), you MUST calculate and pass FULL ISO timestamps including BOTH date and time.
         end_time (str): Optional. The end of the time window.
                 Accepts:
+                - Relative keywords: same as start_time
                 - "2026-02-12T11:05:00" (ISO timestamp with time), "2026-02-12", "02/12/2026"
                 - If NOT provided, defaults to the current time.
                 - For rolling windows (except "last 24 hours"), always include time precision when passing values. Do NOT pass date-only values for rolling ranges.
@@ -314,6 +325,7 @@ async def get_incidents_list(
         # Filter for true incidents if requested
         if only_true_incidents:
             incidents = [i for i in incidents if i.get("isIncident", False)]
+        matched_count = len(incidents)
 
         # Sort by timestamp (most recent first) and limit
         incidents = sorted(incidents, key=lambda x: x["timestamp"], reverse=True)[:limit]
@@ -338,6 +350,7 @@ async def get_incidents_list(
             # Add remaining fields
             incident_info.update({
                 "pattern": incident.get("patternName", "Unknown"),
+                "issue": _issue_label(incident, 160),
                 "anomaly_score": round(incident.get("anomalyScore", 0), 2),
                 "is_incident": incident.get("isIncident", False),
                 "status": incident.get("status", "unknown")
@@ -356,18 +369,21 @@ async def get_incidents_list(
 
             incident_list.append(incident_info)
 
+        time_range = {
+            "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+            "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
+        }
         response = {
             "status": "success",
             "system_name": system_name,
+            "formatted_preview": _render_incident_list(system_name, time_range, incident_list,
+                                                       matched_count, only_true_incidents),
             "filters": {
                 "only_true_incidents": only_true_incidents,
                 "limit": limit,
                 "include_consolidated": include_consolidated
             },
-            "time_range": {
-                "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
-                "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
-            },
+            "time_range": time_range,
             "total_found": len(result["data"]),
             "returned_count": len(incident_list),
             "incidents": incident_list
@@ -381,6 +397,41 @@ async def get_incidents_list(
         if settings.ENABLE_DEBUG_MESSAGES:
             print(error_message, file=sys.stderr)
         return {"status": "error", "message": error_message}
+
+def _render_incident_list(system_name: str, time_range: dict, incidents: list, matched: int,
+                          only_true: bool) -> str:
+    """get_incidents_list's finished markdown: one line per incident, newest first, in the
+    daily summary's style (time, component, instance, project, detected issue), plus its ARI
+    investigation status and ServiceNow ticket."""
+    kind = "incidents" if only_true else "incident events"
+    head = (f"**{matched:,} {kind} in {system_name}** — {time_range['start_human']} to "
+            f"{time_range['end_human']}")
+    if not incidents:
+        return head + "\n\nNo incidents in this window."
+    if len(incidents) < matched:
+        head += f" (showing the {len(incidents)} most recent)"
+    lines = [head + ":", ""]
+    for inc in incidents:
+        component, instance = inc.get("component"), inc.get("instance")
+        where = component if instance in (None, "Unknown", component) else f"{component} (Instance: {instance})"
+        line = (f"- [{inc['timestamp_human']}]: {where} in {inc['projectDisplayName']} project. "
+                f"Detected issue: {inc['issue'].rstrip('.')}")
+        pattern = str(inc.get("pattern") or "")
+        if pattern and pattern != "Unknown" and pattern not in inc["issue"]:
+            line += f" (pattern {pattern})"
+        line += "."
+        if inc.get("ari_status"):
+            line += f" ARI investigation: {inc['ari_status']}."
+        snow = inc.get("servicenow_ticket") or {}
+        if snow.get("ticket_number"):
+            number = snow["ticket_number"]
+            line += (f" [ServiceNow: {number}]({snow['hyperlink']})." if snow.get("hyperlink")
+                     else f" ServiceNow: {number}.")
+        lines.append(line)
+    if len(incidents) < matched:
+        lines += ["", f"…and {matched - len(incidents):,} earlier; ask for more to see them."]
+    return "\n".join(lines)
+
 
 # Layer 2: Detailed incident summary (includes root cause summary but still manageable)
 @mcp_server.tool()
@@ -468,6 +519,7 @@ async def get_incidents_summary(
         # Filter for true incidents if requested
         if only_true_incidents:
             incidents = [i for i in incidents if i.get("isIncident", False)]
+        matched_count = len(incidents)
 
         # Sort by timestamp (most recent first) and limit
         incidents = sorted(incidents, key=lambda x: x["timestamp"], reverse=True)[:limit]
@@ -535,9 +587,15 @@ async def get_incidents_summary(
 
             incidents_summary.append(summary)
 
+        time_range = {
+            "start_human": format_timestamp_in_user_timezone(start_time_ms, tz_name),
+            "end_human": format_timestamp_in_user_timezone(end_time_ms, tz_name)
+        }
         response = {
             "status": "success",
             "system_name": system_name,
+            "formatted_preview": _render_incident_list(system_name, time_range, incident_list,
+                                                       matched_count, only_true_incidents),
             "filters": {
                 "only_true_incidents": only_true_incidents,
                 "limit": limit,
@@ -1861,6 +1919,7 @@ async def get_project_incidents(
             # Add remaining fields
             incident_info.update({
                 "pattern": incident.get("patternName", "Unknown"),
+                "issue": _issue_label(incident, 160),
                 "anomaly_score": round(incident.get("anomalyScore", 0), 2),
                 "is_incident": incident.get("isIncident", False),
                 "status": incident.get("status", "unknown"),
