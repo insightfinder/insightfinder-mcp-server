@@ -191,15 +191,19 @@ async def resolve_system_timezone(system_name: Optional[str] = None) -> Tuple[st
 
         if system_name:
             logger.info("resolve_system_timezone: Looking for system '%s' in %d systems", system_name, len(all_systems_json))
-            for system_json_str in all_systems_json:
+            # Exact (case-sensitive) match first: names may differ only by case ("testing" and
+            # "Testing" are two systems), and a case-insensitive first match picked the wrong one.
+            for exact in (True, False):
+              for system_json_str in all_systems_json:
                 try:
                     system = json.loads(system_json_str) if isinstance(system_json_str, str) else system_json_str
                     display_name = system.get("systemDisplayName", "")
                     system_key = system.get("systemKey", {})
                     sys_name = system_key.get("systemName", "")
 
-                    if (display_name.lower() == system_name.lower()
-                            or sys_name.lower() == system_name.lower()):
+                    if ((display_name == system_name or sys_name == system_name) if exact else
+                            (display_name.lower() == system_name.lower()
+                             or sys_name.lower() == system_name.lower())):
                         tz = system.get("timezone", _FALLBACK_TZ)
                         resolved_name = display_name or system_name
                         logger.info("resolve_system_timezone: Matched '%s' -> display='%s', tz='%s'",

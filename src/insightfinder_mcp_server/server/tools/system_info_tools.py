@@ -13,6 +13,7 @@ These tools help users discover and navigate the InsightFinder system hierarchy.
 import json
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Dict, Any, List, Optional, Union
 from difflib import SequenceMatcher
 
@@ -608,13 +609,13 @@ async def get_projects_for_system(
                 all_systems.append(system_info)
         
         # Try exact match first
-        matched_system = None
-        for system in all_systems:
-            if (system['systemDisplayName'] == system_name or 
-                system['systemName'] == system_name or
-                system['systemDisplayName'].lower() == system_name.lower()):
-                matched_system = system
-                break
+        # Exact (case-sensitive) before case-insensitive: names may differ only by case.
+        matched_system = next(
+            (s for s in all_systems
+             if s['systemDisplayName'] == system_name or s['systemName'] == system_name),
+            None) or next(
+            (s for s in all_systems if s['systemDisplayName'].lower() == system_name.lower()),
+            None)
         
         # Try fuzzy match if exact match failed and fuzzy matching is enabled
         match_info = {}
@@ -1035,7 +1036,7 @@ def _render_ari_investigations(overview: Any) -> str:
     for inc in ari.get("completed", []):
         lines.append(f"- [{inc.get('timestamp_human')}]: {inc.get('component')} "
                      f"(Instance: {inc.get('instance')}) in {inc.get('projectDisplayName')} "
-                     f"project. Detected issue: {inc.get('pattern')}.")
+                     f"project. Detected issue: {inc.get('issue') or inc.get('pattern')}")
         lines.extend(render_ari_digest(inc.get("ari_digest") or {}))
     more = ari.get("completed_total", 0) - len(ari.get("completed", []))
     if more > 0:
@@ -1139,7 +1140,7 @@ async def get_system_summary(
                               for p in (ps.get("top_named_patterns") or [])[:2])
             out = (f"{r.get('total_anomalies', 0):,} anomalies across "
                    f"{ps.get('total_instances', 0):,} instances")
-            if r.get("data_source") == "paged":
+            if r.get("data_source") == "paged" and r.get("total_anomalies"):
                 out += " (every record retrieved)"
             if r.get("anomalies_by_project"):
                 out += f". By project: {_top(r['anomalies_by_project'])}"
@@ -1147,7 +1148,7 @@ async def get_system_summary(
                 out += f". Top named patterns: {named}"
             if groups:
                 out += f". Largest unnamed groups: {groups}"
-            return out + ". Full pattern table below."
+            return out + (". Full pattern table below." if r.get("total_anomalies") else ".")
 
         def render_deployments(r):
             n = (r.get("summary") or {}).get("total_deployments", 0)
@@ -1275,11 +1276,26 @@ async def showallsystemssummary(
         total_issues = total_incidents + total_metric + total_log + total_change
         summary_markdown = data.get("summaryMarkdown", "")
 
-        header_line = (
-            f"I have identified **{total_issues}** issues {timeframe_label}. "
-            f"{total_incidents} Incidents, {total_metric} Metric Anomalies, "
-            f"{total_log} Log Anomalies, {total_change} Change Events"
-        )
+        # Newer backends send `ariSummary` (ARI's own one-paragraph account: predictions, lead
+        # time, prevented and investigated incidents, alerts consolidated into tickets) and no
+        # longer send the metric/log anomaly totals, so the old count line would read
+        # "0 Metric Anomalies". Lead with ariSummary when present. The backend always words it
+        # "so far today"; for any other window, say which one.
+        ari_summary = (data.get("ariSummary") or "").strip()
+        if ari_summary:
+            try:
+                today = datetime.now(ZoneInfo(tz_name)).strftime("%Y-%m-%d")
+            except Exception:
+                today = None
+            if timeframe_label != f"on {today}":
+                ari_summary = ari_summary.replace(" so far today", f" {timeframe_label}")
+            header_line = ari_summary
+        else:
+            header_line = (
+                f"I have identified **{total_issues}** issues {timeframe_label}. "
+                f"{total_incidents} Incidents, {total_metric} Metric Anomalies, "
+                f"{total_log} Log Anomalies, {total_change} Change Events"
+            )
 
         return {
             "status": "success",
@@ -1290,6 +1306,9 @@ async def showallsystemssummary(
                 "metric_anomalies": total_metric,
                 "log_anomalies": total_log,
                 "change_events": total_change,
+                "validated_predictions": data.get("totalValidatedPredictions"),
+                "prevented_incidents": data.get("totalPreventedIncidents"),
+                "investigated_incidents": data.get("totalInvestigatedIncidents"),
             },
             "time_range": {
                 "start": start_ms,
