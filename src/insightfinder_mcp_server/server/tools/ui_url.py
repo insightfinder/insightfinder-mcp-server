@@ -83,11 +83,18 @@ async def build_systemrootcause_url(client, record: dict,
         # display name (list tools drop the raw projectName). customerName is intentionally
         # omitted — it's optional and the view resolves without it.
         system_id, raw_project = "", project
+        # Fast path (~0.2 s): records that carry the owner (timeline records, incidentLLMKey)
+        # are looked up directly; otherwise every system is scanned (slow on large accounts).
+        owner = _get(record, "userName", "customerName", "owner")
         try:
-            info = await client.get_customer_name_for_project(project)
-            if info and len(info) > 4:
-                system_id = info[4] or ""
-                raw_project = info[1] or project   # actual_project_name
+            fast = await client.get_project_system(project, owner) if owner else None
+            if fast:
+                system_id, raw_project = fast[3], fast[1] or project
+            else:
+                info = await client.get_customer_name_for_project(project)
+                if info and len(info) > 4:
+                    system_id = info[4] or ""
+                    raw_project = info[1] or project   # actual_project_name
         except Exception as e:
             logger.warning(f"systemrootcause url: system id lookup failed: {e}")
         if not system_id:

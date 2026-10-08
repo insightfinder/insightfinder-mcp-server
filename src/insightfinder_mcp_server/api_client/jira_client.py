@@ -240,6 +240,13 @@ class JiraAPIClient:
             logger.error(f"Failed to get issue types for project {project_key}: {e}")
             raise
     
+    async def get_create_fields(self, project_key: str, issue_type_id: str) -> List[Dict[str, Any]]:
+        """Fields Jira offers when creating an issue of this type in this project (raw createmeta
+        entries: fieldId, name, required, schema, allowedValues)."""
+        jira = self._get_client()
+        fields = jira.project_issue_fields(project_key, issue_type_id, maxResults=200)
+        return [f.raw for f in fields]
+
     async def create_issue(self, issue_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new JIRA issue.
         

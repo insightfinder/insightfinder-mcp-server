@@ -15,6 +15,11 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
+
+
+_SYSFRAME_TIMEOUT_S = 90.0  # systemframework is slow on large accounts
+
+
 class InsightFinderAPIClient:
     """
     A client for interacting with the InsightFinder API.
@@ -76,8 +81,28 @@ class InsightFinderAPIClient:
         system_name: str,
         type_: int = 1
     ) -> Optional[str]:
+        """The Root Cause Analysis section of the incident's LLM summary, or None.
+        See fetch_incident_llm_result for the arguments."""
+        result = await self.fetch_incident_llm_result(
+            user_name, project_name, instance_name, timestamp, pattern_id, system_name, type_)
+        return result.get("rca") if result else None
+
+    async def fetch_incident_llm_result(
+        self,
+        user_name: str,
+        project_name: str,
+        instance_name: str,
+        timestamp: int,
+        pattern_id: int,
+        system_name: str,
+        type_: int = 1
+    ) -> Optional[Dict[str, Any]]:
         """
         Fetch the pre-built LLM-generated incident summary from the open API endpoint.
+
+        The same response carries the incident's on-call ARI report: when the incident has one,
+        the backend puts it in `recommendation` with recommendationType "actionReport" (otherwise
+        `recommendation` is the LLM's next steps, "nextSteps").
 
         Args:
             user_name: The incident owner's username
@@ -89,7 +114,10 @@ class InsightFinderAPIClient:
             type_: Always 1
 
         Returns:
-            The summary response text string, or None if unavailable/empty
+            {"rca": Root Cause Analysis section (or the whole summary) | None,
+             "ari_report": the on-call ARI report markdown | None,
+             "next_steps": the LLM's next steps | None},
+            or None if the endpoint returned nothing
         """
         api_path = "/api/v1/incident-llm-summary"
         url = f"{self.base_url}{api_path}"
@@ -114,19 +142,28 @@ class InsightFinderAPIClient:
                     data = response.json()
                 except Exception:
                     return None
-                response_text = data.get("summary", {}).get("response", "")
-                if not response_text:
+                if not isinstance(data, dict):
                     return None
-                # Extract only the Root Cause Analysis section
-                import re
-                rca_match = re.search(
-                    r'\*\*Root Cause Analysis:\*\*\s*(.*?)(?=\n\*\*|\Z)',
-                    response_text,
-                    re.DOTALL
-                )
-                if rca_match:
-                    return rca_match.group(1).strip()
-                return response_text
+                response_text = (data.get("summary") or {}).get("response", "")
+                rca = None
+                if response_text:
+                    # Extract only the Root Cause Analysis section
+                    import re
+                    rca_match = re.search(
+                        r'\*\*Root Cause Analysis:\*\*\s*(.*?)(?=\n\*\*|\Z)',
+                        response_text,
+                        re.DOTALL
+                    )
+                    rca = rca_match.group(1).strip() if rca_match else response_text
+                recommendation = data.get("recommendation") or {}
+                rec_text = (recommendation.get("response") or "").strip() or None
+                is_report = recommendation.get("recommendationType") == "actionReport"
+                result = {
+                    "rca": rca,
+                    "ari_report": rec_text if is_report else None,
+                    "next_steps": None if is_report else rec_text,
+                }
+                return result if any(result.values()) else None
         except Exception as e:
             logger.warning(f"Error fetching incident LLM summary: {str(e)}")
             return None
@@ -206,6 +243,10 @@ class InsightFinderAPIClient:
             "endTime": end_time_ms,
             "timelineEventType": timeline_event_type
         }
+        if timeline_event_type == "incident":
+            # Each incident's on-call ARI status (actionReportStatus) and, once Completed, its
+            # report digest (actionReportDigest). Ignored by backends that predate it.
+            params["includeAriReport"] = "true"
 
         print(f"Fetching {timeline_event_type} data for {system_name} from {self.base_url} with params: {params}")
         
@@ -755,10 +796,7 @@ class InsightFinderAPIClient:
         params = {"customerName": self.user_name, "needDetail": "false", "tzOffset": "-18000000"}
         headers = {"X-User-Name": self.user_name, "X-API-Key": self.license_key}
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, params=params, headers=headers)
-                response.raise_for_status()
-                data = response.json()
+            data = await self._fetch_system_framework(need_detail=False)
         except Exception as e:
             logger.error(f"resolve_system_key fetch error: {e}")
             return None
@@ -812,6 +850,7 @@ class InsightFinderAPIClient:
                 response = await client.post(url, data=body, headers=headers)
                 response.raise_for_status()
                 data = response.json()
+                self._forget_system_framework()
                 return {"success": data.get("success", True), "data": data}
         except httpx.HTTPStatusError as e:
             logger.error(f"add_project_to_system HTTP error {e.response.status_code}")
@@ -819,6 +858,74 @@ class InsightFinderAPIClient:
         except Exception as e:
             logger.error(f"add_project_to_system error: {e}")
             return {"success": False, "message": str(e)}
+
+    async def _fetch_system_framework(self, need_detail: bool) -> Dict[str, Any]:
+        """The raw /api/external/v1/systemframework response, fetched at most once per client.
+
+        A client is built per mcp-server request (create_api_client_from_request), so this is
+        request-scoped: it removes the repeat fetches inside one tool call (timezone, project
+        lookup, UI link; get_system_summary's five concurrent sub-calls) and never shares data
+        across requests, users or tenants. Concurrent callers wait on the same fetch. The call
+        is slow on large accounts (needDetail=true: ~23 s / 4 MB; false: ~10 s). Raises httpx
+        errors like a direct request would; a failure is not kept."""
+        import time as _time
+        pending = getattr(self, "_sysframe_fetches", None)
+        if pending is None:
+            pending = self._sysframe_fetches = {}
+        if need_detail not in pending:
+            async def fetch() -> Dict[str, Any]:
+                t0 = _time.monotonic()
+                async with httpx.AsyncClient(timeout=_SYSFRAME_TIMEOUT_S) as client:
+                    response = await client.get(
+                        f"{self.base_url}/api/external/v1/systemframework",
+                        params={"customerName": self.user_name,
+                                "needDetail": "true" if need_detail else "false",
+                                "tzOffset": "-18000000"},
+                        headers={"X-User-Name": self.user_name, "X-API-Key": self.license_key})
+                    response.raise_for_status()
+                    data = response.json()
+                logger.info(f"systemframework needDetail={need_detail} fetched in "
+                            f"{_time.monotonic() - t0:.1f}s")
+                return data
+            pending[need_detail] = asyncio.ensure_future(fetch())
+        task = pending[need_detail]
+        try:
+            return await asyncio.shield(task)
+        except BaseException:
+            if task.done():
+                pending.pop(need_detail, None)  # do not keep a failure
+            raise
+
+    def _forget_system_framework(self) -> None:
+        """Drop this request's fetched framework (after a write that changes it)."""
+        self._sysframe_fetches = {}
+
+    async def get_project_system(self, project_name: str,
+                                 owner: str) -> Optional[tuple[str, str, str, str]]:
+        """(owner, raw projectName, projectDisplayName, system id) of ONE project, from
+        /api/external/v1/loadProjectsMetaDataInfo (~0.2 s). Needs the raw project name and its
+        owner, as timeline records and incidentLLMKey carry them; callers that only have a
+        display name use get_customer_name_for_project (a scan of every system). None when the
+        project is not found or not visible to this user."""
+        if not project_name or not owner:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    f"{self.base_url}/api/external/v1/loadProjectsMetaDataInfo",
+                    params={"projectList": json.dumps([{"projectName": project_name,
+                                                        "customerName": owner}])},
+                    headers={"X-User-Name": self.user_name, "X-API-Key": self.license_key})
+                response.raise_for_status()
+                data = response.json()
+        except Exception as e:
+            logger.warning(f"loadProjectsMetaDataInfo failed for {project_name}/{owner}: {e}")
+            return None
+        for meta in (data.get("data") or []) if isinstance(data, dict) else []:
+            if isinstance(meta, dict) and meta.get("systemName"):
+                return (meta.get("customerName") or owner, meta.get("projectName") or project_name,
+                        meta.get("projectDisplayName") or "", meta["systemName"])
+        return None
 
     async def get_system_framework(self) -> Dict[str, Any]:
         """
@@ -846,16 +953,9 @@ class InsightFinderAPIClient:
         }
         
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    url,
-                    params=params,
-                    headers=framework_headers
-                )
-                response.raise_for_status()
-                
-                data = response.json()
-                
+            if True:  # shared, cached fetch (see _fetch_system_framework)
+                data = await self._fetch_system_framework(need_detail=False)
+
                 return {
                     "status": "success",
                     "ownSystemArr": data.get("ownSystemArr", []),
@@ -970,16 +1070,9 @@ class InsightFinderAPIClient:
         print(f"DEBUG: System framework params: {params}")
         
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(
-                    url,
-                    params=params,
-                    headers=framework_headers
-                )
-                response.raise_for_status()
-                
-                data = response.json()
-                
+            if True:  # shared, cached fetch (see _fetch_system_framework)
+                data = await self._fetch_system_framework(need_detail=True)
+
                 # Search through owned systems
                 for system_json in data.get("ownSystemArr", []):
                     try:
