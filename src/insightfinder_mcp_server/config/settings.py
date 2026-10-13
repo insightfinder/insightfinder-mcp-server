@@ -10,6 +10,10 @@ class Settings:
     """
     # InsightFinder API Configuration (will be provided via HTTP headers)
     INSIGHTFINDER_API_URL: str = "https://app.insightfinder.com"
+
+    # AI WatchTower (AW) backend base URL, used by the aw_* tools. Optional override: when empty it is
+    # derived from the InsightFinder URL in use (see api_client/aw_client.py resolve_aw_url).
+    AW_API_URL: str = os.getenv("AW_API_URL", "").rstrip("/")
     # INSIGHTFINDER_LICENSE_KEY: str = os.getenv("INSIGHTFINDER_LICENSE_KEY")
     # INSIGHTFINDER_SYSTEM_NAME: str = os.getenv("INSIGHTFINDER_SYSTEM_NAME")  # Not required for now
     # INSIGHTFINDER_USER_NAME: str = os.getenv("INSIGHTFINDER_USER_NAME")
