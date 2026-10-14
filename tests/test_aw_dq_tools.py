@@ -212,7 +212,7 @@ def test_single_day_uses_the_tooltip_layout_with_sections(monkeypatch):
     assert "flagged" not in md.lower() and "Consistency |" in md
     assert r["status"] == "success" and r["totalItems"] == 3160 and r["totalData"] == 7507
     assert r["countsByType"]["Inconsistency"] == 1694 and "Consistency" not in r["countsByType"]
-    assert r["message"] == "3,160 items of anomalous data in 7,507 total data."
+    assert r["message"] == "3,160 items of anomalous data (Data Integrity and Data Consistency) in 7,507 total data."
     assert r["opening"].startswith('Showing monitor "dq1" (owner: alice) for Oct 6 (America/Los_Angeles; whole day') and r["sections"] == ["quality"]
 
 
@@ -239,7 +239,7 @@ def test_report_has_quality_schema_and_volume_sections(monkeypatch):
     r = run(dq.aw_get_data_quality("dq1", start_time="2026-10-06", end_time="2026-10-06"))
     md = r["verbatim_markdown"]
     assert len([c for c in aw.calls if "workbench" in c.url.path]) == 2  # one data quality call, one volume call
-    assert "**Schema Check:** Enabled (Field order (Misordered))." in md
+    assert "**Schema Check** is enabled (checks: Field order (Misordered)): 40 / 1,000 (4%) schema anomalies." in md
     assert "| Schema Check | Field Order Mismatch | 40 / 1,000 | 4% |" in md
     assert "| Data Integrity | Missing Data | 100 / 1,000 | 10% |" in md and "Total 100 items" in md  # schema is not double counted
     assert "**Volume** (mode: AI, sensitivity: MEDIUM, group: Total)" in md
@@ -254,7 +254,7 @@ def test_schema_disabled_and_volume_off_and_volume_failure_do_not_break_the_repo
             monitors=[mon])
     r = run(dq.aw_get_data_quality("dq1"))
     md = r["verbatim_markdown"]
-    assert "**Schema Check:** Disabled" in md and "No schema anomalies in this window." in md
+    assert "**Schema Check** is disabled for this monitor, so the schema is not checked." in md
     assert "Volume detection is off for this monitor" in md and r["volume"] == {"enabled": False}
     assert len([c for c in aw.calls if "workbench" in c.url.path]) == 1  # no volume call
     Aw(monkeypatch, issues=_issues(subTypeDistribution=_chart(days), totalAnomalyCount=100, recordsChecked=1000, events=[]),
@@ -620,3 +620,84 @@ def test_every_table_block_starts_with_the_opening_sentence(monkeypatch):
         md = r["verbatim_markdown"]
         assert md.startswith("*Showing ") and r["opening"] in md.split("\n")[0]
         assert "yesterday and today so far" in md.split("\n")[0] and "Tell me a date or range" in md.split("\n")[0]
+
+
+# ---- round 3: Schema Check arrives under one name; every schema state has its own sentence
+def _schema_mon(on=True, kinds=None):
+    return _mon(monitorSetting={"schemaCheckEnabled": on, "schemaCheck": kinds if kinds is not None else {"fieldOrder": True},
+                                "volumeDetectionEnabled": False})
+
+
+def _real_schema_days():
+    # UIE's real shape: ids 7-9 are counted under the name "Schema Check", which subTypeMap does not list
+    return [(D1, 320, {"Schema Check": 20}), (D2, 640, {"Schema Check": 20, "Missing Data": 4, "Field Type Mismatch": 4})]
+
+
+def test_schema_check_name_is_the_schema_section():
+    assert lab.section_of_id(None, "Schema Check") == lab.SECTION_SCHEMA
+    assert lab.section_of_id(None, "Missing Data") == lab.SECTION_INTEGRITY
+
+
+def test_real_uie_shape_counts_schema_separately_from_integrity(monkeypatch):
+    Aw(monkeypatch, issues=_issues(subTypeDistribution=_chart(_real_schema_days()), totalAnomalyCount=48, recordsChecked=960,
+                                   events=[]), monitors=[_schema_mon()])
+    r = run(dq.aw_get_data_quality("dq1", start_time="2026-10-05", end_time="2026-10-06"))
+    md = r["verbatim_markdown"]
+    assert r["status"] == "success"
+    assert "8 items of anomalous data (Data Integrity and Data Consistency) in 960 total data." in r["message"]
+    assert "Schema Check is enabled (checks: Field order (Misordered)): 40 / 960 (4.17%) schema anomalies." in r["message"]
+    assert "| Schema Check | Schema Check |" not in md and "Schema Check" in md
+    assert r["schemaCheck"]["state"] == "enabled_items"
+    Aw(monkeypatch, issues=_issues(subTypeDistribution=_chart(_real_schema_days()), totalAnomalyCount=48, recordsChecked=960,
+                                   events=[]), monitors=[_schema_mon()],
+       listing={"monitors": [_schema_mon()], "totalElements": 1})
+    ov = run(dq.aw_get_data_quality_overview(start_time="2026-10-05", end_time="2026-10-06"))
+    row = ov["monitors"][0]
+    assert row["totalItems"] == 8 and row["schemaItems"] == 40 and row["schemaCheck"] == "Enabled, 40 / 960 (4.17%)"
+
+
+@pytest.mark.parametrize("setting,items,checked,state,cell", [
+    ({"schemaCheckEnabled": False}, 0, 500, "disabled", "Disabled"),
+    ({"schemaCheckEnabled": False}, 5, 500, "disabled_with_items", "Disabled, 5 / 500 (1%)"),
+    ({"schemaCheckEnabled": True, "schemaCheck": {"fieldOrder": True}}, 0, 0, "enabled_no_data", "Enabled, no data"),
+    ({"schemaCheckEnabled": True, "schemaCheck": {"fieldOrder": True}}, 0, 500, "enabled_clean", "Enabled, 0 / 500 (0%)"),
+    ({"schemaCheckEnabled": True, "schemaCheck": {"lostFields": True}}, 5, 500, "enabled_items", "Enabled, 5 / 500 (1%)"),
+    ({"schemaCheckEnabled": True, "schemaCheck": {"fieldOrder": False}}, 0, 500, "enabled_no_checks", "Enabled (no checks on)"),
+])
+def test_schema_status_for_every_state(setting, items, checked, state, cell):
+    r = dq._schema_status(_mon(monitorSetting=setting), items, checked)
+    assert (r["state"], r["cell"]) == (state, cell)
+    assert r["text"].startswith("Schema Check is ")
+    if state == "enabled_no_data":  # a setting must never read as a finding
+        assert "nothing was evaluated" in r["text"] and "mismatch" not in r["text"].lower()
+
+
+def test_no_data_report_says_schema_was_not_evaluated(monkeypatch):
+    Aw(monkeypatch, issues=_issues(recordsChecked=0, subTypeDistribution={}, totalAnomalyCount=0, events=[]),
+       monitors=[_schema_mon()])
+    r = run(dq.aw_get_data_quality("dq1"))
+    assert r["status"] == "no_data" and "nothing was evaluated" in r["message"] and "detected" not in r["message"]
+
+
+def test_model_name_shows_that_models_monitors(monkeypatch):
+    mons = [_mon("mon-a", modelName="Model-X"), _mon("mon-b", modelName="Model-X"), _mon("other", modelName="Y")]
+    Aw(monkeypatch, issues=_issues(), monitors=mons, listing={"monitors": mons, "totalElements": 3})
+    r = run(dq.aw_get_data_quality("model-x"))
+    assert r["opening"].startswith('No monitor is named "model-x"; it is a model')
+    assert [m["monitorName"] for m in r["monitors"]] == ["mon-a", "mon-b"]
+    assert r["message"].startswith("No monitor is named")
+    # a real monitor name still wins, and an unknown name still gets close names
+    assert run(dq.aw_get_data_quality("mon-a"))["monitorName"] == "mon-a"
+    assert run(dq.aw_get_data_quality("mon-z"))["status"] == "not_found"
+    # config and volume tools do not guess: they say it is a model and list its monitors
+    c = run(aw_tools.aw_get_data_quality_config("Model-X"))
+    assert c["status"] == "model_match" and "mon-a, mon-b" in c["message"]
+
+
+def test_volume_level_is_dash_for_a_day_without_counts():
+    rows = [{"day": "2026-10-13", "reference": None, "baseline": None, "actual": None, "level": "normal", "finalized": True,
+             "vsReference": None, "vsBaseline": None},
+            {"day": "2026-10-14", "reference": None, "baseline": None, "actual": None, "level": "in_processing",
+             "finalized": False, "vsReference": None, "vsBaseline": None}]
+    lines = dq._volume_lines(rows)
+    assert lines[2].endswith("| - |") and lines[3].endswith("| In processing |")

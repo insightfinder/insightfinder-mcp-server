@@ -290,6 +290,13 @@ async def _resolve_dq_monitor(client, monitor_name: str, owner: Optional[str]):
                 and one["data"].get("monitorType") == "DATA_QUALITY":
             found = [one["data"]]
     if not found:
+        by_model = sorted({m.get("monitorName") for m in result["items"] if m.get("monitorName")
+                           and str(m.get("modelName", "")).lower() == monitor_name.strip().lower()})
+        if by_model:  # the user gave a model name: callers decide whether to show the model's monitors
+            model = next(m["modelName"] for m in result["items"] if str(m.get("modelName", "")).lower() == monitor_name.strip().lower())
+            return None, {"status": "model_match", "modelName": model, "monitors": by_model,
+                          "message": f"'{monitor_name}' is a model, not a monitor. Its monitors: {', '.join(by_model)}; "
+                                     "ask which monitor the user means."}
         names = sorted({m.get("monitorName") for m in result["items"] if m.get("monitorName")})
         close = difflib.get_close_matches(monitor_name, names, n=5, cutoff=0.5) or \
             [n for n in names if monitor_name.lower() in n.lower()][:5]
