@@ -122,6 +122,7 @@ class AWAPIClient:
 AW_URL_BY_UIE_HOST = {
     "app.insightfinder.com": "https://ai.insightfinder.com",
     "stg.insightfinder.com": "https://ai-stg.insightfinder.com",
+    "test.insightfinder.com": "https://ai-test.insightfinder.com"
 }
 
 
