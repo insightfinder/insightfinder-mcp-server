@@ -8,11 +8,13 @@ Tools:
 - aw_get_summary: unhealthy models with model/data drift, data quality and evaluation counts
 """
 
+import difflib
 import logging
 from typing import Any, Dict, List, Optional
 
 from ..server import mcp_server
 from ...api_client.aw_client import get_current_aw_client
+from .aw_labels import SCHEMA_OPTIONS
 from .get_time import parse_time_parameters
 
 logger = logging.getLogger(__name__)
@@ -239,7 +241,8 @@ def _dq_digest(m: Dict[str, Any]) -> Dict[str, Any]:
             summary[t] = summary.get(t, 0) + 1
     schema_on = bool(s.get("schemaCheckEnabled"))
     schema = {"enabled": schema_on,
-              "kinds": [k for k, v in (s.get("schemaCheck") or {}).items() if v] if schema_on else []}
+              "kinds": [SCHEMA_OPTIONS.get(k, k) for k, v in (s.get("schemaCheck") or {}).items() if v]
+              if schema_on else []}
     volume = {"enabled": bool(s.get("volumeDetectionEnabled"))}
     if volume["enabled"]:
         volume.update(_pick(s, ["volumeDetectionMode", "volumeSensitivity", "volumeThresholdsEnabled",
@@ -258,7 +261,7 @@ def _dq_digest(m: Dict[str, Any]) -> Dict[str, Any]:
         lines.append(f"| {cell(f['field'])} | {f['fieldType']} | {cell(', '.join(f['dataQualityTypes']))} | {cell(pat)} |")
     if len(keys) > len(fields):
         lines.append(f"\nShowing {len(fields)} of {len(keys)} fields.")
-    lines.append(f"\nSchema check: {'on (' + ', '.join(schema['kinds']) + ')' if schema_on and schema['kinds'] else 'on' if schema_on else 'off'}. "
+    lines.append(f"\nSchema Check: {'Enabled (' + ', '.join(schema['kinds']) + ')' if schema_on and schema['kinds'] else 'Enabled' if schema_on else 'Disabled'}. "
                  f"Volume detection: {'on, mode ' + str(volume.get('mode') or 'not set') + ', sensitivity ' + str(volume.get('volumeSensitivity')) if volume['enabled'] else 'off'}.")
     return {"monitorName": m.get("monitorName"), "owner": m.get("userName"), "model": m.get("modelName"),
             "version": m.get("version"), "environment": m.get("environment"), "dataSources": sources,
@@ -287,8 +290,14 @@ async def _resolve_dq_monitor(client, monitor_name: str, owner: Optional[str]):
                 and one["data"].get("monitorType") == "DATA_QUALITY":
             found = [one["data"]]
     if not found:
+        names = sorted({m.get("monitorName") for m in result["items"] if m.get("monitorName")})
+        close = difflib.get_close_matches(monitor_name, names, n=5, cutoff=0.5) or \
+            [n for n in names if monitor_name.lower() in n.lower()][:5]
         return None, {"status": "not_found", "message": f"No DATA_QUALITY monitor named '{monitor_name}'"
-                      + (f" for owner '{owner}'" if owner else "") + " is visible to this user."}
+                      + (f" for owner '{owner}'" if owner else "") + " is visible to this user."
+                      + (" Closest names: " + ", ".join(close) + "; ask the user which one they mean." if close
+                         else " Offer to list the monitors."),
+                      "closestNames": close}
     return found[0], None
 
 
@@ -301,7 +310,9 @@ async def aw_get_data_quality_config(monitor_name: str, owner: Optional[str] = N
     volume detection or the schema check is set up, or which groups and data sources it covers. It
     returns configuration only, not issues found; it is a digest (at most 30 fields, with total_fields
     and truncated) so large monitors stay readable. Rule types are AW's own names (MISSING_DATA, CUSTOM,
-    FIELD_TYPE_MISMATCH, DATA_OUTLIERS, CONSISTENCY, QUALIFIED_DATA_RANGE). Append `verbatim_markdown`
+    FIELD_TYPE_MISMATCH, DATA_OUTLIERS, CONSISTENCY, QUALIFIED_DATA_RANGE; the Workbench shows them as Missing Data,
+    Field Type Mismatch, Data Outliers, Inconsistency, Disqualified Data Range, Custom). Use it for configuration questions
+    only, never for counts. Append `verbatim_markdown`
     to the answer as is.
 
     Args:

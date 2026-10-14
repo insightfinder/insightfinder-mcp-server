@@ -196,7 +196,7 @@ def test_dq_config_caps_fields_and_digests_schema_and_volume(monkeypatch):
     assert r["status"] == "success" and r["total_fields"] == 340 and r["truncated"] is True
     assert len(r["fields"]) == 30 and r["fields"][0]["field"] == "f339"  # richer rules first
     assert r["rule_summary"] == {"MISSING_DATA": 340, "DATA_OUTLIERS": 1} and r["has_field_rules"] is True
-    assert r["schemaCheck"] == {"enabled": True, "kinds": ["fieldOrder"]}
+    assert r["schemaCheck"] == {"enabled": True, "kinds": ["Field order (Misordered)"]}
     assert r["volumeDetection"]["mode"] == "AI" and r["volumeDetection"]["volumeSensitivity"] == "MEDIUM_HIGH"
     assert r["groups"] == {"groupNameKey": "vendor", "groupKeys": {"g1": ["a"]}} and r["dataSources"][0]["name"] == "Logs"
     assert "Showing 30 of 340" in r["verbatim_markdown"] and len(json.dumps(r)) < 100000

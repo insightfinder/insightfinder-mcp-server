@@ -89,7 +89,8 @@ class AWAPIClient:
 
     async def get_data_quality(self, owner: str, monitor_name: str, start_ms: int, end_ms: int,
                                page_no: int = 1, page_size: int = 10, selected_date: Optional[int] = None,
-                               fields=None, sub_types=None, groups=None, data_source: Optional[str] = None):
+                               fields=None, sub_types=None, groups=None, data_source: Optional[str] = None,
+                               whole_days: bool = False):
         # Primitives are always explicit numbers (never null); pageNo is 1-based; type is unused by this endpoint.
         body: Dict[str, Any] = {"monitorName": monitor_name, "userName": owner, "startTime": int(start_ms),
                                 "endTime": int(end_ms), "pageNo": int(page_no), "pageSize": int(page_size),
@@ -99,12 +100,15 @@ class AWAPIClient:
             body["selectedDate"] = int(selected_date)
         if data_source:
             body["dataSource"] = data_source
-        return await self._post(self.DQ, body, self._dq_timeout(start_ms, end_ms))
+        return await self._request("POST", self.DQ, self._dq_timeout(start_ms, end_ms), json=body,
+                                   params={"wholeDays": "true"} if whole_days else None)
 
     async def get_data_quality_volume(self, owner: str, monitor_name: str, start_ms: int, end_ms: int,
-                                      group: Optional[str] = None, data_source: Optional[str] = None):
+                                      group: Optional[str] = None, data_source: Optional[str] = None,
+                                      whole_days: bool = False):
         params = {"userName": owner, "monitorName": monitor_name, "startTime": int(start_ms),
-                  "endTime": int(end_ms), "group": group, "dataSource": data_source}
+                  "endTime": int(end_ms), "group": group, "dataSource": data_source,
+                  "wholeDays": "true" if whole_days else None}
         return await self._get(f"{self.DQ}/volume", {k: v for k, v in params.items() if v},
                                self._dq_timeout(start_ms, end_ms))
 
