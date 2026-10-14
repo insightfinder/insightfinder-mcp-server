@@ -352,12 +352,38 @@ def _type_table(dg: Digest, names: List[str], in_progress: Optional[str]) -> Lis
     return lines + ["", " ".join(f"{s}: {', '.join(groups[s])}." for s in SECTIONS if s in groups)]
 
 
-def _schema_line(m: Dict[str, Any]) -> str:
+def _schema_items(dg: Digest) -> int:
+    sec = sections_by_type(dg.sub_type_map, dg.by_type)
+    return sum(c for n, c in dg.by_type.items() if sec[n] == SECTION_SCHEMA)
+
+
+def _schema_status(m: Dict[str, Any], schema_items: int, checked: int) -> Dict[str, Any]:
+    """The one place that words the Schema Check for a monitor: state, a finished sentence, and the overview cell.
+
+    Enabled/Disabled and the check options are settings; only `schema_items` (counted by UIE) are findings."""
     s = m.get("monitorSetting") or {}
-    if not s.get("schemaCheckEnabled"):
-        return "Schema Check: Disabled (this monitor does not check the schema)."
+    enabled = bool(s.get("schemaCheckEnabled"))
     kinds = [SCHEMA_OPTIONS.get(k, k) for k, v in (s.get("schemaCheck") or {}).items() if v]
-    return "Schema Check: Enabled" + (f" ({', '.join(kinds)})." if kinds else ".")
+    checks = f" (checks: {', '.join(kinds)})" if kinds else ""
+    found = ratio(schema_items, checked) if schema_items else None
+    if not enabled:
+        if found:
+            state, text, cell = ("disabled_with_items", f"Schema Check is currently disabled, but {found} schema anomalies "
+                                 "were recorded in this window.", f"Disabled, {found}")
+        else:
+            state, text, cell = "disabled", "Schema Check is disabled for this monitor, so the schema is not checked.", "Disabled"
+    elif not kinds and not schema_items:
+        state, text, cell = "enabled_no_checks", "Schema Check is enabled, but no check option is turned on.", "Enabled (no checks on)"
+    elif not checked:
+        state, text, cell = ("enabled_no_data", f"Schema Check is enabled{checks}, but no data was checked in this window, "
+                             "so nothing was evaluated.", "Enabled, no data")
+    elif not schema_items:
+        state, text, cell = ("enabled_clean", f"Schema Check is enabled{checks}: {ratio(0, checked)} schema anomalies.",
+                             f"Enabled, {ratio(0, checked)}")
+    else:
+        state, text, cell = ("enabled_items", f"Schema Check is enabled{checks}: {found} schema anomalies.",
+                             f"Enabled, {found}")
+    return {"enabled": enabled, "state": state, "text": text, "cell": cell}
 
 
 def _quality_parts(dg: Digest, m: Dict[str, Any], win_info: Dict[str, Any], filters: Dict[str, Any],
@@ -366,17 +392,23 @@ def _quality_parts(dg: Digest, m: Dict[str, Any], win_info: Dict[str, Any], filt
     total, checked = dg.total_items, dg.total_data
     active = {k: v for k, v in filters.items() if k in ("issue_type", "fields", "group", "day")}
     desc = ", ".join(f"{k}={_cell(','.join(v) if isinstance(v, list) else v)}" for k, v in active.items())
+    schema_n = _schema_items(dg)
+    quality_n = sum(c for c in dg.by_type.values()) - schema_n
+    schema = _schema_status(m, schema_n, checked)
     if checked == 0:
         status = "no_data"
         msg = "No data was checked in this window (no records arrived, or no rules are active). This is not the same as healthy."
-    elif total == 0:
-        status = "no_anomalous_data"
-        msg = (f"No anomalous data matches this filter ({num(checked)} total data were checked in the window)." if active
-               else f"{num(checked)} total data were checked and no anomalous data was found.")
+    elif active:
+        status = "no_anomalous_data" if total == 0 else "success"
+        msg = (f"No anomalous data matches this filter ({num(checked)} total data were checked in the window)." if total == 0 else
+               f"{num(total)} items of anomalous data match your filter ({desc}). {FILTER_NOTE}")
     else:
-        status = "success"
-        msg = (f"{num(total)} items of anomalous data match your filter ({desc}). {FILTER_NOTE}" if active else
-               f"{num(total)} items of anomalous data in {num(checked)} total data.")
+        status = "success" if quality_n or schema_n else "no_anomalous_data"
+        msg = (f"{num(quality_n)} items of anomalous data (Data Integrity and Data Consistency) in {num(checked)} total data."
+               if quality_n else f"No Data Integrity or Data Consistency anomalies in {num(checked)} total data."
+               if schema_n else f"{num(checked)} total data were checked and no anomalous data was found.")
+    if show_schema:
+        msg += " " + schema["text"]
     in_progress = _in_progress_day(win_info)
     lines: List[str] = []
     if show_quality:
@@ -386,10 +418,9 @@ def _quality_parts(dg: Digest, m: Dict[str, Any], win_info: Dict[str, Any], filt
             ["Anomalous Data / Total Data: none in this window." if checked else "No data was checked in this window."]
     if show_schema:
         names = _names_in(dg, True)
-        lines += ["", _schema_line(m).replace("Schema Check:", "**Schema Check:**", 1)]
-        lines += ([""] + _type_table(dg, names, in_progress)) if names else \
-            (["", "No schema anomalies in this window."] if checked else [])
-    return {"status": status, "message": msg, "lines": lines}
+        lines += ["", schema["text"].replace("Schema Check", "**Schema Check**", 1)]
+        lines += ([""] + _type_table(dg, names, in_progress)) if names else []
+    return {"status": status, "message": msg, "lines": lines, "schema": schema}
 
 
 # ------------------------------------------------------------------------------------------------------- volume
@@ -413,7 +444,9 @@ def _volume_rows(points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def _volume_lines(rows: List[Dict[str, Any]]) -> List[str]:
     cell = lambda v: "-" if v is None else num(v)
     cmp = lambda v: "-" if not v else f"{signed(v['difference'])} ({signed_pct(v['fraction'])})"
-    level = lambda r: "In processing" if r["level"] == "in_processing" else str(r["level"] or "-").capitalize()
+    counts = lambda r: r["actual"] is not None and bool(r["actual"] or r["baseline"] or r["reference"])
+    level = lambda r: ("In processing" if r["level"] == "in_processing" else
+                       str(r["level"] or "-").capitalize() if counts(r) else "-")
     if not rows:
         return []
     lines = ["| Day | Reference Volume | Baseline Volume | Actual Volume | vs Reference | vs Baseline | Level |",
@@ -483,6 +516,7 @@ async def aw_get_data_quality(monitor_name: str,
 
     Use this tool when the user names a monitor: "how is X doing", "what data quality issues does X have", which
     types or fields fail, example records, whether X's schema check finds anything, or whether X's volume is normal.
+    monitor_name may also be a MODEL name: the tool then shows that model's monitors (use it for "issues in model M").
     Do NOT use it when no monitor is named (use aw_get_data_quality_overview), for the rules and settings of a
     monitor (aw_get_data_quality_config), or for why something failed (no tool here explains causes).
 
@@ -549,6 +583,9 @@ async def aw_get_data_quality(monitor_name: str,
         if err:
             return err
         m, failure = await _resolve_dq_monitor(client, monitor_name, owner)
+        if failure and failure.get("status") == "model_match":  # a model name: show the model's monitors
+            return await _overview("organization", failure["modelName"], start_time, end_time, 20,
+                                   lead=f'No monitor is named "{_cell(monitor_name)}"; it is a model, so here are its monitors. ')
         if failure:
             return _resolve_failure(failure)
         source, failure = _source(m, data_source)
@@ -621,7 +658,7 @@ async def aw_get_data_quality(monitor_name: str,
                 daily=[{"day": r["day"], "dayKey": r["dayKey"], "totalData": r["totalData"], "items": r["items"],
                         "byType": {display_name(k): v for k, v in r["byType"].items()}} for r in dg.days[-MAX_DAYS:]],
                 daily_truncated=len(dg.days) > MAX_DAYS,
-                schemaCheck={"enabled": bool(setting.get("schemaCheckEnabled")), "text": _schema_line(m)},
+                schemaCheck={k: q["schema"][k] for k in ("enabled", "state", "text")},
                 topFields=[{"field": f, "itemsOnPage": c} for f, c in sorted(top.items(), key=lambda kv: -kv[1])][:MAX_LIST],
                 topFieldsBasis="records on this page only",
                 fieldsAvailable=fields_av[:MAX_LIST], total_fields_available=len(fields_av),
@@ -712,6 +749,9 @@ async def aw_get_data_quality_volume(monitor_name: str,
         if err:
             return err
         m, failure = await _resolve_dq_monitor(client, monitor_name, owner)
+        if failure and failure.get("status") == "model_match":  # a model name: show the model's monitors
+            return await _overview("organization", failure["modelName"], start_time, end_time, 20,
+                                   lead=f'No monitor is named "{_cell(monitor_name)}"; it is a model, so here are its monitors. ')
         if failure:
             return _resolve_failure(failure)
         source, failure = _source(m, data_source)
@@ -748,43 +788,9 @@ async def aw_get_data_quality_volume(monitor_name: str,
         return {"status": "error", "message": f"Error in aw_get_data_quality_volume: {ex}"}
 
 
-@mcp_server.tool()
-async def aw_get_data_quality_overview(scope: str = "organization",
-                                       model_name: Optional[str] = None,
-                                       start_time: Optional[str] = None,
-                                       end_time: Optional[str] = None,
-                                       max_monitors: int = 20) -> Dict[str, Any]:
-    """
-    All DATA_QUALITY monitors in AI WatchTower (AW) at a glance: data quality, schema check and volume in one table.
-
-    Use this tool when NO monitor is named: "what data quality issues do we have", "is volume normal", "what about the
-    schema check", "which monitors have problems", or a question about one model's monitors (model_name). One call
-    answers all three topics: pick the column the user asked about for your summary. Do NOT use it when a monitor is
-    named (use aw_get_data_quality). Table columns: Monitor, Model, Owner, Anomalous Data / Total Data (the items with
-    a problem over the records checked), Top type, Schema Check (Enabled with its anomalous / total, or Disabled) and
-    Volume (the worst Level in the window: Normal, Warning, Critical, In processing, or Off). Use exactly these words;
-    never say "flagged entries". Rows are ranked by items, worst first. Scope "organization" lists every monitor the
-    user's role may see; "mine" only the user's own. Monitors are taken in name order, at most max_monitors are
-    queried and the rest are counted as "not shown". One monitor that fails shows its error and does not fail the call.
-    Never say something applies to "all monitors" unless the table covers all of them.
-
-    Begin your answer with the `opening` sentence (it states the window and how to ask for another), then a short
-    summary of the topic asked, then append `verbatim_markdown` as it is. End by inviting the user to name a monitor
-    for its data quality, schema check and volume.
-
-    Args:
-        scope (str): "organization" (default) or "mine".
-        model_name (str, optional): Only the monitors of this model (case-insensitive).
-        start_time (str, optional): today, yesterday, this week, this month, last week, "3d" / "last 3 days", a date
-            "2026-10-05", epoch ms or "24h". Default: yesterday and today so far (each owner's days start at 00:00).
-        end_time (str, optional): A date or epoch ms; a plain date includes that whole day.
-        max_monitors (int): Monitors to query, 1-50 (default 20).
-
-    Returns:
-        {"status": "success" | "no_data" | "no_anomalous_data" | "not_found" | "error", "message", "opening", "window",
-        "scope", "monitors": [{monitorName, owner, model, version, dataSource, status, totalItems, totalData,
-        topType, schemaCheck, volume, message}], "monitorsTotal", "notShown", "verbatim_markdown"}
-    """
+async def _overview(scope: str, model_name: Optional[str], start_time: Optional[str], end_time: Optional[str],
+                    max_monitors: int, lead: str = "") -> Dict[str, Any]:
+    """Body of aw_get_data_quality_overview; `lead` is put before the opening sentence and the message."""
     try:
         scope = (scope or "").lower()
         if scope not in ("mine", "organization") or not 1 <= max_monitors <= 50:
@@ -835,19 +841,18 @@ async def aw_get_data_quality_overview(scope: str = "organization",
             if dg.days and not seen_days:
                 seen_days.extend(r["day"] for r in dg.days)
             sec = sections_by_type(dg.sub_type_map, dg.by_type)
-            schema_items = sum(c for n, c in dg.by_type.items() if sec[n] == SECTION_SCHEMA)
+            schema_items = _schema_items(dg)
             quality = {n: c for n, c in dg.by_type.items() if sec[n] != SECTION_SCHEMA and c}
             items = sum(quality.values())
             top = display_name(max(quality.items(), key=lambda kv: kv[1])[0]) if quality else None
-            schema_on = bool(setting.get("schemaCheckEnabled"))
+            schema = _schema_status(m, schema_items, dg.total_data)
             vol = "Off"
             if volume_on:
                 vol = ("error" if not isinstance(vol_r, dict) or vol_r.get("status") != "success"
                        or not isinstance(vol_r.get("data"), dict) else _worst_level(_volume_rows(vol_r["data"].get("points") or [])))
             return {**row, "status": "no_data" if not dg.total_data else ("success" if items else "no_anomalous_data"),
                     "totalItems": items, "totalData": dg.total_data, "topType": top,
-                    "schemaCheck": ("Enabled, " + ratio(schema_items, dg.total_data)) if schema_on and dg.total_data
-                    else ("Enabled" if schema_on else "Disabled"), "schemaItems": schema_items, "volume": vol}
+                    "schemaCheck": schema["cell"], "schemaState": schema["state"], "schemaItems": schema_items, "volume": vol}
 
         rows = await asyncio.gather(*(one(m) for m in picked))
         ok = sorted([r for r in rows if r["status"] != "error"],
@@ -872,7 +877,8 @@ async def aw_get_data_quality_overview(scope: str = "organization",
                f"{len(ok) - n_nodata} monitors had data checked and {n_nodata} had no data in this window"
                + (f", {len(rows) - len(ok)} failed." if len(rows) > len(ok) else ".")
                if data_all else f"No data was checked in this window for any of the {len(picked)} monitors queried.")
-        opening = _opening(info, scope_text, extra)
+        opening = lead + _opening(info, scope_text, extra)
+        msg = lead + msg
         lines = [f"*{opening}*", "", f"**Data quality overview** ({scope}, {_window_text(info)})", "",
                  "| Monitor | Model | Owner | Anomalous Data / Total Data | Top type | Schema Check | Volume |",
                  "|---|---|---|---|---|---|---|"]
@@ -894,4 +900,44 @@ async def aw_get_data_quality_overview(scope: str = "organization",
     except Exception as ex:
         logger.error(f"Error in aw_get_data_quality_overview: {ex}")
         return {"status": "error", "message": f"Error in aw_get_data_quality_overview: {ex}"}
+
+
+@mcp_server.tool()
+async def aw_get_data_quality_overview(scope: str = "organization",
+                                       model_name: Optional[str] = None,
+                                       start_time: Optional[str] = None,
+                                       end_time: Optional[str] = None,
+                                       max_monitors: int = 20) -> Dict[str, Any]:
+    """
+    All DATA_QUALITY monitors in AI WatchTower (AW) at a glance: data quality, schema check and volume in one table.
+
+    Use this tool when NO monitor is named: "what data quality issues do we have", "is volume normal", "what about the
+    schema check", "which monitors have problems", or a question about one model's monitors (model_name). One call
+    answers all three topics: pick the column the user asked about for your summary. Do NOT use it when a monitor is
+    named (use aw_get_data_quality). Table columns: Monitor, Model, Owner, Anomalous Data / Total Data (the items with
+    a problem over the records checked), Top type, Schema Check (Enabled with its anomalous / total, or Disabled) and
+    Volume (the worst Level in the window: Normal, Warning, Critical, In processing, or Off). Use exactly these words;
+    never say "flagged entries". Rows are ranked by items, worst first. Scope "organization" lists every monitor the
+    user's role may see; "mine" only the user's own. Monitors are taken in name order, at most max_monitors are
+    queried and the rest are counted as "not shown". One monitor that fails shows its error and does not fail the call.
+    Never say something applies to "all monitors" unless the table covers all of them.
+
+    Begin your answer with the `opening` sentence (it states the window and how to ask for another), then a short
+    summary of the topic asked, then append `verbatim_markdown` as it is. End by inviting the user to name a monitor
+    for its data quality, schema check and volume.
+
+    Args:
+        scope (str): "organization" (default) or "mine".
+        model_name (str, optional): Only the monitors of this model (case-insensitive).
+        start_time (str, optional): today, yesterday, this week, this month, last week, "3d" / "last 3 days", a date
+            "2026-10-05", epoch ms or "24h". Default: yesterday and today so far (each owner's days start at 00:00).
+        end_time (str, optional): A date or epoch ms; a plain date includes that whole day.
+        max_monitors (int): Monitors to query, 1-50 (default 20).
+
+    Returns:
+        {"status": "success" | "no_data" | "no_anomalous_data" | "not_found" | "error", "message", "opening", "window",
+        "scope", "monitors": [{monitorName, owner, model, version, dataSource, status, totalItems, totalData,
+        topType, schemaCheck, volume, message}], "monitorsTotal", "notShown", "verbatim_markdown"}
+    """
+    return await _overview(scope, model_name, start_time, end_time, max_monitors)
 

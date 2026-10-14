@@ -49,6 +49,8 @@ def display_name(type_name: str) -> str:
 
 
 def section_of_id(type_id: Optional[int], name: str = "") -> str:
+    if name == SECTION_SCHEMA:  # UIE counts ids 7-9 under the one name "Schema Check", which is not in subTypeMap
+        return SECTION_SCHEMA
     if type_id is None:  # a type UIE did not list in subTypeMap: only "Consistency" is known to be special
         return SECTION_CONSISTENCY if name == "Consistency" else SECTION_INTEGRITY
     if type_id == 1:
