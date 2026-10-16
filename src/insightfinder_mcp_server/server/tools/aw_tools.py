@@ -9,7 +9,9 @@ Tools:
 """
 
 import difflib
+import hashlib
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from ..server import mcp_server
@@ -37,10 +39,36 @@ def _client():
 
 FETCH_PAGE_SIZE = 1000  # AW accepts this; its own order is random in organization mode, so we fetch all and page here
 MAX_FETCH_PAGES = 10
+MONITOR_CACHE_TTL = 60  # seconds; one chat turn calls several tools, which all need the same monitor list
+_monitor_cache: Dict[Any, Any] = {}
+
+
+def clear_monitor_cache() -> None:
+    _monitor_cache.clear()
+
+
+def _cache_key(client, monitor_name, monitor_type):
+    """Who is asking (AW URL, user, license) and what: a cached list must never cross users."""
+    license_key = str((getattr(client, "headers", None) or {}).get("X-Api-Key", ""))
+    who = (getattr(client, "base_url", None), getattr(client, "user_name", None),
+           hashlib.sha256(license_key.encode()).hexdigest()[:16]) if hasattr(client, "base_url") else id(client)
+    return who, monitor_name, monitor_type
 
 
 async def _fetch_all_monitors(client, monitor_name, monitor_type):
-    """Every matching monitor, or the client's non-success result. AW's paging is unstable, so callers sort and page."""
+    """Every matching monitor, or the client's non-success result. AW's paging is unstable, so callers sort and page.
+    A successful list is reused for MONITOR_CACHE_TTL seconds (ponytail: a new monitor shows up within a minute)."""
+    key = _cache_key(client, monitor_name, monitor_type)
+    hit = _monitor_cache.get(key)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+    result = await _fetch_all_monitors_uncached(client, monitor_name, monitor_type)
+    if result["status"] == "success":
+        _monitor_cache[key] = (time.monotonic() + MONITOR_CACHE_TTL, result)
+    return result
+
+
+async def _fetch_all_monitors_uncached(client, monitor_name, monitor_type):
     result = await client.list_monitors(monitor_name, monitor_type, 0, FETCH_PAGE_SIZE)
     if result["status"] != "success":
         return result
@@ -271,6 +299,44 @@ def _dq_digest(m: Dict[str, Any]) -> Dict[str, Any]:
             "verbatim_markdown": "\n".join(lines)}
 
 
+# What a user may call a monitor, in the order the lookup tries it.
+_NAME_FIELDS = (("monitor name", lambda m: m.get("monitorName")), ("model", lambda m: m.get("modelName")),
+                ("owner", lambda m: m.get("userName")),
+                ("data source", lambda m: [d.get("name") or d.get("dataSource") for d in m.get("dataSources") or []]),
+                ("environment", lambda m: m.get("environment")))
+
+
+def _norm(value) -> List[str]:
+    return [" ".join(str(v).lower().split()) for v in (value if isinstance(value, list) else [value]) if v]
+
+
+def find_monitors(items: List[Dict[str, Any]], query: Optional[str]):
+    """(how it matched, monitors): the query, in any letter case, as a whole monitor name, model, owner, data source or
+    environment, then as a part of any of them (3+ characters). (None, []) when nothing fits."""
+    q = " ".join(str(query or "").lower().split())
+    if not q:
+        return None, []
+    for label, get in _NAME_FIELDS:
+        hits = [m for m in items if q in _norm(get(m))]
+        if hits:
+            return label, hits
+    if len(q) >= 3:
+        hits = [m for m in items if any(q in v for _, get in _NAME_FIELDS for v in _norm(get(m)))]
+        if hits:
+            return "part of a name", hits
+    return None, []
+
+
+def closest_names(items: List[Dict[str, Any]], query: str, cutoff: float = 0.5) -> List[str]:
+    names = sorted({m.get("monitorName") for m in items if m.get("monitorName")})
+    return difflib.get_close_matches(query, names, n=5, cutoff=cutoff) or \
+        [n for n in names if query.lower() in n.lower()][:5]
+
+
+def _monitor_label(m: Dict[str, Any]) -> str:
+    return f'monitor "{m.get("monitorName")}" (owner: {m.get("userName")})'
+
+
 async def _resolve_dq_monitor(client, monitor_name: str, owner: Optional[str]):
     """(monitor, None) or (None, tool result) for a DATA_QUALITY monitor: owner auto-resolved, ambiguous/not_found."""
     result = await _fetch_all_monitors(client, None, "DATA_QUALITY")  # a name filter hides other owners' monitors
@@ -290,16 +356,28 @@ async def _resolve_dq_monitor(client, monitor_name: str, owner: Optional[str]):
                 and one["data"].get("monitorType") == "DATA_QUALITY":
             found = [one["data"]]
     if not found:
-        by_model = sorted({m.get("monitorName") for m in result["items"] if m.get("monitorName")
-                           and str(m.get("modelName", "")).lower() == monitor_name.strip().lower()})
-        if by_model:  # the user gave a model name: callers decide whether to show the model's monitors
-            model = next(m["modelName"] for m in result["items"] if str(m.get("modelName", "")).lower() == monitor_name.strip().lower())
-            return None, {"status": "model_match", "modelName": model, "monitors": by_model,
-                          "message": f"'{monitor_name}' is a model, not a monitor. Its monitors: {', '.join(by_model)}; "
-                                     "ask which monitor the user means."}
-        names = sorted({m.get("monitorName") for m in result["items"] if m.get("monitorName")})
-        close = difflib.get_close_matches(monitor_name, names, n=5, cutoff=0.5) or \
-            [n for n in names if monitor_name.lower() in n.lower()][:5]
+        pool = [m for m in result["items"] if owner is None or m.get("userName") == owner]
+        label, hits = find_monitors(pool, monitor_name)
+        if not hits:  # a typo: one clearly closest monitor name is used, several are offered
+            near = closest_names(pool, monitor_name, 0.85)
+            if len(near) == 1:
+                label, hits = "closest name", [m for m in pool if m.get("monitorName") == near[0]]
+        if label == "monitor name" and len({(m.get("userName")) for m in hits}) > 1:
+            return None, {"status": "ambiguous", "message": "Several owners have this monitor; ask which one.",
+                          "candidates": [_pick(m, ["monitorName", "userName", "modelName", "environment"]) for m in hits]}
+        if len(hits) == 1:  # one monitor, however it was named: use it and say how it was read
+            return {**hits[0], "_interpreted": f'"{monitor_name}" was read as {label}: {_monitor_label(hits[0])}. '}, None
+        if hits:  # several monitors share the model, owner, data source or part of a name the user gave
+            names = sorted({m.get("monitorName") for m in hits})
+            model = hits[0].get("modelName") if label == "model" else None
+            lead = (f'No monitor is named "{monitor_name}"; it is a model, so here are its monitors. ' if label == "model" else
+                    f'No monitor is named "{monitor_name}"; it matches the {label}, so here are its {len(names)} monitors. ')
+            return None, {"status": "model_match" if label == "model" else "multi_match", "matchedBy": label,
+                          "modelName": model, "monitors": names, "lead": lead,
+                          "candidates": [_pick(m, ["monitorName", "userName"]) for m in hits],
+                          "message": f"'{monitor_name}' matches the {label}, not one monitor. Its monitors: "
+                                     f"{', '.join(names)}; ask which monitor the user means."}
+        close = closest_names(pool, monitor_name)
         return None, {"status": "not_found", "message": f"No DATA_QUALITY monitor named '{monitor_name}'"
                       + (f" for owner '{owner}'" if owner else "") + " is visible to this user."
                       + (" Closest names: " + ", ".join(close) + "; ask the user which one they mean." if close
@@ -323,7 +401,8 @@ async def aw_get_data_quality_config(monitor_name: str, owner: Optional[str] = N
     to the answer as is.
 
     Args:
-        monitor_name (str): Exact monitor name.
+        monitor_name (str): The monitor name; a model name, owner name, data source or part of a name also works (one
+            match is used, several are listed as {"status": "model_match" | "multi_match"}).
         owner (str, optional): Monitor owner (userName). If omitted it is looked up; when several
             owners have a monitor of that name the result is {"status": "ambiguous", "candidates": [...]}
             and the user must pick one.
@@ -343,7 +422,8 @@ async def aw_get_data_quality_config(monitor_name: str, owner: Optional[str] = N
         if failure:
             return failure
         digest = _dq_digest(monitor)
-        return {"status": "success", "scope": {"owner": digest["owner"]}, **digest}
+        note = {"interpreted": monitor["_interpreted"].strip()} if monitor.get("_interpreted") else {}
+        return {"status": "success", "scope": {"owner": digest["owner"]}, **note, **digest}
     except Exception as e:
         logger.error(f"Error in aw_get_data_quality_config: {e}")
         return {"status": "error", "message": f"Error in aw_get_data_quality_config: {e}"}
