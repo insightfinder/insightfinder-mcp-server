@@ -332,6 +332,54 @@ def _system_key(system_data: Dict[str, Any]) -> Dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+async def load_user_systems(api_client) -> Dict[str, Any]:
+    """The user's UIE systems: owned plus shared with them, AI WatchTower systems left out,
+    sorted by name. An admin's ownSystemArr holds every user's systems; only the admin's own
+    are kept. Returns {"status": "success", "systems", "awExcludedCount", "unparsedCount"}
+    (systems: {name, id, owner, timezone, projectCount, shared}) or the framework error."""
+    framework_data = await api_client.get_system_framework()
+    if framework_data.get("status") == "error":
+        return framework_data
+
+    user_name = api_client.user_name
+    systems: Dict[tuple, Dict[str, Any]] = {}
+    seen = set()
+    unparsed = aw_excluded = 0
+    for arr_name, shared in (('ownSystemArr', False), ('shareSystemArr', True)):
+        for system_json in framework_data.get(arr_name) or []:
+            system_data = parse_system_json(
+                system_json if isinstance(system_json, str) else json.dumps(system_json))
+            key = _system_key(system_data) if system_data else {}
+            system_id = key.get('systemName')
+            if not system_id:
+                unparsed += 1
+                continue
+            owner = key.get('userName', 'Unknown')
+            if (not shared and owner != user_name) or (owner, system_id) in seen:
+                continue
+            seen.add((owner, system_id))
+            if system_data.get('isAW'):
+                aw_excluded += 1
+                continue
+            projects = system_data.get('projectDetailsList')
+            systems[(owner, system_id)] = {
+                'name': system_data.get('systemDisplayName') or system_id,
+                'id': system_id,
+                'owner': owner,
+                'timezone': system_data.get('timezone', 'US/Eastern'),
+                'projectCount': len(projects) if isinstance(projects, list) else 0,
+                'shared': shared,
+            }
+    if unparsed:
+        logger.warning(f"{unparsed} systemframework entries could not be parsed")
+    return {
+        "status": "success",
+        "systems": sorted(systems.values(), key=lambda s: (s['name'].lower(), s['owner'])),
+        "awExcludedCount": aw_excluded,
+        "unparsedCount": unparsed,
+    }
+
+
 @mcp_server.tool()
 async def get_system_list() -> Dict[str, Any]:
     """
@@ -365,52 +413,18 @@ async def get_system_list() -> Dict[str, Any]:
                 "message": "No API client configured. Please configure your InsightFinder credentials."
             }
 
-        framework_data = await api_client.get_system_framework()
-        if framework_data.get("status") == "error":
-            return framework_data
-
-        user_name = api_client.user_name
-        systems: Dict[tuple, Dict[str, Any]] = {}
-        seen = set()
-        unparsed = aw_excluded = 0
-        for arr_name, shared in (('ownSystemArr', False), ('shareSystemArr', True)):
-            for system_json in framework_data.get(arr_name) or []:
-                system_data = parse_system_json(
-                    system_json if isinstance(system_json, str) else json.dumps(system_json))
-                key = _system_key(system_data) if system_data else {}
-                system_id = key.get('systemName')
-                if not system_id:
-                    unparsed += 1
-                    continue
-                owner = key.get('userName', 'Unknown')
-                # An admin's ownSystemArr holds every user's systems; keep only the user's own.
-                if (not shared and owner != user_name) or (owner, system_id) in seen:
-                    continue
-                seen.add((owner, system_id))
-                if system_data.get('isAW'):
-                    aw_excluded += 1
-                    continue
-                projects = system_data.get('projectDetailsList')
-                systems[(owner, system_id)] = {
-                    'name': system_data.get('systemDisplayName') or system_id,
-                    'id': system_id,
-                    'owner': owner,
-                    'timezone': system_data.get('timezone', 'US/Eastern'),
-                    'projectCount': len(projects) if isinstance(projects, list) else 0,
-                    'shared': shared,
-                }
-        if unparsed:
-            logger.warning(f"get_system_list: {unparsed} systemframework entries could not be parsed")
-
-        result = sorted(systems.values(), key=lambda s: (s['name'].lower(), s['owner']))
+        loaded = await load_user_systems(api_client)
+        if loaded.get("status") == "error":
+            return loaded
+        result = loaded["systems"]
         shared_count = sum(1 for s in result if s['shared'])
         return {
             "status": "success",
             "totalCount": len(result),
             "ownedCount": len(result) - shared_count,
             "sharedCount": shared_count,
-            "awExcludedCount": aw_excluded,
-            "unparsedCount": unparsed,
+            "awExcludedCount": loaded["awExcludedCount"],
+            "unparsedCount": loaded["unparsedCount"],
             "systems": result,
         }
 
