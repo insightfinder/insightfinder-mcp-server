@@ -6,10 +6,11 @@ from . import deployment_tools
 from . import trace_tools
 from . import get_time
 from . import system_info_tools
+from . import dependency_tools
 from . import ari_configuration_tools
 from . import weather_tools
 from . import downdetector_tools
 from . import aw_tools
 from . import aw_data_quality_tools
 
-__all__ = ['aw_tools','aw_data_quality_tools','incident_tools', 'log_anomaly_tools', 'metric_anomaly_tools', 'metric_data_tools', 'deployment_tools', 'trace_tools', 'get_time', 'system_info_tools', 'ari_configuration_tools', 'weather_tools', 'downdetector_tools']
+__all__ = ['aw_tools','aw_data_quality_tools','incident_tools', 'log_anomaly_tools', 'metric_anomaly_tools', 'metric_data_tools', 'deployment_tools', 'trace_tools', 'get_time', 'system_info_tools', 'dependency_tools', 'ari_configuration_tools', 'weather_tools', 'downdetector_tools']
