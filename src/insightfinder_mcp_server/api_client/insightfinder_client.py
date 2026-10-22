@@ -883,7 +883,8 @@ class InsightFinderAPIClient:
                                 "tzOffset": "-18000000"},
                         headers={"X-User-Name": self.user_name, "X-API-Key": self.license_key})
                     response.raise_for_status()
-                    data = response.json()
+                    # 204 (ContentNotFoundException) means the user has no systems at all.
+                    data = {} if response.status_code == 204 else response.json()
                 logger.info(f"systemframework needDetail={need_detail} fetched in "
                             f"{_time.monotonic() - t0:.1f}s")
                 return data

@@ -3,6 +3,7 @@ System information tools for the InsightFinder MCP server.
 
 This module provides tools for querying and exploring InsightFinder systems and projects:
 - list_all_systems: List all available systems with their owners
+- get_system_list: The user's own and shared UIE systems, complete and unpaginated
 - list_all_systems_and_projects: Get detailed information about all systems and their projects
 - get_projects_for_system: Get all projects within a specific system
 - find_system_by_name: Fuzzy search for system names (handles typos and case differences)
@@ -177,7 +178,8 @@ async def list_all_systems(
     Default page size is 20 systems. Use the page parameter to navigate through results.
     
     **When to use this tool:**
-    - When user asks "what systems do I have?"
+    - Not for "what systems do I have?" or "list my systems": use get_system_list, which
+      returns the user's complete list in one call
     - To discover available systems before querying specific data
     - To find the correct system name for other tools
     - When user mentions a system name that might be incorrect
@@ -316,6 +318,107 @@ async def list_all_systems(
         return {
             "status": "error",
             "message": f"Failed to list systems: {str(e)}"
+        }
+
+
+def _system_key(system_data: Dict[str, Any]) -> Dict[str, Any]:
+    """systemKey of a systemframework entry; it arrives as an object or as a JSON string."""
+    raw = system_data.get('systemKey') or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+@mcp_server.tool()
+async def get_system_list() -> Dict[str, Any]:
+    """
+    The complete list of the user's systems in one call (not paginated, never truncated).
+
+    **When to use this tool:**
+    - When the user asks which systems they have, how many, or to list their systems
+    - To check a system name against everything the user has
+
+    Answer from the whole list: it is complete, so do not page through list_all_systems as well.
+    To resolve one possibly misspelled name, find_system_by_name is cheaper.
+
+    The set is the user's UIE systems: those they own plus those shared with them, "IT System"
+    in the UI's System Type filter. AI WatchTower systems ("AI Model") are left out. Admin roles
+    do not widen it, although systemframework returns every user's systems to an admin (the
+    UI's system settings page likewise keeps only the admin's own). Nothing is truncated.
+
+    Returns:
+        A dictionary containing:
+        - status: "success" or "error"
+        - totalCount, ownedCount, sharedCount: number of systems returned
+        - awExcludedCount: AI WatchTower systems left out
+        - unparsedCount: entries the backend returned that could not be parsed (expected 0)
+        - systems: list of {name, id, owner, timezone, projectCount, shared}, sorted by name
+    """
+    try:
+        api_client = get_current_api_client()
+        if not api_client:
+            return {
+                "status": "error",
+                "message": "No API client configured. Please configure your InsightFinder credentials."
+            }
+
+        framework_data = await api_client.get_system_framework()
+        if framework_data.get("status") == "error":
+            return framework_data
+
+        user_name = api_client.user_name
+        systems: Dict[tuple, Dict[str, Any]] = {}
+        seen = set()
+        unparsed = aw_excluded = 0
+        for arr_name, shared in (('ownSystemArr', False), ('shareSystemArr', True)):
+            for system_json in framework_data.get(arr_name) or []:
+                system_data = parse_system_json(
+                    system_json if isinstance(system_json, str) else json.dumps(system_json))
+                key = _system_key(system_data) if system_data else {}
+                system_id = key.get('systemName')
+                if not system_id:
+                    unparsed += 1
+                    continue
+                owner = key.get('userName', 'Unknown')
+                # An admin's ownSystemArr holds every user's systems; keep only the user's own.
+                if (not shared and owner != user_name) or (owner, system_id) in seen:
+                    continue
+                seen.add((owner, system_id))
+                if system_data.get('isAW'):
+                    aw_excluded += 1
+                    continue
+                projects = system_data.get('projectDetailsList')
+                systems[(owner, system_id)] = {
+                    'name': system_data.get('systemDisplayName') or system_id,
+                    'id': system_id,
+                    'owner': owner,
+                    'timezone': system_data.get('timezone', 'US/Eastern'),
+                    'projectCount': len(projects) if isinstance(projects, list) else 0,
+                    'shared': shared,
+                }
+        if unparsed:
+            logger.warning(f"get_system_list: {unparsed} systemframework entries could not be parsed")
+
+        result = sorted(systems.values(), key=lambda s: (s['name'].lower(), s['owner']))
+        shared_count = sum(1 for s in result if s['shared'])
+        return {
+            "status": "success",
+            "totalCount": len(result),
+            "ownedCount": len(result) - shared_count,
+            "sharedCount": shared_count,
+            "awExcludedCount": aw_excluded,
+            "unparsedCount": unparsed,
+            "systems": result,
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting system list: {str(e)}", exc_info=True)
+        return {
+            "status": "error",
+            "message": f"Failed to get system list: {str(e)}"
         }
 
 
