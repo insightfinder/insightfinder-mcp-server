@@ -13,6 +13,7 @@ These tools help users discover and navigate the InsightFinder system hierarchy.
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Annotated, Dict, Any, List, Literal, Optional, Union
@@ -256,6 +257,15 @@ def _scope_error(scope: str) -> Optional[Dict[str, Any]]:
 
 
 _PREVIEW_PROJECT_NAMES = 10
+_MD_SPECIAL = re.compile(r"([\\`*_\[\]()<>#!|~])")
+
+
+def _md(text: Any) -> str:
+    """A user-chosen name as inert markdown text: one line, control characters dropped and
+    markdown syntax escaped, so a system or project name cannot add links, images or
+    headings to an answer shown verbatim to another user it is shared with."""
+    flat = "".join(ch if ch.isprintable() else " " for ch in str(text)).strip()
+    return _MD_SPECIAL.sub(r"\\\1", flat[:200])
 
 
 def _render_system_list(systems: List[Dict[str, Any]], scope: str, user_name: str,
@@ -271,7 +281,7 @@ def _render_system_list(systems: List[Dict[str, Any]], scope: str, user_name: st
         counts = [f"{owned} owned by you"] + ([f"{shared} shared with you"] if include_shared
                                              else ["shared systems not included"])
     else:
-        title = f"## Systems visible to {user_name} ({len(systems)})"
+        title = f"## Systems visible to {_md(user_name)} ({len(systems)})"
         counts = [f"{owned} owned by you", f"{len(systems) - owned} owned by other users"]
     counts += [f"{len(by_type[IT_SYSTEM])} IT Systems", f"{len(by_type[AI_MODEL])} AI Models"]
     parts = [title, " · ".join(counts)]
@@ -280,10 +290,10 @@ def _render_system_list(systems: List[Dict[str, Any]], scope: str, user_name: st
             continue
         lines = []
         for i, s in enumerate(group, 1):
-            line = f"{i}. **{s['systemDisplayName']}** (owner: {s['userName']}"
+            line = f"{i}. **{_md(s['systemDisplayName'])}** (owner: {_md(s['userName'])}"
             line += ", shared with you)" if s['isShared'] else ")"
             if 'projects' in s:
-                names = [p['projectName'] for p in s['projects']]
+                names = [_md(p['projectName']) for p in s['projects']]
                 line += f" · {len(names)} project{'' if len(names) == 1 else 's'}"
                 if names:
                     line += ": " + ", ".join(names[:_PREVIEW_PROJECT_NAMES])

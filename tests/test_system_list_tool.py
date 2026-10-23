@@ -191,3 +191,12 @@ def test_systems_and_projects_preview_caps_project_names(monkeypatch):
 def test_empty_list_preview(monkeypatch):
     _backend(monkeypatch, status=204)
     assert "No systems found." in run()["formatted_preview"]
+
+
+def test_preview_neutralises_markdown_in_names(monkeypatch):
+    # A shared system's name is chosen by another user and the preview is shown verbatim.
+    _backend(monkeypatch, body={"shareSystemArr": [
+        _sys("x](https://evil.example)\n## Admin ![i](https://evil.example/p.png) my_sys", "e1", owner="mallory")]})
+    line = next(l for l in run()["formatted_preview"].splitlines() if l.startswith("1. "))
+    assert "](" not in line and "![" not in line and "\n" not in line
+    assert r"x\]\(https://evil.example\) \#\# Admin \!\[i\]" in line and r"my\_sys" in line
