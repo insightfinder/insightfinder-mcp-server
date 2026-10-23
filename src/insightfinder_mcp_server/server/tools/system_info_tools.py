@@ -469,7 +469,8 @@ async def list_all_systems_and_projects(
         - systems: systems as in list_all_systems, each with projects
           [{projectName, projectKey, userName, dataType, projectClassType}] (paginated)
         - pagination: Pagination information
-        - summary: Overall statistics (total systems, projects, IT Systems, AI Models, owners)
+        - summary: Overall statistics (total systems, projects, owned, shared, IT Systems,
+          AI Models, owners)
     """
     try:
         api_client = get_current_api_client()
@@ -569,6 +570,8 @@ async def list_all_systems_and_projects(
             "summary": {
                 "totalSystems": total_count,
                 "totalProjects": total_projects,
+                "totalOwnedSystems": sum(1 for x in all_systems if not x['isShared']),
+                "totalSharedSystems": sum(1 for x in all_systems if x['isShared']),
                 "totalItSystems": sum(1 for x in all_systems if x['type'] == IT_SYSTEM),
                 "totalAiModels": sum(1 for x in all_systems if x['type'] == AI_MODEL),
                 "uniqueOwners": len(unique_owners),
