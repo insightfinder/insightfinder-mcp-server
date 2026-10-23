@@ -175,8 +175,8 @@ async def list_all_systems(
     systems plus those shared with them. AI WatchTower ("AI Model") systems are included. Check
     each entry's userName (owner) before calling a system the user's own.
 
-    For the signed-in user's own systems (owned plus shared with them, IT systems only, complete
-    in one call) use get_system_list instead.
+    For the signed-in user's own systems (owned plus shared with them, with each system's type,
+    complete in one call) use get_system_list instead.
 
     Each system entry includes the system name, display name, owner, and project count.
     
@@ -341,11 +341,15 @@ def _system_key(system_data: Dict[str, Any]) -> Dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+IT_SYSTEM, AI_MODEL = "IT System", "AI Model"
+
+
 async def load_user_systems(api_client) -> Dict[str, Any]:
-    """The user's UIE systems: owned plus shared with them, AI WatchTower systems left out,
-    sorted by name. An admin's ownSystemArr holds every user's systems; only the admin's own
-    are kept. Returns {"status": "success", "systems", "awExcludedCount", "unparsedCount"}
-    (systems: {name, id, owner, timezone, projectCount, shared}) or the framework error."""
+    """The signed-in user's systems: owned plus shared with them, sorted by name, IT systems and
+    AI WatchTower models alike (type "IT System" / "AI Model", as the UI's System Type filter).
+    An admin's ownSystemArr holds every user's systems; only the admin's own are kept. Returns
+    {"status": "success", "systems", "unparsedCount"} (systems: {name, id, owner, type,
+    timezone, projectCount, shared}) or the framework error."""
     framework_data = await api_client.get_system_framework()
     if framework_data.get("status") == "error":
         return framework_data
@@ -353,7 +357,7 @@ async def load_user_systems(api_client) -> Dict[str, Any]:
     user_name = api_client.user_name
     systems: Dict[tuple, Dict[str, Any]] = {}
     seen = set()
-    unparsed = aw_excluded = 0
+    unparsed = 0
     for arr_name, shared in (('ownSystemArr', False), ('shareSystemArr', True)):
         for system_json in framework_data.get(arr_name) or []:
             system_data = parse_system_json(
@@ -367,14 +371,12 @@ async def load_user_systems(api_client) -> Dict[str, Any]:
             if (not shared and owner != user_name) or (owner, system_id) in seen:
                 continue
             seen.add((owner, system_id))
-            if system_data.get('isAW'):
-                aw_excluded += 1
-                continue
             projects = system_data.get('projectDetailsList')
             systems[(owner, system_id)] = {
                 'name': system_data.get('systemDisplayName') or system_id,
                 'id': system_id,
                 'owner': owner,
+                'type': AI_MODEL if system_data.get('isAW') else IT_SYSTEM,
                 'timezone': system_data.get('timezone', 'US/Eastern'),
                 'projectCount': len(projects) if isinstance(projects, list) else 0,
                 'shared': shared,
@@ -384,7 +386,6 @@ async def load_user_systems(api_client) -> Dict[str, Any]:
     return {
         "status": "success",
         "systems": sorted(systems.values(), key=lambda s: (s['name'].lower(), s['owner'])),
-        "awExcludedCount": aw_excluded,
         "unparsedCount": unparsed,
     }
 
@@ -398,8 +399,8 @@ async def get_system_list() -> Dict[str, Any]:
     for those use list_all_systems or find_system_by_name.
 
     How it differs from list_all_systems: that tool shows everything the user's role can see
-    (for an admin, every user's systems, AI Models included) in pages of 20; this one shows
-    only the user's own and shared IT systems, all at once.
+    (for an admin, every user's systems) in pages of 20; this one shows only the user's own and
+    shared systems, all at once.
 
     **When to use this tool:**
     - When the user asks which systems they have, how many, or to list their systems
@@ -408,18 +409,19 @@ async def get_system_list() -> Dict[str, Any]:
     Answer from the whole list: it is complete, so do not page through list_all_systems as well.
     To resolve one possibly misspelled name, find_system_by_name is cheaper.
 
-    The set is the user's UIE systems: those they own plus those shared with them, "IT System"
-    in the UI's System Type filter. AI WatchTower systems ("AI Model") are left out. Admin roles
-    do not widen it, although systemframework returns every user's systems to an admin (the
-    UI's system settings page likewise keeps only the admin's own). Nothing is truncated.
+    Each system has a type, as in the UI's System Type filter: "IT System" (infrastructure and
+    applications) or "AI Model" (an AI/ML or LLM model monitored by AI WatchTower). IT tools
+    (incidents, anomalies, metrics, logs, dependency graph) work on IT Systems only; questions
+    about an AI Model belong to AI WatchTower. Admin roles do not widen the set, although
+    systemframework returns every user's systems to an admin (the UI's system settings page
+    likewise keeps only the admin's own). Nothing is truncated.
 
     Returns:
         A dictionary containing:
         - status: "success" or "error"
-        - totalCount, ownedCount, sharedCount: number of systems returned
-        - awExcludedCount: AI WatchTower systems left out
+        - totalCount, ownedCount, sharedCount, itSystemCount, aiModelCount: number of systems
         - unparsedCount: entries the backend returned that could not be parsed (expected 0)
-        - systems: list of {name, id, owner, timezone, projectCount, shared}, sorted by name
+        - systems: list of {name, id, owner, type, timezone, projectCount, shared}, sorted by name
     """
     try:
         api_client = get_current_api_client()
@@ -439,7 +441,8 @@ async def get_system_list() -> Dict[str, Any]:
             "totalCount": len(result),
             "ownedCount": len(result) - shared_count,
             "sharedCount": shared_count,
-            "awExcludedCount": loaded["awExcludedCount"],
+            "itSystemCount": sum(1 for s in result if s['type'] == IT_SYSTEM),
+            "aiModelCount": sum(1 for s in result if s['type'] == AI_MODEL),
             "unparsedCount": loaded["unparsedCount"],
             "systems": result,
         }

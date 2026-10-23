@@ -245,9 +245,19 @@ def test_component_lookup_skipped_on_huge_accounts(monkeypatch):
     assert not any(c.url.path.endswith("/causalgroup") for c in b.calls)
 
 
-def test_ai_model_systems_are_not_accepted(monkeypatch):
-    Backend(monkeypatch, systems={"ownSystemArr": [_sys("llama-8b", "l1", aw=True)], "shareSystemArr": []})
-    assert run(system_name="llama-8b")["error_code"] == "system_not_found"
+def test_ai_model_is_refused_as_not_an_it_system(monkeypatch):
+    b = Backend(monkeypatch, systems={"ownSystemArr": [_sys("llama-8b", "l1", aw=True), _sys("Shop", "s1")],
+                                      "shareSystemArr": []})
+    r = run(system_name="LLAMA-8B")
+    assert r["error_code"] == "not_an_it_system" and r["candidates"] == [{"name": "llama-8b", "owner": "bo"}]
+    assert r["available_systems"] == [{"name": "Shop", "owner": "bo"}]
+    assert not any(c.url.path.endswith("/causalgroup") for c in b.calls)
+
+
+def test_it_system_wins_over_same_named_ai_model(monkeypatch):
+    Backend(monkeypatch, systems={"ownSystemArr": [_sys("Twin", "m1", aw=True), _sys("Twin", "t1")],
+                                  "shareSystemArr": []})
+    assert run(system_name="Twin")["system"]["id"] == "t1"
 
 
 def test_ambiguous_system_needs_owner(monkeypatch):

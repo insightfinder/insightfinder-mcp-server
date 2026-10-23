@@ -48,8 +48,8 @@ def test_returns_owned_and_shared_sorted(monkeypatch):
     assert r["status"] == "success"
     assert [s["name"] for s in r["systems"]] == ["alpha", "Mid", "Zeta"]
     assert (r["totalCount"], r["ownedCount"], r["sharedCount"], r["unparsedCount"]) == (3, 2, 1, 0)
-    assert r["systems"][1] == {"name": "Mid", "id": "m1", "owner": "alice", "timezone": "UTC",
-                               "projectCount": 0, "shared": True}
+    assert r["systems"][1] == {"name": "Mid", "id": "m1", "owner": "alice", "type": "IT System",
+                               "timezone": "UTC", "projectCount": 0, "shared": True}
     assert r["systems"][0]["projectCount"] == 2
 
 
@@ -66,14 +66,16 @@ def test_admin_gets_only_own_and_shared(monkeypatch):
     assert (r["ownedCount"], r["sharedCount"]) == (1, 1)
 
 
-def test_aw_systems_are_excluded_and_counted(monkeypatch):
+def test_ai_models_are_included_and_typed(monkeypatch):
     _backend(monkeypatch, body={
         "ownSystemArr": [_sys("Infra", "i1"), _sys("llama-8b", "l1", aw=True)],
         "shareSystemArr": [_sys("gpt-model", "g1", owner="alice", aw=True),
                            _sys("gpt-model", "g1", owner="alice", aw=True)],
     })
     r = asyncio.run(sit.get_system_list())
-    assert [s["name"] for s in r["systems"]] == ["Infra"] and r["awExcludedCount"] == 2
+    assert [(s["name"], s["type"]) for s in r["systems"]] == [
+        ("gpt-model", "AI Model"), ("Infra", "IT System"), ("llama-8b", "AI Model")]
+    assert (r["totalCount"], r["itSystemCount"], r["aiModelCount"]) == (3, 1, 2)
 
 
 def test_same_id_different_owner_kept(monkeypatch):
@@ -93,7 +95,7 @@ def test_no_systems_is_empty_success(monkeypatch):
     _backend(monkeypatch, status=204)
     r = asyncio.run(sit.get_system_list())
     assert r == {"status": "success", "totalCount": 0, "ownedCount": 0, "sharedCount": 0,
-                 "awExcludedCount": 0, "unparsedCount": 0, "systems": []}
+                 "itSystemCount": 0, "aiModelCount": 0, "unparsedCount": 0, "systems": []}
 
 
 def test_large_account_not_truncated(monkeypatch):
