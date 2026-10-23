@@ -310,7 +310,7 @@ async def get_dependency_graph(
     system_name: Annotated[str, Field(
         min_length=1,
         description="Exact name of ONE system of type \"IT System\", as listed by "
-                    "get_system_list. Not an AI Model, component, service, project or "
+                    "list_all_systems. Not an AI Model, component, service, project or "
                     "instance name. Required: if the request does not name a system, ask the "
                     "user which one instead of calling this tool.")],
     system_owner: Annotated[Optional[str], Field(
@@ -341,13 +341,13 @@ async def get_dependency_graph(
       fetch_rca_chain=True
 
     **Call contract (enforced):** system_name is required and must be the exact name of one
-    of the user's systems (see get_system_list). The tool refuses rather than guesses: an
+    of the user's systems (see list_all_systems). The tool refuses rather than guesses: an
     empty, unknown or ambiguous system, an unknown component, or direction/hops without a
     component returns status "error" with error_code, next_step, ask_user (a question to relay
     to the user) and the valid choices. A component name passed as system_name returns
     error_code "component_in_system" with retry_with, the exact arguments to call again with
     (or, when several systems have that component, candidates to ask the user about). An AI
-    Model name (see get_system_list's type) returns error_code "not_an_it_system". Follow next_step; when only the user can resolve it, ask them ask_user
+    Model name (see list_all_systems' type) returns error_code "not_an_it_system". Follow next_step; when only the user can resolve it, ask them ask_user
     and stop, do not pick a candidate yourself.
 
     An edge "source -> target" means source is upstream of target: target depends on source,
