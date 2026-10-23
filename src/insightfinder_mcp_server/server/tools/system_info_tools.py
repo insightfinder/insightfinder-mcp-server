@@ -383,7 +383,10 @@ async def load_user_systems(api_client) -> Dict[str, Any]:
 @mcp_server.tool()
 async def get_system_list() -> Dict[str, Any]:
     """
-    The complete list of the user's systems in one call (not paginated, never truncated).
+    The complete list of systems that belong to the signed-in user, the person you are chatting
+    with: the systems they own plus those other users shared with them, in one call (not
+    paginated, never truncated). It takes no arguments and cannot list another user's systems;
+    for those use list_all_systems or find_system_by_name.
 
     **When to use this tool:**
     - When the user asks which systems they have, how many, or to list their systems
