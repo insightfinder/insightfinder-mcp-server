@@ -25,7 +25,7 @@ from pydantic import Field
 
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
-from .system_info_tools import load_user_systems
+from .system_info_tools import AI_MODEL, IT_SYSTEM, load_user_systems
 
 logger = logging.getLogger(__name__)
 
@@ -309,9 +309,10 @@ async def _component_not_system(api_client, systems: List[Dict[str, Any]], syste
 async def get_dependency_graph(
     system_name: Annotated[str, Field(
         min_length=1,
-        description="Exact name of ONE system, as listed by get_system_list. Not a component, "
-                    "service, project or instance name. Required: if the request does not name "
-                    "a system, ask the user which one instead of calling this tool.")],
+        description="Exact name of ONE system of type \"IT System\", as listed by "
+                    "get_system_list. Not an AI Model, component, service, project or "
+                    "instance name. Required: if the request does not name a system, ask the "
+                    "user which one instead of calling this tool.")],
     system_owner: Annotated[Optional[str], Field(
         description="Owner of the system. Required only when several systems share the name "
                     "(the tool then returns the candidates).")] = None,
@@ -345,7 +346,8 @@ async def get_dependency_graph(
     component returns status "error" with error_code, next_step, ask_user (a question to relay
     to the user) and the valid choices. A component name passed as system_name returns
     error_code "component_in_system" with retry_with, the exact arguments to call again with
-    (or, when several systems have that component, candidates to ask the user about). Follow next_step; when only the user can resolve it, ask them ask_user
+    (or, when several systems have that component, candidates to ask the user about). An AI
+    Model name (see get_system_list's type) returns error_code "not_an_it_system". Follow next_step; when only the user can resolve it, ask them ask_user
     and stop, do not pick a candidate yourself.
 
     An edge "source -> target" means source is upstream of target: target depends on source,
@@ -388,13 +390,25 @@ async def get_dependency_graph(
         loaded = await load_user_systems(api_client)
         if loaded.get("status") == "error":
             return loaded
-        systems = loaded["systems"]
+        # Dependency graphs exist for IT systems only; AI Models are AI WatchTower's.
+        systems = [s for s in loaded["systems"] if s["type"] == IT_SYSTEM]
         if not (system_name or "").strip():
             return _contract_error(
                 "missing_system", "system_name is required.",
                 "Ask the user which system they mean; do not pick one yourself.",
                 ask_user="Which system's dependency graph do you want?",
                 missing=["system_name"], available_systems=_choices(systems))
+        wanted = system_name.strip().casefold()
+        models = [s for s in loaded["systems"] if s["type"] == AI_MODEL
+                  and wanted in (s["name"].casefold(), s["id"].casefold())]
+        if models and not any(wanted in (s["name"].casefold(), s["id"].casefold()) for s in systems):
+            return _contract_error(
+                "not_an_it_system",
+                f"'{system_name}' is an AI Model monitored by AI WatchTower, not an IT System; "
+                f"dependency graphs exist for IT Systems only.",
+                "Do not retry this tool with it. Answer AI Model questions with the AI WatchTower "
+                "tools, or ask the user which IT System they mean.",
+                candidates=_choices(models), available_systems=_choices(systems))
         resolved = _resolve_system(systems, system_name, system_owner)
         if resolved["status"] != "success":
             if resolved["error_code"] == "system_not_found" and "did_you_mean" in resolved:
