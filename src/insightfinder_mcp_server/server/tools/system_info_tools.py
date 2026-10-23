@@ -255,50 +255,6 @@ def _scope_error(scope: str) -> Optional[Dict[str, Any]]:
                          f'scope="{SCOPE_ALL_VISIBLE}" for every system their role can see.'}
 
 
-_PREVIEW_PROJECT_NAMES = 10
-
-
-def _render_system_list(systems: List[Dict[str, Any]], scope: str, user_name: str,
-                        include_shared: bool = True) -> str:
-    """The finished markdown answer for a complete system list: grouped by type, every line
-    with its owner, so neither the owner nor a same-name IT System / AI Model pair gets lost
-    when the list is shown. Systems carrying `projects` also list (up to 10) project names."""
-    owned = sum(1 for s in systems if s['ownedByCurrentUser'])
-    shared = sum(1 for s in systems if s['isShared'])
-    by_type = {t: [s for s in systems if s['type'] == t] for t in (IT_SYSTEM, AI_MODEL)}
-    if scope == SCOPE_MINE:
-        title = f"## Your systems ({len(systems)})"
-        counts = [f"{owned} owned by you"] + ([f"{shared} shared with you"] if include_shared
-                                             else ["shared systems not included"])
-    else:
-        title = f"## Systems visible to {user_name} ({len(systems)})"
-        counts = [f"{owned} owned by you", f"{len(systems) - owned} owned by other users"]
-    counts += [f"{len(by_type[IT_SYSTEM])} IT Systems", f"{len(by_type[AI_MODEL])} AI Models"]
-    parts = [title, " · ".join(counts)]
-    for type_name, group in by_type.items():
-        if not group:
-            continue
-        lines = []
-        for i, s in enumerate(group, 1):
-            line = f"{i}. **{s['systemDisplayName']}** (owner: {s['userName']}"
-            line += ", shared with you)" if s['isShared'] else ")"
-            if 'projects' in s:
-                names = [p['projectName'] for p in s['projects']]
-                line += f" · {len(names)} project{'' if len(names) == 1 else 's'}"
-                if names:
-                    line += ": " + ", ".join(names[:_PREVIEW_PROJECT_NAMES])
-                    if len(names) > _PREVIEW_PROJECT_NAMES:
-                        line += f" (+{len(names) - _PREVIEW_PROJECT_NAMES} more)"
-            lines.append(line)
-        parts.append(f"### {type_name}s ({len(group)})\n" + "\n".join(lines))
-    if not systems:
-        parts.append("No systems found.")
-    if by_type[AI_MODEL]:
-        parts.append("AI Models are monitored in AI WatchTower; incident, anomaly, metric, log "
-                     "and dependency questions apply to IT Systems.")
-    return "\n\n".join(parts)
-
-
 
 
 # ============================================================================
@@ -342,9 +298,6 @@ async def list_all_systems(
     If pagination.hasMore is true, the list continues on the next page: say so, or fetch it,
     before calling an answer complete.
 
-    ⚠️ When the whole list fits in one page, the `formatted_preview` field is the finished answer
-    (every system with its owner, grouped by type). Return it as-is; do not rewrite it.
-
     Args:
         scope: "mine" (default) or "all_visible", see above
         include_shared: Whether to include systems shared with the user (default: True)
@@ -360,8 +313,6 @@ async def list_all_systems(
         - ownedSystems / sharedSystems: the same page split by isShared
         - pagination: currentPage, pageSize, totalPages, totalCount, hasMore, ...
         - summary: totals of owned, shared, IT Systems and AI Models over all pages
-        - formatted_preview: the finished markdown answer; only when the list is complete on
-          page 1
     """
     try:
         api_client = get_current_api_client()
@@ -430,7 +381,7 @@ async def list_all_systems(
         if page < total_pages:
             pagination_msg += f". There are {total_pages - page} more page(s) available. Use page={page + 1} to see the next page."
 
-        result = {
+        return {
             "status": "success",
             "message": pagination_msg,
             "scope": scope,
@@ -458,12 +409,6 @@ async def list_all_systems(
                 "displayMessage": f"Total: {len(owned_systems)} owned systems, {len(shared_systems) if include_shared else 0} shared systems"
             }
         }
-        # Only a complete list is a finished answer: mcp-service shows the last tool's preview
-        # verbatim, so a page of a longer list would read as the whole list.
-        if total_pages == 1:
-            result["formatted_preview"] = _render_system_list(
-                all_systems, scope, api_client.user_name, include_shared)
-        return result
 
     except Exception as e:
         logger.error(f"Error listing systems: {str(e)}", exc_info=True)
@@ -500,9 +445,6 @@ async def list_all_systems_and_projects(
     owns (the others in scope="mine" are shared with them); currentUser is their name.
     **Pagination**: Default page size is 20 systems per page. Each system includes ALL its
     projects. If pagination.hasMore is true, the list continues on the next page.
-    ⚠️ When the whole list fits in one page, the `formatted_preview` field is the finished
-    answer (every system with its owner and projects, grouped by type). Return it as-is; do not
-    rewrite it.
 
     **When to use this tool:**
     - When user asks for a complete overview of their InsightFinder setup
@@ -522,8 +464,6 @@ async def list_all_systems_and_projects(
           [{projectName, projectKey, userName, dataType, projectClassType}] (paginated)
         - pagination: Pagination information
         - summary: Overall statistics (total systems, projects, owners)
-        - formatted_preview: the finished markdown answer; only when the list is complete on
-          page 1
     """
     try:
         api_client = get_current_api_client()
@@ -602,7 +542,7 @@ async def list_all_systems_and_projects(
         if page < total_pages:
             pagination_msg += f". There are {total_pages - page} more page(s) available. Use page={page + 1} to see the next page."
 
-        result = {
+        return {
             "status": "success",
             "message": pagination_msg,
             "scope": scope,
@@ -627,9 +567,6 @@ async def list_all_systems_and_projects(
                 "ownersList": sorted(list(unique_owners))
             }
         }
-        if total_pages == 1:
-            result["formatted_preview"] = _render_system_list(all_systems, scope, api_client.user_name)
-        return result
 
     except Exception as e:
         logger.error(f"Error listing systems and projects: {str(e)}", exc_info=True)
