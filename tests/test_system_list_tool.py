@@ -111,3 +111,14 @@ def test_backend_error_is_reported(monkeypatch):
     _backend(monkeypatch, status=500)
     r = asyncio.run(sit.get_system_list())
     assert r["status"] == "error" and "500" in r["message"]
+
+
+def test_list_all_systems_marks_the_signed_in_users_systems(monkeypatch):
+    # An admin's list holds every user's systems; callers need to tell the user's own apart.
+    _backend(monkeypatch, body={"ownSystemArr": [_sys("Mine", "m1"), _sys("Theirs", "t1", owner="carol")],
+                                "shareSystemArr": [_sys("Shared", "s1", owner="alice")]})
+    for tool in (sit.list_all_systems, sit.list_all_systems_and_projects):
+        r = asyncio.run(tool())
+        assert r["currentUser"] == "bo"
+        assert {s["systemDisplayName"]: s["ownedByCurrentUser"] for s in r["systems"]} == {
+            "Mine": True, "Theirs": False, "Shared": False}
