@@ -200,8 +200,11 @@ async def list_all_systems(
     Returns:
         A dictionary containing:
         - status: "success" or "error"
+        - currentUser: the signed-in user's name (the person you are chatting with)
+        - systems: each with userName (owner) and ownedByCurrentUser (true when the signed-in
+          user owns it); answer "systems I own" from ownedByCurrentUser
         - ownedSystems: systems not shared with the user (paginated); for an admin this holds
-          every user's systems, so check the owner
+          every user's systems, so check ownedByCurrentUser
         - sharedSystems: List of systems shared with the user (paginated, if include_shared=True)
         - pagination: Pagination information (currentPage, pageSize, totalPages, totalCount, hasMore)
         
@@ -253,6 +256,7 @@ async def list_all_systems(
             if system_data:
                 system_info = extract_system_info(system_data)
                 system_info['isShared'] = False
+                system_info['ownedByCurrentUser'] = system_info['userName'] == api_client.user_name
                 owned_systems.append(system_info)
         
         # Process shared systems if requested
@@ -262,6 +266,7 @@ async def list_all_systems(
                 if system_data:
                     system_info = extract_system_info(system_data)
                     system_info['isShared'] = True
+                    system_info['ownedByCurrentUser'] = system_info['userName'] == api_client.user_name
                     shared_systems.append(system_info)
         
         # Combine and paginate
@@ -299,6 +304,7 @@ async def list_all_systems(
         result = {
             "status": "success",
             "message": pagination_msg,
+            "currentUser": api_client.user_name,
             "systems": paginated_systems,
             "ownedSystems": paginated_owned,
             "sharedSystems": paginated_shared if include_shared else [],
@@ -466,8 +472,8 @@ async def list_all_systems_and_projects(
     This tool retrieves detailed information about all systems the signed-in user's role can
     see, including all projects within each system: systems -> projects. Same scope as
     list_all_systems: an admin sees every user's systems (AI WatchTower systems included), so
-    check each system's owner. To list the user's own systems, use get_system_list; use this
-    tool when project details are needed.
+    check each system's ownedByCurrentUser (and currentUser, the signed-in user's name). To list
+    the user's own systems, use get_system_list; use this tool when project details are needed.
     
     **Pagination**: Results are returned in pages to avoid overwhelming responses.
     Default page size is 20 systems per page. Each system includes ALL its projects.
@@ -556,6 +562,7 @@ async def list_all_systems_and_projects(
             if system_data:
                 system_info = extract_system_info(system_data)
                 system_info['isShared'] = False
+                system_info['ownedByCurrentUser'] = system_info['userName'] == api_client.user_name
                 
                 # Extract projects
                 projects = []
@@ -575,6 +582,7 @@ async def list_all_systems_and_projects(
             if system_data:
                 system_info = extract_system_info(system_data)
                 system_info['isShared'] = True
+                system_info['ownedByCurrentUser'] = system_info['userName'] == api_client.user_name
                 
                 # Extract projects
                 projects = []
@@ -621,6 +629,7 @@ async def list_all_systems_and_projects(
         return {
             "status": "success",
             "message": pagination_msg,
+            "currentUser": api_client.user_name,
             "systems": paginated_systems,
             "pagination": {
                 "currentPage": page,
