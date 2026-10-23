@@ -14,6 +14,7 @@ valid choices) rather than guessed. The HTTP tool endpoint calls tool functions 
 the parameter schema below is not validated at runtime; the checks here are the enforcement.
 """
 
+import asyncio
 import json
 import logging
 from collections import deque
@@ -36,6 +37,9 @@ _MAX_HOPS = 5
 # 150 edges stay well under it. Past this, the caller should focus on a component.
 _MAX_EDGES = 150
 _MAX_COMPONENTS = 300
+# Looking a component name up across systems costs two backend calls a system.
+_MAX_SCAN_SYSTEMS = 50
+_SCAN_CONCURRENCY = 5
 
 
 def _contract_error(code: str, message: str, next_step: str, ask_user: Optional[str] = None,
@@ -209,6 +213,98 @@ def _focus(edges: List[Dict[str, Any]], component: str, direction: str, hops: in
     return list(kept.values())
 
 
+async def _load_graph(api_client, system: Dict[str, Any]) -> Dict[str, Any]:
+    """The system's causal group and its merged edges: {"status": "success", "group" (None when
+    the system has none), "zones", "component_edges", "instance_edges", "meta"} or an error."""
+    cand = await api_client.get_causal_group_candidates(system["owner"], system["id"])
+    if cand.get("status") == "error":
+        return cand
+    group = _pick_causal_group(cand.get("data") or {}, system)
+    if group is None:
+        return {"status": "success", "group": None}
+
+    rel = await api_client.get_dependency_relation(group["key"], group["owner"])
+    if rel.get("status") == "error":
+        return rel
+    data = rel.get("data") or {}
+    dep_map = data.get("dependencyMap") or []
+    entries = dep_map.values() if isinstance(dep_map, dict) else dep_map
+
+    component_edges: Dict[tuple, Dict[str, Any]] = {}
+    instance_edges: Dict[tuple, Dict[str, Any]] = {}
+    zones = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        zone = (((entry.get("relationDependencyKey") or {}).get("relationDependencyPartitionKey")
+                 or {}).get("zone")) or "NO_ZONE"
+        zones.append(zone)
+        for raw in entry.get("componentDependencyData") or entry.get("dependencyData") or []:
+            if isinstance(raw, dict):
+                _merge(component_edges, _edge(raw, zone))
+        for raw in _instance_edge_rows(entry.get("instanceDependencyData")):
+            _merge(instance_edges, _edge(raw, zone))
+    return {"status": "success", "group": group, "zones": zones, "component_edges": component_edges,
+            "instance_edges": instance_edges, "meta": data.get("metaData") or {}}
+
+
+async def _systems_with_component(api_client, systems: List[Dict[str, Any]],
+                                  name: str) -> List[Dict[str, Any]]:
+    """The systems whose dependency graph lists a component called `name` (case-insensitive),
+    as [{system, component}]. Systems whose graph cannot be read are skipped."""
+    wanted = name.strip().casefold()
+    gate = asyncio.Semaphore(_SCAN_CONCURRENCY)
+
+    async def check(system):
+        async with gate:
+            graph = await _load_graph(api_client, system)
+        if graph.get("status") != "success" or graph["group"] is None:
+            return None
+        edges = list(graph["component_edges"].values())
+        for c in _components(graph["meta"], edges):
+            if c["name"].casefold() == wanted:
+                return {"system": system, "component": c["name"]}
+        return None
+
+    found = await asyncio.gather(*(check(s) for s in systems))
+    return [f for f in found if f]
+
+
+async def _component_not_system(api_client, systems: List[Dict[str, Any]], system_name: str,
+                                not_found: Dict[str, Any]) -> Dict[str, Any]:
+    """Callers often pass a component (service) name as system_name. When the name is a
+    component of the user's systems, say which system holds it and how to call again."""
+    if len(systems) > _MAX_SCAN_SYSTEMS:
+        return {**not_found, "componentSearch": f"skipped: more than {_MAX_SCAN_SYSTEMS} systems"}
+    hits = await _systems_with_component(api_client, systems, system_name)
+    if not hits:
+        return {**not_found, "componentSearch": "no system has a component with this name"}
+    names = [h["system"]["name"] for h in hits]
+
+    def retry(hit):
+        s = hit["system"]
+        args = {"system_name": s["name"], "component": hit["component"]}
+        if sum(1 for x in systems if x["name"].casefold() == s["name"].casefold()) > 1:
+            args["system_owner"] = s["owner"]
+        return args
+
+    if len(hits) == 1:
+        h = hits[0]
+        return _contract_error(
+            "component_in_system",
+            f"'{system_name}' is not a system; it is a component of system '{h['system']['name']}'.",
+            "Call again with retry_with: it names that system and focuses on the component.",
+            retry_with=retry(h))
+    return _contract_error(
+        "component_in_system",
+        f"'{system_name}' is a component of {len(hits)} systems: {', '.join(names)}.",
+        "Ask the user which system they mean, then call again with that candidate's retry_with.",
+        ask_user=f"'{system_name}' appears in several systems ({', '.join(names)}). Which one do you mean?",
+        missing=["system_name"],
+        candidates=[{"system": h["system"]["name"], "owner": h["system"]["owner"],
+                     "component": h["component"], "retry_with": retry(h)} for h in hits])
+
+
 @mcp_server.tool()
 async def get_dependency_graph(
     system_name: Annotated[str, Field(
@@ -247,7 +343,9 @@ async def get_dependency_graph(
     of the user's systems (see get_system_list). The tool refuses rather than guesses: an
     empty, unknown or ambiguous system, an unknown component, or direction/hops without a
     component returns status "error" with error_code, next_step, ask_user (a question to relay
-    to the user) and the valid choices. Follow next_step; when only the user can resolve it, ask them ask_user
+    to the user) and the valid choices. A component name passed as system_name returns
+    error_code "component_in_system" with retry_with, the exact arguments to call again with
+    (or, when several systems have that component, candidates to ask the user about). Follow next_step; when only the user can resolve it, ask them ask_user
     and stop, do not pick a candidate yourself.
 
     An edge "source -> target" means source is upstream of target: target depends on source,
@@ -299,42 +397,24 @@ async def get_dependency_graph(
                 missing=["system_name"], available_systems=_choices(systems))
         resolved = _resolve_system(systems, system_name, system_owner)
         if resolved["status"] != "success":
+            if resolved["error_code"] == "system_not_found" and "did_you_mean" in resolved:
+                return await _component_not_system(api_client, systems, system_name, resolved)
             return resolved
         system = resolved["system"]
         system_out = {"name": system["name"], "id": system["id"], "owner": system["owner"]}
         ui_url = (f"{api_client.base_url}/ui/global/ServiceMap?s={system['id']}"
                   f"&e=All&customerName={system['owner']}&tab=dependency")
 
-        cand = await api_client.get_causal_group_candidates(system["owner"], system["id"])
-        if cand.get("status") == "error":
-            return cand
-        group = _pick_causal_group(cand.get("data") or {}, system)
+        graph = await _load_graph(api_client, system)
+        if graph.get("status") == "error":
+            return graph
+        group = graph["group"]
         if group is None:
             return {"status": "success", "graphAvailable": False, "system": system_out,
                     "message": f"System '{system['name']}' has no causal group, so it has no "
                                f"dependency graph yet.", "ui-url": ui_url}
-
-        rel = await api_client.get_dependency_relation(group["key"], group["owner"])
-        if rel.get("status") == "error":
-            return rel
-        data = rel.get("data") or {}
-        dep_map = data.get("dependencyMap") or []
-        entries = dep_map.values() if isinstance(dep_map, dict) else dep_map
-
-        component_edges: Dict[tuple, Dict[str, Any]] = {}
-        instance_edges: Dict[tuple, Dict[str, Any]] = {}
-        zones = []
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            zone = (((entry.get("relationDependencyKey") or {}).get("relationDependencyPartitionKey")
-                     or {}).get("zone")) or "NO_ZONE"
-            zones.append(zone)
-            for raw in entry.get("componentDependencyData") or entry.get("dependencyData") or []:
-                if isinstance(raw, dict):
-                    _merge(component_edges, _edge(raw, zone))
-            for raw in _instance_edge_rows(entry.get("instanceDependencyData")):
-                _merge(instance_edges, _edge(raw, zone))
+        component_edges, instance_edges = graph["component_edges"], graph["instance_edges"]
+        zones, data = graph["zones"], {"metaData": graph["meta"]}
 
         all_edges = sorted(component_edges.values(), key=lambda e: (e["source"].casefold(), e["target"].casefold()))
         components = _components(data.get("metaData") or {}, all_edges)
