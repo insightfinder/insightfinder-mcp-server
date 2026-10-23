@@ -46,8 +46,10 @@ CITIZEN = {"dependencyMap": [_zone("NO_ZONE", [_e("Checkout", "Web Portal", 3, 1
 
 
 class Backend:
-    def __init__(self, monkeypatch, candidates=None, relations=None, systems=SYSTEMS):
+    def __init__(self, monkeypatch, candidates=None, relations=None, systems=SYSTEMS, by_system=None):
         self.calls = []
+        # systemId -> causalgroup candidates response, for lookups across systems
+        self.by_system = by_system or {}
         self.candidates = candidates if candidates is not None else {
             "success": True, "configuredCausalKey": "ck1", "candidates": []}
         self.relations = relations if relations is not None else CITIZEN
@@ -64,7 +66,8 @@ class Backend:
         if path.endswith("/systemframework"):
             return httpx.Response(200, json=self.systems)
         if path.endswith("/causalgroup"):
-            return httpx.Response(200, json=self.candidates)
+            return httpx.Response(200, json=self.by_system.get(request.url.params.get("systemId"),
+                                                               self.candidates))
         if path.endswith("/dependencyrelation"):
             return httpx.Response(200, json=self.relations)
         raise AssertionError(path)
@@ -203,6 +206,42 @@ def test_unknown_system_is_refused_not_guessed(monkeypatch):
     assert r["status"] == "error" and r["error_code"] == "system_not_found"
     assert r["did_you_mean"] == ["Citizen Cane"] and r["ask_user"]
     assert len(r["available_systems"]) == 4
+    # It was looked up as a component in every system first.
+    assert r["componentSearch"] == "no system has a component with this name"
+    assert sum(c.url.path.endswith("/causalgroup") for c in b.calls) == 4
+
+
+NO_GROUP = {"configuredCausalKey": None, "candidates": []}
+
+
+def test_component_name_points_to_its_system(monkeypatch):
+    Backend(monkeypatch, by_system={"shop1": NO_GROUP, "tw1": NO_GROUP, "tw2": NO_GROUP})
+    r = run(system_name="web portal")
+    assert r["error_code"] == "component_in_system" and "ask_user" not in r
+    assert r["retry_with"] == {"system_name": "Citizen Cane", "component": "Web Portal"}
+    ok = run(**r["retry_with"], direction="upstream")
+    assert [(e["source"], e["target"]) for e in ok["edges"]] == [("Checkout", "Web Portal")]
+
+
+def test_component_in_twin_systems_needs_owner_in_retry(monkeypatch):
+    Backend(monkeypatch, by_system={"shop1": NO_GROUP, "cc1": NO_GROUP, "tw2": NO_GROUP})
+    r = run(system_name="Jenkins")
+    assert r["retry_with"] == {"system_name": "Twin", "component": "Jenkins", "system_owner": "bo"}
+
+
+def test_component_in_several_systems_asks_user(monkeypatch):
+    Backend(monkeypatch, by_system={"shop1": NO_GROUP, "tw2": NO_GROUP})
+    r = run(system_name="Checkout")
+    assert r["error_code"] == "component_in_system" and r["ask_user"]
+    assert {c["system"] for c in r["candidates"]} == {"Citizen Cane", "Twin"}
+    assert all(c["retry_with"]["component"] == "Checkout" for c in r["candidates"])
+
+
+def test_component_lookup_skipped_on_huge_accounts(monkeypatch):
+    many = {"ownSystemArr": [_sys(f"s{i}", f"id{i}") for i in range(51)], "shareSystemArr": []}
+    b = Backend(monkeypatch, systems=many)
+    r = run(system_name="Web Portal")
+    assert r["error_code"] == "system_not_found" and r["componentSearch"].startswith("skipped")
     assert not any(c.url.path.endswith("/causalgroup") for c in b.calls)
 
 
