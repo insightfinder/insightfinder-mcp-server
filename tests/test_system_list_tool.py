@@ -1,4 +1,4 @@
-"""Mocked tests for get_system_list (II-25333): the user's complete system list. No network."""
+"""Mocked tests for list_all_systems / list_all_systems_and_projects scopes (II-25333). No network."""
 import asyncio
 import json
 
@@ -17,7 +17,7 @@ def _sys(name, sid, owner="bo", projects=2, key_as_string=False, tz="UTC", aw=Fa
         "isAW": aw,
         "systemKey": json.dumps(key) if key_as_string else key,
         "timezone": tz,
-        "projectDetailsList": json.dumps([{"projectName": f"p{i}"} for i in range(projects)]),
+        "projectDetailsList": json.dumps([{"projectName": f"p{i}", "userName": owner} for i in range(projects)]),
     })
 
 
@@ -39,86 +39,111 @@ def _backend(monkeypatch, status=200, body=None):
     return calls
 
 
-def test_returns_owned_and_shared_sorted(monkeypatch):
-    _backend(monkeypatch, body={
-        "ownSystemArr": [_sys("Zeta", "z1"), _sys("alpha", "a1", key_as_string=True)],
-        "shareSystemArr": [_sys("Mid", "m1", owner="alice", projects=0)],
-    })
-    r = asyncio.run(sit.get_system_list())
-    assert r["status"] == "success"
-    assert [s["name"] for s in r["systems"]] == ["alpha", "Mid", "Zeta"]
-    assert (r["totalCount"], r["ownedCount"], r["sharedCount"], r["unparsedCount"]) == (3, 2, 1, 0)
-    assert r["systems"][1] == {"name": "Mid", "id": "m1", "owner": "alice", "type": "IT System",
-                               "timezone": "UTC", "projectCount": 0, "shared": True}
-    assert r["systems"][0]["projectCount"] == 2
+def run(tool=None, **kw):
+    return asyncio.run((tool or sit.list_all_systems)(**kw))
 
 
-def test_admin_gets_only_own_and_shared(monkeypatch):
-    # systemframework puts every user's systems in an admin's ownSystemArr, including ones
-    # also shared with the admin.
-    _backend(monkeypatch, body={
-        "ownSystemArr": [_sys("Mine", "m1"), _sys("Theirs", "t1", owner="carol"),
-                         _sys("Shop", "s1", owner="alice")],
-        "shareSystemArr": [_sys("Shop", "s1", owner="alice")],
-    })
-    r = asyncio.run(sit.get_system_list())
-    assert [(s["name"], s["shared"]) for s in r["systems"]] == [("Mine", False), ("Shop", True)]
-    assert (r["ownedCount"], r["sharedCount"]) == (1, 1)
+def names(r):
+    return [s["systemDisplayName"] for s in r["systems"]]
 
 
-def test_ai_models_are_included_and_typed(monkeypatch):
-    _backend(monkeypatch, body={
-        "ownSystemArr": [_sys("Infra", "i1"), _sys("llama-8b", "l1", aw=True)],
-        "shareSystemArr": [_sys("gpt-model", "g1", owner="alice", aw=True),
-                           _sys("gpt-model", "g1", owner="alice", aw=True)],
-    })
-    r = asyncio.run(sit.get_system_list())
-    assert [(s["name"], s["type"]) for s in r["systems"]] == [
-        ("gpt-model", "AI Model"), ("Infra", "IT System"), ("llama-8b", "AI Model")]
-    assert (r["totalCount"], r["itSystemCount"], r["aiModelCount"]) == (3, 1, 2)
+# An admin's systemframework: every user's systems in ownSystemArr, some also shared with them.
+ADMIN = {
+    "ownSystemArr": [_sys("Zeta", "z1"), _sys("alpha", "a1", key_as_string=True),
+                     _sys("Theirs", "t1", owner="carol"), _sys("Shop", "s1", owner="alice"),
+                     _sys("llama-8b", "l1", aw=True)],
+    "shareSystemArr": [_sys("Shop", "s1", owner="alice", projects=0)],
+}
+
+
+def test_default_scope_is_the_signed_in_users_own_and_shared(monkeypatch):
+    _backend(monkeypatch, body=ADMIN)
+    r = run()
+    assert r["scope"] == "mine" and r["currentUser"] == "bo"
+    assert names(r) == ["alpha", "llama-8b", "Shop", "Zeta"]  # Theirs (carol) left out, sorted
+    shop = next(s for s in r["systems"] if s["systemDisplayName"] == "Shop")
+    assert shop == {"systemName": "s1", "systemDisplayName": "Shop", "userName": "alice",
+                    "environmentName": "All", "type": "IT System", "timezone": "UTC",
+                    "projectCount": 0, "isShared": True, "ownedByCurrentUser": False}
+    assert [s["systemDisplayName"] for s in r["ownedSystems"]] == ["alpha", "llama-8b", "Zeta"]
+    assert [s["systemDisplayName"] for s in r["sharedSystems"]] == ["Shop"]
+    assert r["pagination"]["pageSize"] == 100 and r["pagination"]["hasMore"] is False
+    assert (r["summary"]["totalItSystems"], r["summary"]["totalAiModels"]) == (3, 1)
+
+
+def test_all_visible_scope_keeps_the_role_wide_view(monkeypatch):
+    _backend(monkeypatch, body=ADMIN)
+    r = run(scope="all_visible")
+    assert r["scope"] == "all_visible" and r["pagination"]["pageSize"] == 20
+    assert names(r) == ["Zeta", "alpha", "Theirs", "Shop", "llama-8b", "Shop"]  # as returned
+    assert {s["systemDisplayName"]: s["ownedByCurrentUser"] for s in r["systems"]}["Theirs"] is False
+
+
+def test_ai_models_are_typed(monkeypatch):
+    _backend(monkeypatch, body=ADMIN)
+    types = {s["systemDisplayName"]: s["type"] for s in run()["systems"]}
+    assert types["llama-8b"] == "AI Model" and types["Zeta"] == "IT System"
+
+
+def test_include_shared_false_lists_own_only(monkeypatch):
+    _backend(monkeypatch, body=ADMIN)
+    assert names(run(include_shared=False)) == ["alpha", "llama-8b", "Zeta"]
 
 
 def test_same_id_different_owner_kept(monkeypatch):
-    _backend(monkeypatch, body={"ownSystemArr": [_sys("A", "x")],
-                                "shareSystemArr": [_sys("A", "x", owner="u2")]})
-    assert asyncio.run(sit.get_system_list())["totalCount"] == 2
+    _backend(monkeypatch, body={"ownSystemArr": [_sys("A", "x")], "shareSystemArr": [_sys("A", "x", owner="u2")]})
+    assert run()["pagination"]["totalCount"] == 2
 
 
 def test_unparsed_entries_are_counted_not_hidden(monkeypatch):
-    _backend(monkeypatch, body={"ownSystemArr": [_sys("Good", "g1"), "{not json", json.dumps({"systemDisplayName": "NoKey"})]})
-    r = asyncio.run(sit.get_system_list())
-    assert r["totalCount"] == 1 and r["unparsedCount"] == 2
+    _backend(monkeypatch, body={"ownSystemArr": [_sys("Good", "g1"), "{not json",
+                                                 json.dumps({"systemDisplayName": "NoKey"})]})
+    r = run()
+    assert names(r) == ["Good"] and r["summary"]["unparsedEntries"] == 2
 
 
 def test_no_systems_is_empty_success(monkeypatch):
     # The backend answers 204 (ContentNotFoundException) when the user has no systems.
     _backend(monkeypatch, status=204)
-    r = asyncio.run(sit.get_system_list())
-    assert r == {"status": "success", "totalCount": 0, "ownedCount": 0, "sharedCount": 0,
-                 "itSystemCount": 0, "aiModelCount": 0, "unparsedCount": 0, "systems": []}
+    r = run()
+    assert r["status"] == "success" and r["systems"] == [] and r["pagination"]["totalCount"] == 0
 
 
-def test_large_account_not_truncated(monkeypatch):
-    _backend(monkeypatch, body={
-        "ownSystemArr": [_sys(f"sys-{i:04d}", f"id{i}") for i in range(600)],
-        "shareSystemArr": [_sys(f"shared-{i:03d}", f"sid{i}", owner="alice") for i in range(150)],
-    })
-    r = asyncio.run(sit.get_system_list())
-    assert r["totalCount"] == 750 and len(r["systems"]) == 750
+def test_large_own_list_pages_at_100_and_says_so(monkeypatch):
+    _backend(monkeypatch, body={"ownSystemArr": [_sys(f"sys-{i:04d}", f"id{i}") for i in range(150)],
+                                "shareSystemArr": []})
+    r = run()
+    assert len(r["systems"]) == 100 and r["pagination"]["hasMore"] is True and "page=2" in r["message"]
+    # mcp-service discards tool results over 100k chars of pretty-printed JSON.
+    assert len(json.dumps(r, indent=2)) < 100_000
+    assert len(run(page=2)["systems"]) == 50
+
+
+def test_invalid_scope_is_refused(monkeypatch):
+    _backend(monkeypatch, body=ADMIN)
+    r = run(scope="everyone")
+    assert r["status"] == "error" and r["error_code"] == "invalid_argument"
 
 
 def test_backend_error_is_reported(monkeypatch):
     _backend(monkeypatch, status=500)
-    r = asyncio.run(sit.get_system_list())
+    r = run()
     assert r["status"] == "error" and "500" in r["message"]
 
 
-def test_list_all_systems_marks_the_signed_in_users_systems(monkeypatch):
-    # An admin's list holds every user's systems; callers need to tell the user's own apart.
-    _backend(monkeypatch, body={"ownSystemArr": [_sys("Mine", "m1"), _sys("Theirs", "t1", owner="carol")],
-                                "shareSystemArr": [_sys("Shared", "s1", owner="alice")]})
-    for tool in (sit.list_all_systems, sit.list_all_systems_and_projects):
-        r = asyncio.run(tool())
-        assert r["currentUser"] == "bo"
-        assert {s["systemDisplayName"]: s["ownedByCurrentUser"] for s in r["systems"]} == {
-            "Mine": True, "Theirs": False, "Shared": False}
+def test_systems_and_projects_default_to_mine(monkeypatch):
+    _backend(monkeypatch, body=ADMIN)
+    r = run(sit.list_all_systems_and_projects)
+    assert r["scope"] == "mine" and names(r) == ["alpha", "llama-8b", "Shop", "Zeta"]
+    assert len(next(s for s in r["systems"] if s["systemDisplayName"] == "Zeta")["projects"]) == 2
+    everyone = run(sit.list_all_systems_and_projects, scope="all_visible")
+    assert "Theirs" in names(everyone) and everyone["summary"]["totalSystems"] == 6
+
+
+def test_load_user_systems_matches_mine(monkeypatch):
+    _backend(monkeypatch, body=ADMIN)
+    client = sit.get_current_api_client()
+    r = asyncio.run(sit.load_user_systems(client))
+    assert [(s["name"], s["type"], s["shared"]) for s in r["systems"]] == [
+        ("alpha", "IT System", False), ("llama-8b", "AI Model", False),
+        ("Shop", "IT System", True), ("Zeta", "IT System", False)]
