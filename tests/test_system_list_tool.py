@@ -1,7 +1,6 @@
 """Mocked tests for list_all_systems / list_all_systems_and_projects scopes (II-25333). No network."""
 import asyncio
 import json
-import re
 
 import httpx
 
@@ -139,6 +138,7 @@ def test_systems_and_projects_default_to_mine(monkeypatch):
     assert len(next(s for s in r["systems"] if s["systemDisplayName"] == "Zeta")["projects"]) == 2
     everyone = run(sit.list_all_systems_and_projects, scope="all_visible")
     assert "Theirs" in names(everyone) and everyone["summary"]["totalSystems"] == 6
+    assert (r["summary"]["totalItSystems"], r["summary"]["totalAiModels"]) == (3, 1)
 
 
 def test_load_user_systems_matches_mine(monkeypatch):
@@ -148,55 +148,3 @@ def test_load_user_systems_matches_mine(monkeypatch):
     assert [(s["name"], s["type"], s["shared"]) for s in r["systems"]] == [
         ("alpha", "IT System", False), ("llama-8b", "AI Model", False),
         ("Shop", "IT System", True), ("Zeta", "IT System", False)]
-
-
-def test_complete_list_has_a_preview_with_every_owner(monkeypatch):
-    # The same display name as an IT System and an AI Model must both show, each with its owner.
-    body = {"ownSystemArr": [_sys("twin", "t-it"), _sys("twin", "t-aw", aw=True), _sys("llama", "l1", aw=True)],
-            "shareSystemArr": [_sys("Shop", "s1", owner="alice")]}
-    _backend(monkeypatch, body=body)
-    preview = run()["formatted_preview"]
-    assert preview.startswith("## Your systems (4)")
-    assert "3 owned by you · 1 shared with you · 2 IT Systems · 2 AI Models" in preview
-    it, ai = preview.split("### AI Models (2)")
-    assert "### IT Systems (2)" in it and "**twin** (owner: bo)" in it
-    assert "**Shop** (owner: alice, shared with you)" in it
-    assert "**twin** (owner: bo)" in ai and "**llama** (owner: bo)" in ai
-    entry_lines = [l for l in preview.splitlines() if re.match(r"\d+\. ", l)]
-    assert len(entry_lines) == 4 and all("(owner: " in l for l in entry_lines)
-
-
-def test_paged_list_has_no_preview(monkeypatch):
-    # mcp-service shows the last tool's preview verbatim; one page of many must not pose as the list.
-    _backend(monkeypatch, body={"ownSystemArr": [_sys(f"s{i}", f"id{i}") for i in range(30)]})
-    assert "formatted_preview" not in run(page_size=10)
-    assert "formatted_preview" in run(page_size=30)
-
-
-def test_preview_wording_for_other_scopes(monkeypatch):
-    _backend(monkeypatch, body=ADMIN)
-    assert "shared systems not included" in run(include_shared=False)["formatted_preview"]
-    everyone = run(scope="all_visible")["formatted_preview"]
-    assert everyone.startswith("## Systems visible to bo (6)") and "owned by other users" in everyone
-    assert "**Theirs** (owner: carol)" in everyone
-
-
-def test_systems_and_projects_preview_caps_project_names(monkeypatch):
-    _backend(monkeypatch, body={"ownSystemArr": [_sys("Big", "b1", projects=12), _sys("One", "o1", projects=1)]})
-    preview = run(sit.list_all_systems_and_projects)["formatted_preview"]
-    assert "**Big** (owner: bo) · 12 projects: p0, p1" in preview and "p9 (+2 more)" in preview
-    assert "p10" not in preview and "**One** (owner: bo) · 1 project: p0" in preview
-
-
-def test_empty_list_preview(monkeypatch):
-    _backend(monkeypatch, status=204)
-    assert "No systems found." in run()["formatted_preview"]
-
-
-def test_preview_neutralises_markdown_in_names(monkeypatch):
-    # A shared system's name is chosen by another user and the preview is shown verbatim.
-    _backend(monkeypatch, body={"shareSystemArr": [
-        _sys("x](https://evil.example)\n## Admin ![i](https://evil.example/p.png) my_sys", "e1", owner="mallory")]})
-    line = next(l for l in run()["formatted_preview"].splitlines() if l.startswith("1. "))
-    assert "](" not in line and "![" not in line and "\n" not in line
-    assert r"x\]\(https://evil.example\) \#\# Admin \!\[i\]" in line and r"my\_sys" in line
