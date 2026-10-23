@@ -883,7 +883,8 @@ class InsightFinderAPIClient:
                                 "tzOffset": "-18000000"},
                         headers={"X-User-Name": self.user_name, "X-API-Key": self.license_key})
                     response.raise_for_status()
-                    data = response.json()
+                    # 204 (ContentNotFoundException) means the user has no systems at all.
+                    data = {} if response.status_code == 204 else response.json()
                 logger.info(f"systemframework needDetail={need_detail} fetched in "
                             f"{_time.monotonic() - t0:.1f}s")
                 return data
@@ -971,6 +972,49 @@ class InsightFinderAPIClient:
         except Exception as e:
             logger.error(f"Unexpected error fetching system framework: {str(e)}")
             return {"status": "error", "message": f"Internal error: {str(e)}"}
+
+    async def _get_external(self, path: str, params: Dict[str, Any], what: str) -> Dict[str, Any]:
+        """GET an /api/external/v1 endpoint (X-API-Key auth). Returns {"status": "success",
+        "data": <json>} or {"status": "error", "message", "http_status"?}."""
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.get(
+                    f"{self.base_url}{path}", params=params,
+                    headers={"X-User-Name": self.user_name, "X-API-Key": self.license_key})
+                response.raise_for_status()
+                return {"status": "success",
+                        "data": {} if response.status_code == 204 else response.json()}
+        except httpx.HTTPStatusError as e:
+            logger.error(f"API error {e.response.status_code} when fetching {what}")
+            return {"status": "error", "http_status": e.response.status_code,
+                    "message": f"API request failed with status {e.response.status_code}"}
+        except httpx.RequestError as e:
+            logger.error(f"Network error when fetching {what}: {str(e)}")
+            return {"status": "error", "message": "Network error"}
+        except Exception as e:
+            logger.error(f"Unexpected error fetching {what}: {str(e)}")
+            return {"status": "error", "message": f"Internal error: {str(e)}"}
+
+    async def get_causal_group_candidates(self, owner: str, system_id: str) -> Dict[str, Any]:
+        """Causal groups the dependency graph of one system can come from, as the UI's Service
+        Map lists them: /api/external/v1/causalgroup?operation=candidates. data carries
+        configuredCausalKey (the system's analysis group, may be null) and candidates
+        [{causalKey, userName, causalName, correlationGroup, ...}]."""
+        return await self._get_external(
+            "/api/external/v1/causalgroup",
+            {"operation": "candidates", "customerName": owner, "systemId": system_id},
+            "causal group candidates")
+
+    async def get_dependency_relation(self, causal_key: str, owner: str,
+                                      zone: str = "ALL_ZONE") -> Dict[str, Any]:
+        """Dependency edges of one causal group, as the UI's Dependency Graph tab reads them:
+        /api/external/v1/dependencyrelation with hierarchical=true. data carries dependencyMap
+        (one entry per zone: componentDependencyData, instanceDependencyData) and metaData."""
+        return await self._get_external(
+            "/api/external/v1/dependencyrelation",
+            {"causalKey": causal_key, "customerName": owner, "causalZoneName": zone,
+             "hierarchical": "true"},
+            "dependency relations")
 
     async def fetch_instance_display_names(
         self,
