@@ -136,6 +136,7 @@ def test_systems_and_projects_default_to_mine(monkeypatch):
     r = run(sit.list_all_systems_and_projects)
     assert r["scope"] == "mine" and names(r) == ["alpha", "llama-8b", "Shop", "Zeta"]
     assert len(next(s for s in r["systems"] if s["systemDisplayName"] == "Zeta")["projects"]) == 2
+    assert (r["summary"]["totalOwnedSystems"], r["summary"]["totalSharedSystems"]) == (3, 1)
     everyone = run(sit.list_all_systems_and_projects, scope="all_visible")
     assert "Theirs" in names(everyone) and everyone["summary"]["totalSystems"] == 6
     assert (r["summary"]["totalItSystems"], r["summary"]["totalAiModels"]) == (3, 1)
