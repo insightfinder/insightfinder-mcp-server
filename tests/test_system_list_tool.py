@@ -138,6 +138,7 @@ def test_systems_and_projects_default_to_mine(monkeypatch):
     assert len(next(s for s in r["systems"] if s["systemDisplayName"] == "Zeta")["projects"]) == 2
     everyone = run(sit.list_all_systems_and_projects, scope="all_visible")
     assert "Theirs" in names(everyone) and everyone["summary"]["totalSystems"] == 6
+    assert (r["summary"]["totalItSystems"], r["summary"]["totalAiModels"]) == (3, 1)
 
 
 def test_load_user_systems_matches_mine(monkeypatch):
