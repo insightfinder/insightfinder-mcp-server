@@ -288,6 +288,9 @@ async def list_all_systems(
     (incidents, anomalies, metrics, logs, dependency graph) work on IT Systems only; questions
     about an AI Model belong to AI WatchTower. ownedByCurrentUser marks the systems the user
     owns (the others in scope="mine" are shared with them); currentUser is their name.
+    When you list systems for the user, show each one's owner and type. Names are not unique:
+    an IT System and an AI Model (or two owners' systems) can share a name, so list every entry
+    separately. For a count, use summary rather than listing.
     **When to use this tool:**
     - "What systems do I have?", "list my systems", "which systems do I own": the default scope;
       answer "own" questions from ownedByCurrentUser
@@ -443,6 +446,9 @@ async def list_all_systems_and_projects(
     (incidents, anomalies, metrics, logs, dependency graph) work on IT Systems only; questions
     about an AI Model belong to AI WatchTower. ownedByCurrentUser marks the systems the user
     owns (the others in scope="mine" are shared with them); currentUser is their name.
+    When you list systems for the user, show each one's owner and type. Names are not unique:
+    an IT System and an AI Model (or two owners' systems) can share a name, so list every entry
+    separately. For a count, use summary rather than listing.
     **Pagination**: Default page size is 20 systems per page. Each system includes ALL its
     projects. If pagination.hasMore is true, the list continues on the next page.
 
@@ -463,7 +469,7 @@ async def list_all_systems_and_projects(
         - systems: systems as in list_all_systems, each with projects
           [{projectName, projectKey, userName, dataType, projectClassType}] (paginated)
         - pagination: Pagination information
-        - summary: Overall statistics (total systems, projects, owners)
+        - summary: Overall statistics (total systems, projects, IT Systems, AI Models, owners)
     """
     try:
         api_client = get_current_api_client()
@@ -563,6 +569,8 @@ async def list_all_systems_and_projects(
             "summary": {
                 "totalSystems": total_count,
                 "totalProjects": total_projects,
+                "totalItSystems": sum(1 for x in all_systems if x['type'] == IT_SYSTEM),
+                "totalAiModels": sum(1 for x in all_systems if x['type'] == AI_MODEL),
                 "uniqueOwners": len(unique_owners),
                 "ownersList": sorted(list(unique_owners))
             }
