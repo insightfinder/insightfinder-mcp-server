@@ -168,11 +168,17 @@ async def list_all_systems(
     page_size: int = 20
 ) -> Dict[str, Any]:
     """
-    List all available InsightFinder systems with their basic information (paginated).
-    
-    This tool retrieves a list of all systems accessible to the current user,
-    including both owned systems and optionally shared systems. Each system
-    entry includes the system name, display name, owner, and project count.
+    List every system the signed-in user's role can see, with basic information (paginated).
+
+    **Scope depends on the role, not only on ownership:** an admin sees every user's systems in
+    the environment, a company admin every system of the company, any other user their own
+    systems plus those shared with them. AI WatchTower ("AI Model") systems are included. Check
+    each entry's userName (owner) before calling a system the user's own.
+
+    For the signed-in user's own systems (owned plus shared with them, IT systems only, complete
+    in one call) use get_system_list instead.
+
+    Each system entry includes the system name, display name, owner, and project count.
     
     **Pagination**: Results are returned in pages to avoid overwhelming responses.
     Default page size is 20 systems. Use the page parameter to navigate through results.
@@ -180,6 +186,8 @@ async def list_all_systems(
     **When to use this tool:**
     - Not for "what systems do I have?" or "list my systems": use get_system_list, which
       returns the user's complete list in one call
+    - For systems beyond the user's own: another user's systems, or every system in the
+      environment or company (admins)
     - To discover available systems before querying specific data
     - To find the correct system name for other tools
     - When user mentions a system name that might be incorrect
@@ -192,7 +200,8 @@ async def list_all_systems(
     Returns:
         A dictionary containing:
         - status: "success" or "error"
-        - ownedSystems: List of systems owned by the user (paginated)
+        - ownedSystems: systems not shared with the user (paginated); for an admin this holds
+          every user's systems, so check the owner
         - sharedSystems: List of systems shared with the user (paginated, if include_shared=True)
         - pagination: Pagination information (currentPage, pageSize, totalPages, totalCount, hasMore)
         
@@ -388,6 +397,10 @@ async def get_system_list() -> Dict[str, Any]:
     paginated, never truncated). It takes no arguments and cannot list another user's systems;
     for those use list_all_systems or find_system_by_name.
 
+    How it differs from list_all_systems: that tool shows everything the user's role can see
+    (for an admin, every user's systems, AI Models included) in pages of 20; this one shows
+    only the user's own and shared IT systems, all at once.
+
     **When to use this tool:**
     - When the user asks which systems they have, how many, or to list their systems
     - To check a system name against everything the user has
@@ -446,10 +459,12 @@ async def list_all_systems_and_projects(
 ) -> Dict[str, Any]:
     """
     Get comprehensive information about all systems and their projects (paginated).
-    
-    This tool retrieves detailed information about all accessible systems,
-    including all projects within each system. This provides a complete
-    view of the InsightFinder hierarchy: systems -> projects.
+
+    This tool retrieves detailed information about all systems the signed-in user's role can
+    see, including all projects within each system: systems -> projects. Same scope as
+    list_all_systems: an admin sees every user's systems (AI WatchTower systems included), so
+    check each system's owner. To list the user's own systems, use get_system_list; use this
+    tool when project details are needed.
     
     **Pagination**: Results are returned in pages to avoid overwhelming responses.
     Default page size is 20 systems per page. Each system includes ALL its projects.
