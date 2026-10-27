@@ -2,8 +2,9 @@
 System information tools for the InsightFinder MCP server.
 
 This module provides tools for querying and exploring InsightFinder systems and projects:
-- list_all_systems: List all available systems with their owners
-- list_all_systems_and_projects: Get detailed information about all systems and their projects
+- list_all_systems: The signed-in user's systems (or, with scope="all_visible", every system
+  their role can see), with owner and type
+- list_all_systems_and_projects: The same systems with their projects
 - get_projects_for_system: Get all projects within a specific system
 - find_system_by_name: Fuzzy search for system names (handles typos and case differences)
 
@@ -14,10 +15,11 @@ import json
 import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
-from typing import Dict, Any, List, Optional, Union
+from typing import Annotated, Dict, Any, List, Literal, Optional, Union
 from difflib import SequenceMatcher
 
 import httpx
+from pydantic import Field
 
 from ..server import mcp_server
 from ...api_client.client_factory import get_current_api_client
@@ -157,52 +159,163 @@ def find_best_match(target_name: str, available_systems: List[Dict[str, Any]], t
 
 
 # ============================================================================
+# SYSTEM SCOPE
+# ============================================================================
+
+IT_SYSTEM, AI_MODEL = "IT System", "AI Model"
+SCOPE_MINE, SCOPE_ALL_VISIBLE = "mine", "all_visible"
+_SCOPES = (SCOPE_MINE, SCOPE_ALL_VISIBLE)
+
+
+def _system_key(system_data: Dict[str, Any]) -> Dict[str, Any]:
+    """systemKey of a systemframework entry; it arrives as an object or as a JSON string."""
+    raw = system_data.get('systemKey') or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+async def _scoped_entries(api_client, scope: str, include_shared: bool = True) -> Dict[str, Any]:
+    """Parsed systemframework entries for a scope: {"status": "success", "entries": [(system_data,
+    key, shared)], "unparsedCount"} or the framework error.
+
+    systemframework gives an admin every user's systems in ownSystemArr (a company admin those
+    of the company). SCOPE_MINE keeps only the signed-in user's own plus those shared with them,
+    once each, sorted by name; SCOPE_ALL_VISIBLE keeps everything the role sees, as returned."""
+    framework_data = await api_client.get_system_framework()
+    if framework_data.get("status") == "error":
+        return framework_data
+    arrays = (('ownSystemArr', False), ('shareSystemArr', True)) if include_shared \
+        else (('ownSystemArr', False),)
+    entries, seen, unparsed = [], set(), 0
+    for arr_name, shared in arrays:
+        for system_json in framework_data.get(arr_name) or []:
+            system_data = parse_system_json(
+                system_json if isinstance(system_json, str) else json.dumps(system_json))
+            key = _system_key(system_data) if system_data else {}
+            if not key.get('systemName'):
+                unparsed += 1
+                continue
+            if scope == SCOPE_MINE:
+                ident = (key.get('userName'), key['systemName'])
+                if (not shared and key.get('userName') != api_client.user_name) or ident in seen:
+                    continue
+                seen.add(ident)
+            entries.append((system_data, key, shared))
+    if unparsed:
+        logger.warning(f"{unparsed} systemframework entries could not be parsed")
+    if scope == SCOPE_MINE:
+        entries.sort(key=lambda e: ((e[0].get('systemDisplayName') or e[1]['systemName']).lower(),
+                                    e[1].get('userName') or ''))
+    return {"status": "success", "entries": entries, "unparsedCount": unparsed}
+
+
+def _system_entry(system_data: Dict[str, Any], key: Dict[str, Any], shared: bool,
+                  user_name: str) -> Dict[str, Any]:
+    """One system as list_all_systems returns it."""
+    projects = system_data.get('projectDetailsList')
+    owner = key.get('userName', 'Unknown')
+    return {
+        'systemName': key['systemName'],
+        'systemDisplayName': system_data.get('systemDisplayName') or key['systemName'],
+        'userName': owner,
+        'environmentName': key.get('environmentName', 'All'),
+        'type': AI_MODEL if system_data.get('isAW') else IT_SYSTEM,
+        'timezone': system_data.get('timezone', 'US/Eastern'),
+        'projectCount': len(projects) if isinstance(projects, list) else 0,
+        'isShared': shared,
+        'ownedByCurrentUser': owner == user_name,
+    }
+
+
+async def load_user_systems(api_client) -> Dict[str, Any]:
+    """The signed-in user's systems (SCOPE_MINE), compact: {"status": "success", "systems"
+    [{name, id, owner, type, timezone, projectCount, shared}], "unparsedCount"} or the error."""
+    loaded = await _scoped_entries(api_client, SCOPE_MINE)
+    if loaded.get("status") == "error":
+        return loaded
+    systems = []
+    for system_data, key, shared in loaded["entries"]:
+        e = _system_entry(system_data, key, shared, api_client.user_name)
+        systems.append({'name': e['systemDisplayName'], 'id': e['systemName'], 'owner': e['userName'],
+                        'type': e['type'], 'timezone': e['timezone'],
+                        'projectCount': e['projectCount'], 'shared': shared})
+    return {"status": "success", "systems": systems, "unparsedCount": loaded["unparsedCount"]}
+
+
+def _scope_error(scope: str) -> Optional[Dict[str, Any]]:
+    if scope in _SCOPES:
+        return None
+    return {"status": "error", "error_code": "invalid_argument",
+            "message": f"scope must be one of {list(_SCOPES)}.",
+            "next_step": f'Use scope="{SCOPE_MINE}" for the user\'s own systems or '
+                         f'scope="{SCOPE_ALL_VISIBLE}" for every system their role can see.'}
+
+
+
+
+# ============================================================================
 # SYSTEM INFORMATION TOOLS
 # ============================================================================
 
 @mcp_server.tool()
 async def list_all_systems(
+    scope: Annotated[Literal["mine", "all_visible"], Field(
+        description='"mine" (default): the signed-in user\'s own systems plus those shared with '
+                    'them. "all_visible": every system the user\'s role can see (an admin: '
+                    'every user\'s systems).')] = SCOPE_MINE,
     include_shared: bool = True,
     page: int = 1,
-    page_size: int = 20
+    page_size: Annotated[Optional[int], Field(
+        description='Systems per page, 1-100. Default: 100 for scope="mine" (normally the whole '
+                    'list in one page), 20 for scope="all_visible".')] = None,
 ) -> Dict[str, Any]:
     """
-    List all available InsightFinder systems with their basic information (paginated).
-    
-    This tool retrieves a list of all systems accessible to the current user,
-    including both owned systems and optionally shared systems. Each system
-    entry includes the system name, display name, owner, and project count.
-    
-    **Pagination**: Results are returned in pages to avoid overwhelming responses.
-    Default page size is 20 systems. Use the page parameter to navigate through results.
-    
+    List InsightFinder systems with their owner and type: by default the signed-in user's own
+    systems, normally complete in one page.
+
+    **Scope:** by default (scope="mine") only the signed-in user's systems: the person you are
+    chatting with, the systems they own plus those other users shared with them. Admin roles do
+    not widen it. scope="all_visible" lists every system the user's role can see instead: for an
+    admin every user's systems in the environment, for a company admin every system of the
+    company. Use it only when the user asks about other users' systems or the whole environment.
+
+    Each system has a type, as in the UI's System Type filter: "IT System" (infrastructure and
+    applications) or "AI Model" (an AI/ML or LLM model monitored by AI WatchTower). IT tools
+    (incidents, anomalies, metrics, logs, dependency graph) work on IT Systems only; questions
+    about an AI Model belong to AI WatchTower. ownedByCurrentUser marks the systems the user
+    owns (the others in scope="mine" are shared with them); currentUser is their name.
+    When you list systems for the user, show each one's owner and type. Names are not unique:
+    an IT System and an AI Model (or two owners' systems) can share a name, so list every entry
+    separately. For a count, use summary rather than listing.
     **When to use this tool:**
-    - When user asks "what systems do I have?"
-    - To discover available systems before querying specific data
-    - To find the correct system name for other tools
-    - When user mentions a system name that might be incorrect
-    
+    - "What systems do I have?", "list my systems", "which systems do I own": the default scope;
+      answer "own" questions from ownedByCurrentUser
+    - Other users' systems or every system in the environment/company: scope="all_visible"
+    - To discover systems or find the correct system name for other tools; for one possibly
+      misspelled name, find_system_by_name is cheaper
+
+    If pagination.hasMore is true, the list continues on the next page: say so, or fetch it,
+    before calling an answer complete.
+
     Args:
+        scope: "mine" (default) or "all_visible", see above
         include_shared: Whether to include systems shared with the user (default: True)
         page: Page number to retrieve (1-indexed, default: 1)
-        page_size: Number of systems per page (default: 20, max: 100)
-        
+        page_size: Systems per page, 1-100 (default 100 for "mine", 20 for "all_visible")
+
     Returns:
         A dictionary containing:
         - status: "success" or "error"
-        - ownedSystems: List of systems owned by the user (paginated)
-        - sharedSystems: List of systems shared with the user (paginated, if include_shared=True)
-        - pagination: Pagination information (currentPage, pageSize, totalPages, totalCount, hasMore)
-        
-    Example:
-        # List first page of systems
-        result = await list_all_systems()
-        
-        # List second page
-        result = await list_all_systems(page=2)
-        
-        # List only owned systems with custom page size
-        result = await list_all_systems(include_shared=False, page_size=10)
+        - scope, currentUser (the signed-in user's name)
+        - systems: [{systemName (id), systemDisplayName, userName (owner), environmentName, type,
+          timezone, projectCount, isShared, ownedByCurrentUser}] for this page
+        - ownedSystems / sharedSystems: the same page split by isShared
+        - pagination: currentPage, pageSize, totalPages, totalCount, hasMore, ...
+        - summary: totals of owned, shared, IT Systems and AI Models over all pages
     """
     try:
         api_client = get_current_api_client()
@@ -211,57 +324,42 @@ async def list_all_systems(
                 "status": "error",
                 "message": "No API client configured. Please configure your InsightFinder credentials."
             }
-        
+        bad_scope = _scope_error(scope)
+        if bad_scope:
+            return bad_scope
+        if page_size is None:
+            page_size = 100 if scope == SCOPE_MINE else 20
+
         # Validate pagination parameters
         if page < 1:
             return {
                 "status": "error",
                 "message": "Page number must be >= 1"
             }
-        
+
         if page_size < 1 or page_size > 100:
             return {
                 "status": "error",
                 "message": "Page size must be between 1 and 100"
             }
-        
-        logger.info(f"Fetching system framework data (page={page}, page_size={page_size})")
-        
-        # Fetch system framework data
-        framework_data = await api_client.get_system_framework()
-        
-        if framework_data.get("status") == "error":
-            return framework_data
-        
-        owned_systems = []
-        shared_systems = []
-        
-        # Process owned systems
-        for system_json in framework_data.get('ownSystemArr', []):
-            system_data = parse_system_json(system_json)
-            if system_data:
-                system_info = extract_system_info(system_data)
-                system_info['isShared'] = False
-                owned_systems.append(system_info)
-        
-        # Process shared systems if requested
-        if include_shared:
-            for system_json in framework_data.get('shareSystemArr', []):
-                system_data = parse_system_json(system_json)
-                if system_data:
-                    system_info = extract_system_info(system_data)
-                    system_info['isShared'] = True
-                    shared_systems.append(system_info)
-        
-        # Combine and paginate
-        all_systems = owned_systems + (shared_systems if include_shared else [])
+
+        logger.info(f"Fetching system framework data (scope={scope}, page={page}, page_size={page_size})")
+
+        loaded = await _scoped_entries(api_client, scope, include_shared)
+        if loaded.get("status") == "error":
+            return loaded
+        all_systems = [_system_entry(d, k, shared, api_client.user_name)
+                       for d, k, shared in loaded["entries"]]
+        owned_systems = [x for x in all_systems if not x['isShared']]
+        shared_systems = [x for x in all_systems if x['isShared']]
+
         total_count = len(all_systems)
         total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 1
-        
+
         # Calculate pagination boundaries
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
-        
+
         # Check if page is out of range
         if start_idx >= total_count and total_count > 0:
             return {
@@ -272,22 +370,25 @@ async def list_all_systems(
                     "totalCount": total_count
                 }
             }
-        
+
         # Get paginated slice
         paginated_systems = all_systems[start_idx:end_idx]
-        
+
         # Separate back into owned and shared for response
         paginated_owned = [s for s in paginated_systems if not s['isShared']]
         paginated_shared = [s for s in paginated_systems if s['isShared']]
-        
+
         # Build pagination message
-        pagination_msg = f"Showing page {page} of {total_pages} ({len(paginated_systems)} systems on this page, {total_count} total systems)"
+        whose = "the user's own and shared" if scope == SCOPE_MINE else "all visible"
+        pagination_msg = f"Showing page {page} of {total_pages} ({len(paginated_systems)} systems on this page, {total_count} {whose} systems in total)"
         if page < total_pages:
             pagination_msg += f". There are {total_pages - page} more page(s) available. Use page={page + 1} to see the next page."
-        
-        result = {
+
+        return {
             "status": "success",
             "message": pagination_msg,
+            "scope": scope,
+            "currentUser": api_client.user_name,
             "systems": paginated_systems,
             "ownedSystems": paginated_owned,
             "sharedSystems": paginated_shared if include_shared else [],
@@ -305,12 +406,13 @@ async def list_all_systems(
             "summary": {
                 "totalOwnedSystems": len(owned_systems),
                 "totalSharedSystems": len(shared_systems) if include_shared else 0,
+                "totalItSystems": sum(1 for x in all_systems if x['type'] == IT_SYSTEM),
+                "totalAiModels": sum(1 for x in all_systems if x['type'] == AI_MODEL),
+                "unparsedEntries": loaded["unparsedCount"],
                 "displayMessage": f"Total: {len(owned_systems)} owned systems, {len(shared_systems) if include_shared else 0} shared systems"
             }
         }
-        
-        return result
-        
+
     except Exception as e:
         logger.error(f"Error listing systems: {str(e)}", exc_info=True)
         return {
@@ -321,63 +423,54 @@ async def list_all_systems(
 
 @mcp_server.tool()
 async def list_all_systems_and_projects(
+    scope: Annotated[Literal["mine", "all_visible"], Field(
+        description='"mine" (default): the signed-in user\'s own systems plus those shared with '
+                    'them. "all_visible": every system the user\'s role can see (an admin: '
+                    'every user\'s systems).')] = SCOPE_MINE,
     page: int = 1,
     page_size: int = 20
 ) -> Dict[str, Any]:
     """
-    Get comprehensive information about all systems and their projects (paginated).
-    
-    This tool retrieves detailed information about all accessible systems,
-    including all projects within each system. This provides a complete
-    view of the InsightFinder hierarchy: systems -> projects.
-    
-    **Pagination**: Results are returned in pages to avoid overwhelming responses.
-    Default page size is 20 systems per page. Each system includes ALL its projects.
-    
+    Systems with all their projects (paginated): by default the signed-in user's own systems.
+    Use it when project details are needed; to list or count systems, list_all_systems is
+    smaller and normally complete in one page.
+
+    **Scope:** by default (scope="mine") only the signed-in user's systems: the person you are
+    chatting with, the systems they own plus those other users shared with them. Admin roles do
+    not widen it. scope="all_visible" lists every system the user's role can see instead: for an
+    admin every user's systems in the environment, for a company admin every system of the
+    company. Use it only when the user asks about other users' systems or the whole environment.
+
+    Each system has a type, as in the UI's System Type filter: "IT System" (infrastructure and
+    applications) or "AI Model" (an AI/ML or LLM model monitored by AI WatchTower). IT tools
+    (incidents, anomalies, metrics, logs, dependency graph) work on IT Systems only; questions
+    about an AI Model belong to AI WatchTower. ownedByCurrentUser marks the systems the user
+    owns (the others in scope="mine" are shared with them); currentUser is their name.
+    When you list systems for the user, show each one's owner and type. Names are not unique:
+    an IT System and an AI Model (or two owners' systems) can share a name, so list every entry
+    separately. For a count, use summary rather than listing.
+    **Pagination**: Default page size is 20 systems per page. Each system includes ALL its
+    projects. If pagination.hasMore is true, the list continues on the next page.
+
     **When to use this tool:**
     - When user asks for a complete overview of their InsightFinder setup
     - To understand the relationship between systems and projects
     - To see which projects belong to which systems
-    - When user needs detailed project information across all systems
-    
+
     Args:
+        scope: "mine" (default) or "all_visible", see above
         page: Page number to retrieve (1-indexed, default: 1)
         page_size: Number of systems per page (default: 20, max: 100)
-    
+
     Returns:
         A dictionary containing:
         - status: "success" or "error"
-        - systems: List of systems with their projects (paginated)
+        - scope, currentUser (the signed-in user's name)
+        - systems: systems as in list_all_systems, each with projects
+          [{projectName, projectKey, userName, dataType, projectClassType}] (paginated)
         - pagination: Pagination information
-        - summary: Overall statistics (total systems, projects, owners)
-        
-    Example:
-        # Get first page of systems and projects
-        result = await list_all_systems_and_projects()
-        
-        # Get second page
-        result = await list_all_systems_and_projects(page=2)
-        
-        # Response includes full hierarchy (paginated):
-        {
-            "status": "success",
-            "systems": [
-                {
-                    "systemDisplayName": "Production System",
-                    "systemName": "abc123...",
-                    "userName": "admin",
-                    "projects": [
-                        {
-                            "projectName": "web-metrics",
-                            "dataType": "Metric",
-                            "userName": "admin"
-                        },
-                        ...
-                    ]
-                },
-                ...
-            ]
-        }
+        - summary: Overall statistics (total systems, projects, owned, shared, IT Systems,
+          AI Models, owners)
     """
     try:
         api_client = get_current_api_client()
@@ -386,78 +479,53 @@ async def list_all_systems_and_projects(
                 "status": "error",
                 "message": "No API client configured. Please configure your InsightFinder credentials."
             }
-        
+        bad_scope = _scope_error(scope)
+        if bad_scope:
+            return bad_scope
+
         # Validate pagination parameters
         if page < 1:
             return {
                 "status": "error",
                 "message": "Page number must be >= 1"
             }
-        
+
         if page_size < 1 or page_size > 100:
             return {
                 "status": "error",
                 "message": "Page size must be between 1 and 100"
             }
-        
-        logger.info(f"Fetching complete system and project hierarchy (page={page}, page_size={page_size})")
-        
-        # Fetch system framework data
-        framework_data = await api_client.get_system_framework()
-        
-        if framework_data.get("status") == "error":
-            return framework_data
-        
+
+        logger.info(f"Fetching complete system and project hierarchy (scope={scope}, page={page}, page_size={page_size})")
+
+        loaded = await _scoped_entries(api_client, scope)
+        if loaded.get("status") == "error":
+            return loaded
+
         all_systems = []
         total_projects = 0
         unique_owners = set()
-        
-        # Process owned systems
-        for system_json in framework_data.get('ownSystemArr', []):
-            system_data = parse_system_json(system_json)
-            if system_data:
-                system_info = extract_system_info(system_data)
-                system_info['isShared'] = False
-                
-                # Extract projects
-                projects = []
-                for project_data in system_data.get('projectDetailsList', []):
+        for system_data, key, shared in loaded["entries"]:
+            system_info = _system_entry(system_data, key, shared, api_client.user_name)
+            projects = []
+            for project_data in system_data.get('projectDetailsList') or []:
+                if isinstance(project_data, dict):
                     project_info = extract_project_info(project_data)
                     projects.append(project_info)
                     unique_owners.add(project_info['userName'])
-                
-                system_info['projects'] = projects
-                all_systems.append(system_info)
-                total_projects += len(projects)
-                unique_owners.add(system_info['userName'])
-        
-        # Process shared systems
-        for system_json in framework_data.get('shareSystemArr', []):
-            system_data = parse_system_json(system_json)
-            if system_data:
-                system_info = extract_system_info(system_data)
-                system_info['isShared'] = True
-                
-                # Extract projects
-                projects = []
-                for project_data in system_data.get('projectDetailsList', []):
-                    project_info = extract_project_info(project_data)
-                    projects.append(project_info)
-                    unique_owners.add(project_info['userName'])
-                
-                system_info['projects'] = projects
-                all_systems.append(system_info)
-                total_projects += len(projects)
-                unique_owners.add(system_info['userName'])
-        
+            system_info['projects'] = projects
+            all_systems.append(system_info)
+            total_projects += len(projects)
+            unique_owners.add(system_info['userName'])
+
         # Apply pagination
         total_count = len(all_systems)
         total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 1
-        
+
         # Calculate pagination boundaries
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
-        
+
         # Check if page is out of range
         if start_idx >= total_count and total_count > 0:
             return {
@@ -468,21 +536,24 @@ async def list_all_systems_and_projects(
                     "totalCount": total_count
                 }
             }
-        
+
         # Get paginated slice
         paginated_systems = all_systems[start_idx:end_idx]
-        
+
         # Calculate projects on current page
         projects_on_page = sum(len(s['projects']) for s in paginated_systems)
-        
+
         # Build pagination message
-        pagination_msg = f"Showing page {page} of {total_pages} ({len(paginated_systems)} systems with {projects_on_page} projects on this page, {total_count} total systems with {total_projects} total projects)"
+        whose = "the user's own and shared" if scope == SCOPE_MINE else "all visible"
+        pagination_msg = f"Showing page {page} of {total_pages} ({len(paginated_systems)} systems with {projects_on_page} projects on this page, {total_count} {whose} systems with {total_projects} projects in total)"
         if page < total_pages:
             pagination_msg += f". There are {total_pages - page} more page(s) available. Use page={page + 1} to see the next page."
-        
+
         return {
             "status": "success",
             "message": pagination_msg,
+            "scope": scope,
+            "currentUser": api_client.user_name,
             "systems": paginated_systems,
             "pagination": {
                 "currentPage": page,
@@ -499,11 +570,15 @@ async def list_all_systems_and_projects(
             "summary": {
                 "totalSystems": total_count,
                 "totalProjects": total_projects,
+                "totalOwnedSystems": sum(1 for x in all_systems if not x['isShared']),
+                "totalSharedSystems": sum(1 for x in all_systems if x['isShared']),
+                "totalItSystems": sum(1 for x in all_systems if x['type'] == IT_SYSTEM),
+                "totalAiModels": sum(1 for x in all_systems if x['type'] == AI_MODEL),
                 "uniqueOwners": len(unique_owners),
                 "ownersList": sorted(list(unique_owners))
             }
         }
-        
+
     except Exception as e:
         logger.error(f"Error listing systems and projects: {str(e)}", exc_info=True)
         return {
