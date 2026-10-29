@@ -34,6 +34,10 @@ class Settings:
     # Transport Configuration
     TRANSPORT_TYPE: str = os.getenv("TRANSPORT_TYPE", "http")  # stdio, http
     
+    # How many days before an incident get_servicenow_ticket_timeline searches for a ticket when
+    # the caller gives no lookback_days. UIE takes the window from the tool and has no default.
+    SERVICENOW_TICKET_LOOKBACK_DAYS: int = int(os.getenv("SERVICENOW_TICKET_LOOKBACK_DAYS", "30"))
+
     # Logging Configuration
     ENABLE_DEBUG_MESSAGES: bool = os.getenv("ENABLE_DEBUG_MESSAGES", "false").lower() == "true"
     
