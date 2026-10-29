@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 import re
 
 from ..server import mcp_server
+from ...config.settings import settings
 from ...api_client.client_factory import get_current_api_client
 from .get_time import (
     get_time_range_ms,
@@ -855,6 +856,219 @@ async def get_project_deployments(
         error_message = f"Error in get_project_deployments: {str(e)}"
         logger.error(error_message)
         return {"status": "error", "message": error_message}
+
+# ============================================================================
+# SERVICENOW TICKET LOOKUP
+# ============================================================================
+
+# How much of one ticket is returned: one field, and all fields together. ServiceNow records are
+# mostly empty fields in arbitrary order, so the empty ones are dropped and the fields that say
+# what changed and when go first; what is left over the budget is named in omitted_fields.
+_MAX_TICKET_FIELD_CHARS = 2000
+_MAX_TICKET_CONTENT_CHARS = 10000
+# Fields of ServiceNow change requests (CHG) and problems (PRB), most telling first.
+_TICKET_PRIORITY_FIELDS = [
+    "number", "ticket number", "short_description", "description", "type", "category", "state",
+    "phase", "risk", "impact", "priority",
+    "start_date", "end_date", "work_start", "work_end", "u_planned_start_copy", "u_planned_end_copy",
+    "opened_at", "closed_at", "close_code", "close_notes",
+    "cmdb_ci", "business_service", "u_impacted_services", "assignment_group", "assigned_to",
+    "requested_by", "implementation_plan", "justification", "backout_plan", "test_plan", "reason",
+    "problem_statement", "cause_notes", "fix_notes", "workaround", "known_error",
+    "sys_updated_on",
+]
+
+
+@mcp_server.tool()
+async def get_servicenow_ticket_timeline(
+    ticket_number: str,
+    system_name: str,
+    customer_name: Optional[str] = None,
+    incident_timestamp: Optional[Union[str, int]] = None,
+    lookback_days: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Look up a ServiceNow ticket by its number and return the change event (deployment) or problem
+    record InsightFinder stored for it, including its full content.
+
+    Use this whenever a user, a feedback note or an incident mentions a ServiceNow ticket number
+    such as CHG0829429 (change request) or PRB0012345 (problem), e.g. "this incident is caused by
+    change event CHG0829429", to learn what the change did, where and when.
+
+    Reading a change ticket:
+    - WHEN it ran comes from the ticket's own fields: start_date / end_date is the planned
+      window, work_start / work_end the actual one. recorded_at, opened_at and sys_created_on
+      are only when the ticket was created, often days or weeks earlier; never report them as
+      the deploy time. When relating the ticket to an incident, say whether the incident falls
+      inside that window, shortly after it, days after it, or before it.
+    - test_plan describes pre-implementation testing, not the outcome of the change itself.
+    - Ticket times are quoted as the ticket stores them.
+    - Tickets are found by the day they were created, so a change created long before the
+      incident needs a larger lookback_days.
+    - event_time (when the change ran, MM/dd/yyyy HH:mm:ss), data_source, instance_name and
+      link (the ticket's ServiceNow URL, when known) are what summaries cite for this ticket. Whenever you report a ticket's findings, including to
+      another agent, always pass on these three values exactly as returned.
+
+    Args:
+        ticket_number: The ServiceNow ticket number, e.g. "CHG0829429".
+        system_name: The system id (hash) or the system's display name.
+        customer_name: The user who owns the system. Defaults to the current user.
+        incident_timestamp: Where to start searching back from, usually the incident time; epoch
+            milliseconds or a human-readable time. Defaults to now.
+        lookback_days: How many days before incident_timestamp to search. Defaults to the
+            server's SERVICENOW_TICKET_LOOKBACK_DAYS (30). Widen it when a ticket is not found;
+            change requests are often implemented days or weeks before the incident they cause.
+
+    Returns:
+        {"status": "success", "ticket_number", "system_id", "events": [{event_time, event_type, data_source,
+        instance_name, component_name, pattern_name, recorded_at, link, fields, omitted_fields}]},
+        or {"status": "not_found"} / {"status": "error", "message"}. `fields` holds the ticket's
+        non-empty ServiceNow fields, the telling ones first: for when the change actually ran use
+        start_date/end_date (planned window) and work_start/work_end (actual). `recorded_at` is only when the ticket was recorded
+        (usually its creation), not when the change happened.
+    """
+    try:
+        ticket_number = (ticket_number or "").strip()
+        if not ticket_number:
+            return {"status": "error", "message": "ticket_number is required"}
+        if lookback_days is not None and lookback_days < 0:
+            return {"status": "error", "message": "lookback_days must not be negative"}
+        client = _get_api_client()
+        timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        if incident_timestamp is not None and str(incident_timestamp).strip():
+            if str(incident_timestamp).strip().isdigit():
+                timestamp_ms = int(str(incident_timestamp).strip())
+            else:
+                try:
+                    timestamp_ms, _ = parse_time_parameters(incident_timestamp, None, "UTC")
+                except ValueError as e:
+                    return {"status": "error", "message": str(e)}
+
+        days = lookback_days if lookback_days is not None else settings.SERVICENOW_TICKET_LOOKBACK_DAYS
+        raw = await client.get_servicenow_ticket_timeline(
+            customer_name=customer_name or client.user_name,
+            system_name=system_name,
+            ticket_number=ticket_number,
+            start_time_ms=timestamp_ms - days * 86_400_000,
+            end_time_ms=timestamp_ms,
+        )
+        if raw.get("status") == "not_found":
+            return {
+                "status": "not_found",
+                "ticket_number": ticket_number,
+                "searched_days": days,
+                "message": f"Ticket {ticket_number} was not found in the {days} days searched; "
+                           f"try a larger lookback_days or another incident_timestamp.",
+            }
+        if raw.get("status") != "success":
+            return raw
+
+        events = []
+        for tl in raw.get("timelines", []):
+            fields, omitted = _ticket_fields(tl.get("rawData") or "")
+            event = {
+                # When the change ran, formatted here (not by the model) as summaries show it.
+                "event_time": _event_time(tl, fields),
+                "event_type": tl.get("eventType"),
+                # The InsightFinder project the event came from: what summaries show as
+                # "[Data source: ...]".
+                "data_source": tl.get("projectName"),
+                "instance_name": tl.get("instanceName"),
+                "component_name": tl.get("componentName"),
+                "pattern_name": tl.get("patternName"),
+                # When InsightFinder recorded the ticket (usually its creation), NOT when the
+                # change ran: that is start_date/end_date (planned), work_start/work_end (actual).
+                "recorded_at": _format_utc(tl.get("startTimestamp")),
+                "link": tl.get("hyperLink"),
+                "fields": fields,
+            }
+            if omitted:
+                event["omitted_fields"] = omitted
+            events.append(event)
+        number = raw.get("ticketNumber", ticket_number)
+        # Every event must carry its data source: summaries cite it, and the coordinator gets it
+        # only through exact_values.
+        if not events:
+            return {"status": "not_found", "ticket_number": number,
+                    "message": f"Ticket {number} was not found."}
+        if any(not e["data_source"] for e in events):
+            return {"status": "error",
+                    "message": f"Ticket {number} was found but has no data source."}
+        return {
+            "status": "success",
+            "ticket_number": number,
+            "system_id": raw.get("systemId"),
+            "events": events,
+            # Read by mcp-service's coordinator, which appends these to the sub-agent's answer
+            # unchanged, so they survive the multi-agent hand-off (app/utils/ExactValues.py).
+            "exact_values": [{
+                "ticket_number": number,
+                "event_time": e["event_time"],
+                "data_source": e["data_source"],
+                "instance_name": e["instance_name"],
+                "link": e["link"],
+            } for e in events],
+        }
+    except Exception as e:
+        logger.error(f"get_servicenow_ticket_timeline failed for {ticket_number}: {e}")
+        return {"status": "error", "message": f"Failed to look up ticket {ticket_number}: {str(e)}"}
+
+
+def _ticket_fields(raw_data: str):
+    """(fields, omitted names) of a ticket body: the non-empty fields, priority fields first, each
+    cut at _MAX_TICKET_FIELD_CHARS, until _MAX_TICKET_CONTENT_CHARS. A body that is not a JSON
+    object comes back whole under "content", cut at the total budget."""
+    try:
+        body = json.loads(raw_data) if raw_data else {}
+    except (ValueError, TypeError):
+        body = None
+    if not isinstance(body, dict):
+        text = str(raw_data)
+        cut = len(text) > _MAX_TICKET_CONTENT_CHARS
+        return {"content": text[:_MAX_TICKET_CONTENT_CHARS] + (" ...[truncated]" if cut else "")}, []
+
+    def text_of(value) -> str:
+        return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+    present = {k: text_of(v).strip() for k, v in body.items()
+               if v is not None and text_of(v).strip() not in ("", "{}", "[]")}
+    lower = {k.lower(): k for k in present}
+    ordered = [lower[p] for p in _TICKET_PRIORITY_FIELDS if p in lower]
+    ordered += [k for k in present if k not in ordered]
+
+    fields, omitted, used = {}, [], 0
+    for key in ordered:
+        value = present[key]
+        if len(value) > _MAX_TICKET_FIELD_CHARS:
+            value = value[:_MAX_TICKET_FIELD_CHARS] + " ...[truncated]"
+        if used + len(key) + len(value) > _MAX_TICKET_CONTENT_CHARS:
+            omitted.append(key)
+            continue
+        fields[key] = value
+        used += len(key) + len(value)
+    return fields, omitted
+
+
+def _event_time(timeline: Dict[str, Any], fields: Dict[str, str]) -> Optional[str]:
+    """When the change ran as "MM/dd/yyyy HH:mm:ss": the planned start, else the actual start,
+    else when the ticket was recorded. Ticket times are taken as the ticket stores them."""
+    when = None
+    for key in ("start_date", "work_start"):
+        try:
+            when = datetime.strptime(fields.get(key, "")[:19], "%Y-%m-%d %H:%M:%S")
+            break
+        except ValueError:
+            continue
+    if when is None and timeline.get("startTimestamp"):
+        when = datetime.fromtimestamp(timeline["startTimestamp"] / 1000, tz=timezone.utc)
+    return when.strftime("%m/%d/%Y %H:%M:%S") if when is not None else None
+
+
+def _format_utc(ms: Optional[int]) -> Optional[str]:
+    if not ms:
+        return None
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
 
 # ============================================================================
 # HELPER FUNCTIONS

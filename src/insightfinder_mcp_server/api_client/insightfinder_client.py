@@ -709,6 +709,58 @@ class InsightFinderAPIClient:
         """
         return await self._fetch_timeline_data("deployment", system_name, start_time_ms, end_time_ms)
     
+    async def get_servicenow_ticket_timeline(
+        self,
+        customer_name: str,
+        system_name: str,
+        ticket_number: str,
+        start_time_ms: int,
+        end_time_ms: int,
+    ) -> Dict[str, Any]:
+        """
+        Find the change (or problem) events of one ServiceNow ticket number, e.g. CHG0829429.
+
+        Calls GET /api/external/v1/servicenow-ticket-timeline (II-25447), which searches the days
+        from `start_time_ms` to `end_time_ms` for the ticket. The backend has no default window.
+
+        Returns:
+            {"status": "success", "ticketNumber", "systemId", "timelines": [...]}, each timeline
+                with dayTimeMillis, eventType, ticketNumber, hyperLink, projectName, instanceName,
+                componentName, patternName, startTimestamp, endTimestamp and rawData (the content)
+            {"status": "not_found"} when the ticket is not in the window (HTTP 204/404)
+            {"status": "error", "message": ...} otherwise
+        """
+        url = f"{self.base_url}/api/external/v1/servicenow-ticket-timeline"
+        params: Dict[str, Any] = {
+            "customerName": customer_name,
+            "systemName": system_name,
+            "ticketNumber": ticket_number,
+            "startTime": start_time_ms,
+            "endTime": end_time_ms,
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                response = await client.get(url, params=params, headers=self.headers)
+                if response.status_code in (204, 404) or not response.content.strip():
+                    return {"status": "not_found", "ticketNumber": ticket_number}
+                response.raise_for_status()
+                raw = response.json()
+                return {
+                    "status": "success",
+                    "ticketNumber": raw.get("ticketNumber", ticket_number),
+                    "systemId": raw.get("systemId"),
+                    "timelines": raw.get("timelines", []) or [],
+                }
+            except httpx.HTTPStatusError as e:
+                logger.error(f"servicenow ticket timeline API error {e.response.status_code}: {e}")
+                return {"status": "error", "message": f"API request failed: {e.response.status_code}"}
+            except httpx.RequestError as e:
+                logger.error(f"servicenow ticket timeline network error: {e}")
+                return {"status": "error", "message": f"Network error: {str(e)}"}
+            except Exception as e:
+                logger.error(f"servicenow ticket timeline unexpected error: {e}")
+                return {"status": "error", "message": f"Internal error: {str(e)}"}
+
     async def predict_incidents(
         self,
         system_name: str,
