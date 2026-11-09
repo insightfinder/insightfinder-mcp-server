@@ -41,6 +41,8 @@ def test_change_ticket_keeps_change_window(monkeypatch):
     assert event["source"] == "servicenow"
     assert "incident_lookup" not in event and "incident_status" not in event
     assert result["exact_values"][0]["event_type"] == "deployment"
+    assert result["citations"] == [{"source_type": "servicenow", "label": "ServiceNow CHG1",
+                                     "url": "https://sn/x"}]
 
 
 def test_ingested_incident_returns_servicenow_record(monkeypatch):
@@ -66,3 +68,31 @@ def test_insightfinder_created_incident_points_to_incident_details(monkeypatch):
     assert event["fields"] == {"content": "CPU high on host-1"}
     assert "incident_status" not in event
     assert event["incident_lookup"]["incident_timestamp"] == "1767268800000"
+
+
+def test_ticket_without_link_is_cited_by_name(monkeypatch):
+    result = _run(monkeypatch, [_timeline(eventType="incident", source="insightfinder",
+                                          rawData="x", hyperLink=None)], "INC3")
+    assert result["citations"] == [{"source_type": "servicenow", "label": "ServiceNow INC3"}]
+
+
+def test_insightfinder_page_is_cited_next_to_the_ticket(monkeypatch):
+    calls = []
+
+    async def fake_url(client, record, event_category=None, **kwargs):
+        calls.append((record, event_category))
+        return "https://app/ui/global/systemrootcause?x=1"
+
+    monkeypatch.setattr(deployment_tools, "build_systemrootcause_url", fake_url)
+    result = _run(monkeypatch, [_timeline(eventType="incident", source="insightfinder",
+                                          rawData="x", projectOwner="admin_nbc",
+                                          patternId=10000)], "INC4")
+    record, category = calls[0]
+    assert category == "incident"
+    assert record["userName"] == "admin_nbc" and record["patternId"] == 10000
+    assert result["events"][0]["ui_url"] == "https://app/ui/global/systemrootcause?x=1"
+    assert result["citations"] == [
+        {"source_type": "servicenow", "label": "ServiceNow INC4", "url": "https://sn/x"},
+        {"source_type": "if_anomaly_detection", "label": "My System — Incidents",
+         "url": "https://app/ui/global/systemrootcause?x=1"},
+    ]
