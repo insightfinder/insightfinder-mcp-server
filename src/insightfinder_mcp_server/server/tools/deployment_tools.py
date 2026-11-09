@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 import re
 
 from ..server import mcp_server
+from .ui_url import build_systemrootcause_url
 from ...config.settings import settings
 from ...api_client.client_factory import get_current_api_client
 from .get_time import (
@@ -935,7 +936,8 @@ async def get_servicenow_ticket_timeline(
     Returns:
         {"status": "success", "ticket_number", "system_id", "events": [{event_time, event_type
         (deployment / problem / incident), source (servicenow / insightfinder), data_source,
-        instance_name, component_name, pattern_name, recorded_at, link, fields, omitted_fields,
+        instance_name, component_name, pattern_name, recorded_at, link (ServiceNow page), ui_url
+        (InsightFinder page of the event), fields, omitted_fields,
         and for incidents incident_status and incident_lookup}]},
         or {"status": "not_found"} / {"status": "error", "message"}. `fields` holds the ticket's
         non-empty ServiceNow fields, the telling ones first: for when the change actually ran use
@@ -1000,6 +1002,9 @@ async def get_servicenow_ticket_timeline(
                 # change ran: that is start_date/end_date (planned), work_start/work_end (actual).
                 "recorded_at": _format_utc(tl.get("startTimestamp")),
                 "link": tl.get("hyperLink"),
+                # The event's InsightFinder page (incident / change event), when it resolves.
+                "ui_url": await build_systemrootcause_url(
+                    client, _ui_record(tl), event_category=_UI_EVENT_CATEGORY.get(tl.get("eventType"))),
                 "fields": fields,
             }
             if omitted:
@@ -1030,6 +1035,10 @@ async def get_servicenow_ticket_timeline(
             "ticket_number": number,
             "system_id": raw.get("systemId"),
             "events": events,
+            # One clickable citation per ticket link: mcp-service takes a tool's own `citations`
+            # as authoritative (Citations._tool_supplied_sources); without them the ticket is
+            # cited by name only, as its link is not an InsightFinder page.
+            "citations": _ticket_citations(number, events, system_name),
             # Read by mcp-service's coordinator, which appends these to the sub-agent's answer
             # unchanged, so they survive the multi-agent hand-off (app/utils/ExactValues.py).
             "exact_values": [{
@@ -1044,6 +1053,49 @@ async def get_servicenow_ticket_timeline(
     except Exception as e:
         logger.error(f"get_servicenow_ticket_timeline failed for {ticket_number}: {e}")
         return {"status": "error", "message": f"Failed to look up ticket {ticket_number}: {str(e)}"}
+
+
+# systemrootcause tab of each ticket event type; a problem has no tab of its own.
+_UI_EVENT_CATEGORY = {"incident": "incident", "deployment": "deployment"}
+_UI_EVENT_LABEL = {"incident": "Incidents", "deployment": "Change Events", "problem": "Problems"}
+
+
+def _ui_record(tl: Dict[str, Any]) -> Dict[str, Any]:
+    """The fields build_systemrootcause_url locates an event by; the owner makes the system
+    lookup direct instead of a scan of every system."""
+    return {
+        "projectName": tl.get("projectName"),
+        "userName": tl.get("projectOwner"),
+        "startTimestamp": tl.get("startTimestamp"),
+        "patternId": tl.get("patternId"),
+        "instanceName": tl.get("instanceName"),
+        "componentName": tl.get("componentName"),
+    }
+
+
+def _ticket_citations(number: str, events: List[Dict[str, Any]],
+                      system_name: Optional[str] = None) -> List[Dict[str, str]]:
+    """The ticket's citations: a ServiceNow one per distinct ticket link (one unlinked when none
+    has a link, so the ticket is still named) and an InsightFinder one per event page that
+    resolved, labelled like the other incident citations ("<system> — Incidents")."""
+    out, seen = [], set()
+    label = f"ServiceNow {number}"
+    for e in events:
+        link = e.get("link")
+        if isinstance(link, str) and link.startswith("http") and link not in seen:
+            seen.add(link)
+            out.append({"source_type": "servicenow", "label": label, "url": link})
+    if not out:
+        out.append({"source_type": "servicenow", "label": label})
+    for e in events:
+        url = e.get("ui_url")
+        if isinstance(url, str) and url.startswith("http") and url not in seen:
+            seen.add(url)
+            kind = _UI_EVENT_LABEL.get(e.get("event_type"), "Events")
+            out.append({"source_type": "if_anomaly_detection",
+                        "label": f"{system_name} — {kind}" if system_name else f"InsightFinder {kind}",
+                        "url": url})
+    return out
 
 
 def _ticket_fields(raw_data: str):
