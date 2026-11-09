@@ -866,12 +866,15 @@ async def get_project_deployments(
 # what changed and when go first; what is left over the budget is named in omitted_fields.
 _MAX_TICKET_FIELD_CHARS = 2000
 _MAX_TICKET_CONTENT_CHARS = 10000
-# Fields of ServiceNow change requests (CHG) and problems (PRB), most telling first.
+# Fields of ServiceNow change requests (CHG), problems (PRB) and incidents (INC), most telling
+# first.
 _TICKET_PRIORITY_FIELDS = [
-    "number", "ticket number", "short_description", "description", "type", "category", "state",
-    "phase", "risk", "impact", "priority",
+    "number", "ticket number", "short_description", "description", "type", "category",
+    "subcategory", "state", "incident_state", "phase", "risk", "impact", "urgency", "priority",
+    "severity",
     "start_date", "end_date", "work_start", "work_end", "u_planned_start_copy", "u_planned_end_copy",
-    "opened_at", "closed_at", "close_code", "close_notes",
+    "opened_at", "resolved_at", "closed_at", "close_code", "close_notes", "resolution_code",
+    "resolution_notes", "caller_id", "comments", "work_notes",
     "cmdb_ci", "business_service", "u_impacted_services", "assignment_group", "assigned_to",
     "requested_by", "implementation_plan", "justification", "backout_plan", "test_plan", "reason",
     "problem_statement", "cause_notes", "fix_notes", "workaround", "known_error",
@@ -888,12 +891,22 @@ async def get_servicenow_ticket_timeline(
     lookback_days: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    Look up a ServiceNow ticket by its number and return the change event (deployment) or problem
-    record InsightFinder stored for it, including its full content.
+    Look up a ServiceNow ticket by its number and return the change event (deployment), problem
+    or incident record InsightFinder stored for it, including its full content.
 
     Use this whenever a user, a feedback note or an incident mentions a ServiceNow ticket number
-    such as CHG0829429 (change request) or PRB0012345 (problem), e.g. "this incident is caused by
-    change event CHG0829429", to learn what the change did, where and when.
+    such as CHG0829429 (change request), PRB0012345 (problem) or INC0012345 (incident), e.g.
+    "this incident is caused by change event CHG0829429" or "what is INC0012345 about?", to learn
+    what the ticket is about, where and when.
+
+    Reading an incident ticket (event_type "incident"):
+    - source "servicenow": the incident was ingested from ServiceNow and `fields` is the ServiceNow
+      record (state, priority, assignment_group, close/resolution notes, ...).
+    - source "insightfinder": InsightFinder detected the incident and opened this ticket for it;
+      `fields` is what InsightFinder detected, not the ServiceNow record, so the ticket's current
+      ServiceNow state is not known here. For the incident's root cause, ARI report or
+      recommendations, call get_incident_details with the values in `incident_lookup`.
+    - event_time is when the incident started.
 
     Reading a change ticket:
     - WHEN it ran comes from the ticket's own fields: start_date / end_date is the planned
@@ -910,7 +923,7 @@ async def get_servicenow_ticket_timeline(
       another agent, always pass on these three values exactly as returned.
 
     Args:
-        ticket_number: The ServiceNow ticket number, e.g. "CHG0829429".
+        ticket_number: The ServiceNow ticket number, e.g. "CHG0829429" or "INC0012345".
         system_name: The system id (hash) or the system's display name.
         customer_name: The user who owns the system. Defaults to the current user.
         incident_timestamp: Where to start searching back from, usually the incident time; epoch
@@ -920,8 +933,10 @@ async def get_servicenow_ticket_timeline(
             change requests are often implemented days or weeks before the incident they cause.
 
     Returns:
-        {"status": "success", "ticket_number", "system_id", "events": [{event_time, event_type, data_source,
-        instance_name, component_name, pattern_name, recorded_at, link, fields, omitted_fields}]},
+        {"status": "success", "ticket_number", "system_id", "events": [{event_time, event_type
+        (deployment / problem / incident), source (servicenow / insightfinder), data_source,
+        instance_name, component_name, pattern_name, recorded_at, link, fields, omitted_fields,
+        and for incidents incident_status and incident_lookup}]},
         or {"status": "not_found"} / {"status": "error", "message"}. `fields` holds the ticket's
         non-empty ServiceNow fields, the telling ones first: for when the change actually ran use
         start_date/end_date (planned window) and work_start/work_end (actual). `recorded_at` is only when the ticket was recorded
@@ -966,10 +981,15 @@ async def get_servicenow_ticket_timeline(
         events = []
         for tl in raw.get("timelines", []):
             fields, omitted = _ticket_fields(tl.get("rawData") or "")
+            is_incident = tl.get("eventType") == "incident"
             event = {
-                # When the change ran, formatted here (not by the model) as summaries show it.
-                "event_time": _event_time(tl, fields),
+                # When the change ran (an incident: when it started), formatted here (not by the
+                # model) as summaries show it.
+                "event_time": _event_time(tl, {} if is_incident else fields),
                 "event_type": tl.get("eventType"),
+                # servicenow: ingested from ServiceNow, `fields` is the ticket; insightfinder: an
+                # incident InsightFinder opened the ticket for, `fields` is what it detected.
+                "source": tl.get("source"),
                 # The InsightFinder project the event came from: what summaries show as
                 # "[Data source: ...]".
                 "data_source": tl.get("projectName"),
@@ -984,6 +1004,17 @@ async def get_servicenow_ticket_timeline(
             }
             if omitted:
                 event["omitted_fields"] = omitted
+            if is_incident:
+                if tl.get("incidentStatus"):
+                    event["incident_status"] = tl["incidentStatus"]
+                # get_incident_details' arguments for this incident; the timestamp is the
+                # incident's own (owner-timezone epoch ms), which that tool takes as is.
+                event["incident_lookup"] = {
+                    "system_name": raw.get("systemId") or system_name,
+                    "incident_timestamp": str(tl.get("startTimestamp")),
+                    "instance_name": tl.get("instanceName"),
+                    "pattern_name": tl.get("patternName"),
+                }
             events.append(event)
         number = raw.get("ticketNumber", ticket_number)
         # Every event must carry its data source: summaries cite it, and the coordinator gets it
@@ -1003,6 +1034,7 @@ async def get_servicenow_ticket_timeline(
             # unchanged, so they survive the multi-agent hand-off (app/utils/ExactValues.py).
             "exact_values": [{
                 "ticket_number": number,
+                "event_type": e["event_type"],
                 "event_time": e["event_time"],
                 "data_source": e["data_source"],
                 "instance_name": e["instance_name"],
@@ -1051,7 +1083,8 @@ def _ticket_fields(raw_data: str):
 
 def _event_time(timeline: Dict[str, Any], fields: Dict[str, str]) -> Optional[str]:
     """When the change ran as "MM/dd/yyyy HH:mm:ss": the planned start, else the actual start,
-    else when the ticket was recorded. Ticket times are taken as the ticket stores them."""
+    else when the ticket was recorded (for an incident, given no fields: when it started). Ticket
+    times are taken as the ticket stores them."""
     when = None
     for key in ("start_date", "work_start"):
         try:
