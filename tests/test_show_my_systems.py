@@ -66,7 +66,9 @@ def test_preview_groups_by_type_with_owner_on_every_row(monkeypatch):
                               "Owned by you: 3, shared with you: 1.")
     it_part, ai_part = preview.split("### AI Models (1)")
     assert "### IT Systems (3)" in it_part
-    rows = [l for l in it_part.splitlines() if l.startswith("| ") and not l.startswith("| System")]
+    assert "| Name | Owner | Time zone | Projects |" in it_part
+    assert "| System |" not in preview
+    rows = [l for l in it_part.splitlines() if l.startswith("| ") and not l.startswith("| Name")]
     assert rows == ["| alpha | bo (you) | Asia/Shanghai | 2 |",
                     "| Shop | alice | UTC | 0 |",
                     "| Zeta | bo (you) | UTC | 2 |"]
