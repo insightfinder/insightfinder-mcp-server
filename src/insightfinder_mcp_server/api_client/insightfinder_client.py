@@ -754,8 +754,10 @@ class InsightFinderAPIClient:
                     "timelines": raw.get("timelines", []) or [],
                 }
             except httpx.HTTPStatusError as e:
-                logger.error(f"servicenow ticket timeline API error {e.response.status_code}: {e}")
-                return {"status": "error", "message": f"API request failed: {e.response.status_code}"}
+                detail = (e.response.text or "").strip()[:300]
+                logger.error(f"servicenow ticket timeline API error {e.response.status_code}: {detail}")
+                message = f"API request failed: {e.response.status_code}"
+                return {"status": "error", "message": f"{message}: {detail}" if detail else message}
             except httpx.RequestError as e:
                 logger.error(f"servicenow ticket timeline network error: {e}")
                 return {"status": "error", "message": f"Network error: {str(e)}"}
