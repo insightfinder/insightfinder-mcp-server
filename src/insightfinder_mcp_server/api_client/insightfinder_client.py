@@ -718,7 +718,8 @@ class InsightFinderAPIClient:
         end_time_ms: int,
     ) -> Dict[str, Any]:
         """
-        Find the change (or problem) events of one ServiceNow ticket number, e.g. CHG0829429.
+        Find the change, problem or incident events of one ServiceNow ticket number, e.g.
+        CHG0829429 or INC0012345.
 
         Calls GET /api/external/v1/servicenow-ticket-timeline (II-25447), which searches the days
         from `start_time_ms` to `end_time_ms` for the ticket. The backend has no default window.
@@ -726,7 +727,8 @@ class InsightFinderAPIClient:
         Returns:
             {"status": "success", "ticketNumber", "systemId", "timelines": [...]}, each timeline
                 with dayTimeMillis, eventType, ticketNumber, hyperLink, projectName, instanceName,
-                componentName, patternName, startTimestamp, endTimestamp and rawData (the content)
+                componentName, patternName, startTimestamp, endTimestamp, rawData (the content),
+                source (servicenow / insightfinder) and, for incidents, incidentStatus
             {"status": "not_found"} when the ticket is not in the window (HTTP 204/404)
             {"status": "error", "message": ...} otherwise
         """
@@ -752,8 +754,10 @@ class InsightFinderAPIClient:
                     "timelines": raw.get("timelines", []) or [],
                 }
             except httpx.HTTPStatusError as e:
-                logger.error(f"servicenow ticket timeline API error {e.response.status_code}: {e}")
-                return {"status": "error", "message": f"API request failed: {e.response.status_code}"}
+                detail = (e.response.text or "").strip()[:300]
+                logger.error(f"servicenow ticket timeline API error {e.response.status_code}: {detail}")
+                message = f"API request failed: {e.response.status_code}"
+                return {"status": "error", "message": f"{message}: {detail}" if detail else message}
             except httpx.RequestError as e:
                 logger.error(f"servicenow ticket timeline network error: {e}")
                 return {"status": "error", "message": f"Network error: {str(e)}"}
