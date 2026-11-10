@@ -380,7 +380,7 @@ def _render_system_list(systems: List[Dict[str, Any]], user_name: str) -> str:
         if not group:
             continue
         lines += ["", f"### {title} ({len(group)})", "",
-                  "| System | Owner | Time zone | Projects |", "|---|---|---|---|"]
+                  "| Name | Owner | Time zone | Projects |", "|---|---|---|---|"]
         for s in group:
             owner = f"{s['owner']} (you)" if s['ownedByCurrentUser'] else s['owner']
             lines.append(f"| {_md_cell(s['systemDisplayName'])} | {_md_cell(owner)} | "
