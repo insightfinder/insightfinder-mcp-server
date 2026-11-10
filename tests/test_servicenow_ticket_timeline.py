@@ -96,3 +96,15 @@ def test_insightfinder_page_is_cited_next_to_the_ticket(monkeypatch):
         {"source_type": "if_anomaly_detection", "label": "My System — Incidents",
          "url": "https://app/ui/global/systemrootcause?x=1"},
     ]
+
+
+def test_shared_system_is_looked_up_under_its_owner(monkeypatch):
+    async def fake_identity(name):
+        return {"matched": True, "owner": "admin", "system_id": "hash1", "display_name": name}
+
+    monkeypatch.setattr(deployment_tools, "resolve_system_identity", fake_identity)
+    client = _Client([_timeline(eventType="incident", source="insightfinder", rawData="x")])
+    monkeypatch.setattr(deployment_tools, "_get_api_client", lambda: client)
+    asyncio.run(deployment_tools.get_servicenow_ticket_timeline("INC5", "ARI-Test-System"))
+    assert client.calls[0]["customer_name"] == "admin"
+    assert client.calls[0]["system_name"] == "hash1"

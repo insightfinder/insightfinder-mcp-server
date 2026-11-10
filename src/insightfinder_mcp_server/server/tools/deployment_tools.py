@@ -35,7 +35,8 @@ from .get_time import (
     get_time_range_ms,
     resolve_system_timezone,
     format_timestamp_in_user_timezone,
-    parse_time_parameters
+    parse_time_parameters,
+    resolve_system_identity,
 )
 
 def _get_api_client():
@@ -962,9 +963,17 @@ async def get_servicenow_ticket_timeline(
                     return {"status": "error", "message": str(e)}
 
         days = lookback_days if lookback_days is not None else settings.SERVICENOW_TICKET_LOOKBACK_DAYS
+        system_key = system_name
+        if not customer_name:
+            # the backend looks the system up under customerName: a system shared with the user
+            # is under its owner, not the user
+            identity = await resolve_system_identity(system_name)
+            if identity.get("matched"):
+                customer_name = identity.get("owner")
+                system_key = identity.get("system_id") or system_name
         raw = await client.get_servicenow_ticket_timeline(
             customer_name=customer_name or client.user_name,
-            system_name=system_name,
+            system_name=system_key,
             ticket_number=ticket_number,
             start_time_ms=timestamp_ms - days * 86_400_000,
             end_time_ms=timestamp_ms,
