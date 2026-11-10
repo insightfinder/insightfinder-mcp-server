@@ -3,6 +3,7 @@ System information tools for the InsightFinder MCP server.
 
 This module provides tools for querying and exploring InsightFinder systems and projects:
 - list_all_systems: List all available systems with their owners
+- show_my_systems: The signed-in user's complete system list, rendered as the finished answer
 - list_all_systems_and_projects: Get detailed information about all systems and their projects
 - get_projects_for_system: Get all projects within a specific system
 - find_system_by_name: Fuzzy search for system names (handles typos and case differences)
@@ -177,7 +178,8 @@ async def list_all_systems(
     Default page size is 20 systems. Use the page parameter to navigate through results.
     
     **When to use this tool:**
-    - When user asks "what systems do I have?"
+    - To answer a question about the systems (a count, a filter, an owner) rather than to show
+      the list; to show the user their systems, use show_my_systems
     - To discover available systems before querying specific data
     - To find the correct system name for other tools
     - When user mentions a system name that might be incorrect
@@ -313,6 +315,133 @@ async def list_all_systems(
         
     except Exception as e:
         logger.error(f"Error listing systems: {str(e)}", exc_info=True)
+        return {
+            "status": "error",
+            "message": f"Failed to list systems: {str(e)}"
+        }
+
+
+_IT_SYSTEM, _AI_MODEL = "IT System", "AI Model"
+
+
+def _framework_key(system_data: Dict[str, Any]) -> Dict[str, Any]:
+    raw = system_data.get('systemKey') or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _user_systems(framework_data: Dict[str, Any], user_name: str) -> List[Dict[str, Any]]:
+    systems, seen = [], set()
+    for arr_name, shared in (('ownSystemArr', False), ('shareSystemArr', True)):
+        for system_json in framework_data.get(arr_name) or []:
+            system_data = parse_system_json(
+                system_json if isinstance(system_json, str) else json.dumps(system_json))
+            key = _framework_key(system_data) if system_data else {}
+            if not key.get('systemName'):
+                continue
+            owner = key.get('userName') or 'Unknown'
+            ident = (owner, key['systemName'])
+            if (not shared and owner != user_name) or ident in seen:
+                continue
+            seen.add(ident)
+            projects = system_data.get('projectDetailsList')
+            systems.append({
+                'systemName': key['systemName'],
+                'systemDisplayName': system_data.get('systemDisplayName') or key['systemName'],
+                'owner': owner,
+                'type': _AI_MODEL if system_data.get('isAW') else _IT_SYSTEM,
+                'timezone': system_data.get('timezone') or '',
+                'projectCount': len(projects) if isinstance(projects, list) else 0,
+                'ownedByCurrentUser': owner == user_name,
+            })
+    systems.sort(key=lambda s: (s['systemDisplayName'].lower(), s['owner']))
+    return systems
+
+
+def _md_cell(text: Any) -> str:
+    return str(text).replace('\\', '\\\\').replace('|', '\\|').replace('\r', ' ').replace('\n', ' ')
+
+
+def _render_system_list(systems: List[Dict[str, Any]], user_name: str) -> str:
+    if not systems:
+        return "You have no systems yet, and no systems are shared with you."
+    it_systems = [s for s in systems if s['type'] == _IT_SYSTEM]
+    ai_models = [s for s in systems if s['type'] == _AI_MODEL]
+    owned = sum(1 for s in systems if s['ownedByCurrentUser'])
+    noun = "system" if len(systems) == 1 else "systems"
+    lines = [f"You have **{len(systems)}** {noun}. IT Systems: {len(it_systems)}, "
+             f"AI Models: {len(ai_models)}. Owned by you: {owned}, shared with you: "
+             f"{len(systems) - owned}."]
+    for title, group in (("IT Systems", it_systems), ("AI Models", ai_models)):
+        if not group:
+            continue
+        lines += ["", f"### {title} ({len(group)})", "",
+                  "| System | Owner | Time zone | Projects |", "|---|---|---|---|"]
+        for s in group:
+            owner = f"{s['owner']} (you)" if s['ownedByCurrentUser'] else s['owner']
+            lines.append(f"| {_md_cell(s['systemDisplayName'])} | {_md_cell(owner)} | "
+                         f"{_md_cell(s['timezone'] or '-')} | {s['projectCount']} |")
+    return "\n".join(lines)
+
+
+@mcp_server.tool()
+async def show_my_systems() -> Dict[str, Any]:
+    """
+    Show the signed-in user's complete system list: the systems they own plus those shared
+    with them, each with its owner, type, time zone and project count, grouped into IT Systems
+    and AI Models. The whole list comes back in one call, never paginated.
+
+    The result's `formatted_preview` is the finished answer and is shown to the user exactly
+    as returned; the turn ends with it.
+
+    **When to use this tool:**
+    - "show me the systems you monitor", "what systems do I have?", "list my systems",
+      "show all my systems with owner and type"
+
+    **When NOT to use this tool:**
+    - A count, a filter or any other question about the systems ("how many AI models do I
+      have?", "which systems does alice own?"): use list_all_systems
+    - Finding one system's name for another tool: use find_system_by_name or list_all_systems
+    - Projects inside systems: use list_all_systems_and_projects or get_projects_for_system
+
+    Returns:
+        A dictionary containing:
+        - status: "success" or "error"
+        - formatted_preview: the rendered list
+        - currentUser: the signed-in user's name
+        - summary: totalSystems, itSystems, aiModels, ownedSystems, sharedSystems
+    """
+    try:
+        api_client = get_current_api_client()
+        if not api_client:
+            return {
+                "status": "error",
+                "message": "No API client configured. Please configure your InsightFinder credentials."
+            }
+        framework_data = await api_client.get_system_framework()
+        if framework_data.get("status") == "error":
+            return framework_data
+        user_name = api_client.user_name
+        systems = _user_systems(framework_data, user_name)
+        owned = sum(1 for s in systems if s['ownedByCurrentUser'])
+        return {
+            "status": "success",
+            "formatted_preview": _render_system_list(systems, user_name),
+            "currentUser": user_name,
+            "summary": {
+                "totalSystems": len(systems),
+                "itSystems": sum(1 for s in systems if s['type'] == _IT_SYSTEM),
+                "aiModels": sum(1 for s in systems if s['type'] == _AI_MODEL),
+                "ownedSystems": owned,
+                "sharedSystems": len(systems) - owned,
+            },
+        }
+    except Exception as e:
+        logger.error(f"Error showing systems: {str(e)}", exc_info=True)
         return {
             "status": "error",
             "message": f"Failed to list systems: {str(e)}"
