@@ -7,6 +7,7 @@ check options of the monitor settings. UIE names the types (AW's `subTypeMap`: n
 only rename id 1 ("Consistency" is shown as "Inconsistency"), everything else is shown as UIE names it.
 """
 
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Dict, Iterable, List, Optional
 
 SECTION_INTEGRITY = "Data Integrity"
@@ -79,8 +80,8 @@ def pct(n, total) -> str:
     """Percent with two decimals like the Workbench tooltip (0.[00]%); "-" when nothing was checked."""
     if not total:
         return "-"
-    text = f"{n / total * 100:.2f}".rstrip("0").rstrip(".")
-    return f"{text}%"
+    rounded = (Decimal(str(n)) * 100 / Decimal(str(total))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)  # 3.125 -> 3.13
+    return f"{str(rounded).rstrip('0').rstrip('.')}%"
 
 
 def ratio(n, total) -> str:

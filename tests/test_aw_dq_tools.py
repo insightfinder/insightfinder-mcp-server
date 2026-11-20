@@ -37,6 +37,7 @@ def _issues(**over):
 class Aw:
     """Routes mocked AW calls and records them."""
     def __init__(self, monkeypatch, issues=None, volume=None, monitors=None, listing=None):
+        aw_tools.clear_monitor_cache()  # a new mocked AW is a new world: no monitor list from the previous one
         self.calls, self.issues, self.volume, self.listing = [], issues, volume, listing
         self.monitors = [_mon()] if monitors is None else monitors
         monkeypatch.setattr(aw_client.httpx, "AsyncClient",
@@ -103,6 +104,7 @@ def test_workbench_labels_sections_and_numbers():
     assert [lab.section_of_id(i) for i in (1, 2, 6, 7, 9)] == [lab.SECTION_CONSISTENCY, lab.SECTION_INTEGRITY,
                                                                lab.SECTION_INTEGRITY, lab.SECTION_SCHEMA, lab.SECTION_SCHEMA]
     assert lab.section_of_id(None, "Consistency") == lab.SECTION_CONSISTENCY  # id missing from subTypeMap
+    assert lab.pct(20, 640) == "3.13%" and lab.pct(4, 640) == "0.63%"  # half-up like the Workbench, not half-even
     assert lab.ratio(562, 7507) == "562 / 7,507 (7.49%)" and lab.pct(1694, 7507) == "22.57%"
     assert lab.pct(5, 100) == "5%" and lab.pct(3, 0) == "-" and lab.ratio(1, 3) == "1 / 3 (33.33%)"
     assert lab.signed(1200) == "+1,200" and lab.signed(-5) == "-5" and lab.signed_pct(0.042) == "+4.2%" and lab.signed_pct(0) == "0.0%"
@@ -179,7 +181,7 @@ def test_window_info_and_opening_sentence():
     assert info["isDefault"] and info["includesToday"] and info["timezone"] == "America/New_York" and info["firstDay"] < info["lastDay"]
     text = dq._opening(info, 'monitor "dq1" (owner: alice)')
     assert text.startswith('Showing monitor "dq1" (owner: alice) for yesterday and today so far (')
-    assert "two days, today is still in progress" in text and "America/New_York" in text and "Tell me a date or range" in text
+    assert "two days, today is still in progress" in text and "America/New_York" in text and "Tell me" not in text
     past = dq._opening(dq._window_info(dq._window("2026-10-05", "2026-10-07"), "America/New_York"), "x")
     assert "Oct 5 to Oct 7 (America/New_York; whole days)" in past and "Tell me" not in past
     one = dq._opening(dq._window_info(dq._window("2026-10-05", "2026-10-05"), "UTC"), "x")
@@ -297,7 +299,7 @@ def test_status_no_data_and_no_anomalous_data(monkeypatch):
     Aw(monkeypatch, issues=_issues(recordsChecked=0, subTypeDistribution={}, totalAnomalyCount=0, events=[]), volume=_vol())
     r = run(dq.aw_get_data_quality("dq1"))
     assert r["status"] == "no_data" and r["monitorFound"] is True and r["examples"] == []
-    assert r["message"].startswith("No data was checked in this window") and "not the same as healthy" in r["message"]
+    assert r["message"].startswith("No data was checked in this window") and "not the same as no issues" in r["message"]
     Aw(monkeypatch, issues=_issues(totalAnomalyCount=0, events=[], recordsChecked=1200, subTypeDistribution={}), volume=_vol())
     r = run(dq.aw_get_data_quality("dq1"))
     assert r["status"] == "no_anomalous_data" and "1,200 total data were checked and no anomalous data was found" in r["message"]
@@ -313,8 +315,14 @@ def test_examples_use_the_workbench_type_name(monkeypatch):
 
 def test_not_found_suggests_closest_names_and_ambiguous_and_owner(monkeypatch):
     Aw(monkeypatch, issues=_issues(), monitors=[_mon("DataQuality-Demo-Monitor"), _mon("testbin0910")])
-    r = run(dq.aw_get_data_quality("DataQuality-Demo-Monitr"))
-    assert r["status"] == "not_found" and r["closestNames"] == ["DataQuality-Demo-Monitor"] and "Closest names" in r["message"]
+    r = run(dq.aw_get_data_quality("DataQuality-Demo-Monitr"))  # one clearly closest name is used and the answer says so
+    assert r["monitorName"] == "DataQuality-Demo-Monitor" and r["opening"].startswith('"DataQuality-Demo-Monitr" was read as closest name')
+    r = run(dq.aw_get_data_quality("DataQuality-Dem"))  # a part of one name is also read, as one monitor
+    assert r["monitorName"] == "DataQuality-Demo-Monitor" and "part of a name" in r["opening"]
+    r = run(dq.aw_get_data_quality("quality"))  # matches one monitor name only
+    assert r["monitorName"] == "DataQuality-Demo-Monitor"
+    r = run(dq.aw_get_data_quality("zzz"))  # nothing fits: the closest names are offered, nothing is guessed
+    assert r["status"] == "not_found" and "closestNames" in r
     Aw(monkeypatch, issues=_issues(), monitors=[])
     assert run(dq.aw_get_data_quality("dq1"))["status"] == "not_found"
     aw = Aw(monkeypatch, issues=_issues(), monitors=[_mon(owner="alice"), _mon(owner="bob")])
@@ -477,7 +485,7 @@ def test_overview_one_table_for_quality_schema_and_volume(monkeypatch):
     assert "window: yesterday and today so far:" in md and "whole days, today in progress" in md  # shown even if the model skips the opening
     assert "4 monitors had data checked and 0 had no data in this window, 1 failed." in r["message"]
     assert r["opening"].startswith("Showing all data quality monitors in the organization (5 of 7 queried) for yesterday and today so far")
-    assert 'Name a monitor (for example "mon01")' in r["opening"]
+    assert "Name a monitor" not in r["opening"] and "Tell me" not in r["opening"]  # the one invitation comes from the prompt
 
 
 def test_overview_model_filter_and_volume_calls_skipped_when_off(monkeypatch):
@@ -612,14 +620,16 @@ def test_client_sends_whole_days_flag_only_when_asked(monkeypatch):
     assert seen[2][2]["wholeDays"] == "true" and "wholeDays" not in seen[3][2]
 
 
-def test_every_table_block_starts_with_the_opening_sentence(monkeypatch):
-    """The model's own first sentence is not guaranteed, so the appended block always leads with the window."""
+def test_the_appended_block_does_not_repeat_the_opening(monkeypatch):
+    """The model starts with `opening`; the block carries the window once, in its caption, with no second opening."""
     Aw(monkeypatch, issues=_issues(), volume=_vol(), listing=_listing(2))
     for r in (run(dq.aw_get_data_quality("dq1")), run(dq.aw_get_data_quality_volume("dq1")),
               run(dq.aw_get_data_quality_overview())):
         md = r["verbatim_markdown"]
-        assert md.startswith("*Showing ") and r["opening"] in md.split("\n")[0]
-        assert "yesterday and today so far" in md.split("\n")[0] and "Tell me a date or range" in md.split("\n")[0]
+        assert not md.startswith("*Showing ") and "Showing " not in md and r["opening"] not in md
+        assert md.startswith("**") and "window: yesterday and today so far:" in md.split("\n")[0]
+        assert "Tell me a date" not in r["opening"] + md and "Name a monitor" not in r["opening"] + md
+
 
 
 # ---- round 3: Schema Check arrives under one name; every schema state has its own sentence
@@ -701,3 +711,157 @@ def test_volume_level_is_dash_for_a_day_without_counts():
              "finalized": False, "vsReference": None, "vsBaseline": None}]
     lines = dq._volume_lines(rows)
     assert lines[2].endswith("| - |") and lines[3].endswith("| In processing |")
+
+
+# ---------------------------------------------------------------- round 4: dates the user did not spell out
+from datetime import date  # noqa: E402
+
+TODAY = date(2026, 10, 14)  # a Wednesday
+
+
+@pytest.mark.parametrize("start,end,expected", [
+    ("10/12", "", ("2026-10-12", "2026-10-12")), ("10-12", "", ("2026-10-12", "2026-10-12")), ("Oct 12", "", ("2026-10-12", "2026-10-12")),
+    ("12 Oct", "", ("2026-10-12", "2026-10-12")), ("October 12th", "", ("2026-10-12", "2026-10-12")), ("oct. 12", "", ("2026-10-12", "2026-10-12")),
+    ("10/12/2026", "", ("2026-10-12", "2026-10-12")), ("Oct 12, 2025", "", ("2025-10-12", "2025-10-12")),
+    ("12 October 2024", "", ("2024-10-12", "2024-10-12")), ("12/30", "", ("2025-12-30", "2025-12-30")),   # a date still ahead is last year's
+    ("25/12", "", ("2025-12-25", "2025-12-25")),                                                # only day/month can read this
+    ("10/15", "", ("2026-10-15", "2026-10-15")),                                                # tomorrow somewhere in the world is allowed
+    ("monday", "", ("2026-10-12", "2026-10-12")), ("last friday", "", ("2026-10-09", "2026-10-09")), ("wednesday", "", ("2026-10-14", "2026-10-14")),
+    ("last wednesday", "", ("2026-10-07", "2026-10-07")), ("on Tue", "", ("2026-10-13", "2026-10-13")),
+    ("Oct 6 to Oct 13", "", ("2026-10-06", "2026-10-13")), ("10/12 - 10/14", "", ("2026-10-12", "2026-10-14")),
+    ("from Oct 6 through Oct 8", "", ("2026-10-06", "2026-10-08")), ("10/12", "10/14", ("2026-10-12", "2026-10-14")),
+    ("last month", "", ("2026-09-01", "2026-09-30")), ("october", "", ("2026-10-01", "2026-10-14")),
+    ("september", "", ("2026-09-01", "2026-09-30")), ("december", "", ("2025-12-01", "2025-12-31")),
+    ("october 2025", "", ("2025-10-01", "2025-10-31")),
+])
+def test_dates_the_user_did_not_spell_out(start, end, expected):
+    assert dq._expand_when(start, end, TODAY) == expected
+
+
+@pytest.mark.parametrize("text", ["today", "yesterday", "last week", "this month", "thisweek", "3d", "last 3 days", "24h",
+                                  "2026-10-05", "1791158400000", "2026-10-05T10:00:00", "banana", "13/45"])
+def test_other_spellings_pass_through_unchanged(text):
+    assert dq._expand_when(text, "", TODAY) == (text, "")
+
+
+def test_january_rollover_and_leap_day():
+    assert dq._expand_when("12/30", "", date(2027, 1, 3)) == ("2026-12-30", "2026-12-30")
+    assert dq._expand_when("Feb 29", "", date(2026, 3, 1)) == ("2024-02-29", "2024-02-29")  # the most recent real Feb 29
+
+
+def test_window_reads_a_yearless_date_as_the_most_recent_one():
+    w = dq._window("10/12", None, NOW)
+    assert (w.start, w.end, w.whole_days, w.is_default) == (dq._noon("2026-10-12"), dq._noon("2026-10-12"), True, False)
+    assert dq._window("2026-10-12", None, NOW).end == NOW  # an ISO date alone still means "until now"
+    w = dq._window("Oct 6 to Oct 8", None, NOW)
+    assert (w.start, w.end) == (dq._noon("2026-10-06"), dq._noon("2026-10-08"))
+    w = dq._window("last month", None, NOW)
+    assert (w.start, w.end) == (dq._noon("2026-09-01"), dq._noon("2026-09-30"))
+    with pytest.raises(ValueError, match="Accepted: a date"):
+        dq._window("banana", None, NOW)
+
+
+def test_the_year_is_shown_when_it_is_not_this_year(monkeypatch):
+    monkeypatch.setattr(dq, "_this_year", lambda: 2026)
+    assert dq._pretty("2024-10-12") == "Oct 12, 2024" and dq._pretty("2026-10-12") == "Oct 12"
+    info = dq._window_info(dq._window("2024-10-12", "2024-10-12"), "UTC")
+    assert "for Oct 12, 2024 (UTC; whole day)" in dq._opening(info, "x") and "Oct 12, 2024" in dq._window_text(info)
+
+
+@pytest.mark.parametrize("first,last,hint", [
+    ("2024-10-12", "2024-10-12", " The same date this year is Oct 12; ask for it if you meant this year."),
+    ("2025-10-06", "2025-10-08", " The same dates this year are Oct 6 to Oct 8; ask for them if you meant this year."),
+    ("2026-10-12", "2026-10-12", ""),                       # already this year
+    ("2025-12-30", "2026-01-02", ""),                       # not wholly in an earlier year
+    ("2025-12-30", "2025-12-30", ""),                       # the same date this year is still ahead: nothing to offer
+])
+def test_year_hint(monkeypatch, first, last, hint):
+    monkeypatch.setattr(dq, "_this_year", lambda: 2026)
+    assert dq._year_hint({"firstDay": first, "lastDay": last, "today": "2026-10-15"}) == hint
+    assert dq._year_hint({"start": "x"}) == ""
+
+
+def test_no_data_in_an_earlier_year_names_the_year_and_offers_this_year(monkeypatch):
+    empty = _issues(recordsChecked=0, subTypeDistribution={}, totalAnomalyCount=0, events=[])
+    Aw(monkeypatch, issues=empty, volume=_vol(points=[]), monitors=[_mon()], listing=_listing(2))
+    year = dq._this_year() - 2
+    r = run(dq.aw_get_data_quality("dq1", start_time=f"{year}-10-12", end_time=f"{year}-10-12"))
+    assert r["status"] == "no_data" and f"Oct 12, {year}" in r["opening"] and "The same date this year is Oct 12" in r["message"]
+    r = run(dq.aw_get_data_quality_overview(start_time=f"{year}-10-12", end_time=f"{year}-10-12"))
+    assert r["status"] == "no_data" and "The same date this year is Oct 12" in r["message"]
+    r = run(dq.aw_get_data_quality_volume("dq1", start_time=f"{year}-10-12", end_time=f"{year}-10-12"))
+    assert "The same date this year is Oct 12" in r["message"]
+    r = run(dq.aw_get_data_quality("dq1", start_time="today"))  # a current window gets no hint
+    assert "same date this year" not in r["message"]
+
+
+# ------------------------------------------------------------------------------ round 4: answers without repeats
+def test_overview_keeps_every_row_and_only_the_notes_that_apply(monkeypatch):
+    empty = _issues(recordsChecked=0, subTypeDistribution={}, totalAnomalyCount=0, events=[])
+    Aw(monkeypatch, issues=empty, volume=_vol(points=[]), listing=_listing(4, volumeDetectionEnabled=False))
+    r = run(dq.aw_get_data_quality_overview(start_time="2026-10-12"))
+    md = r["verbatim_markdown"]
+    assert r["status"] == "no_data" and md.count("| no data |") == 4  # an empty monitor keeps its row
+    assert "A record can appear in more than one type" not in md and "counts the items of Data Integrity" not in md
+    assert r["message"].startswith("No data was checked in this window for any of the 4 monitors")
+    assert "not the same as no issues" in r["message"] and r["opening"].startswith("Showing all data quality monitors")
+    Aw(monkeypatch, issues=_issues(), volume=_vol(), listing=_listing(2))
+    md = run(dq.aw_get_data_quality_overview(start_time="2026-10-05", end_time="2026-10-07"))["verbatim_markdown"]
+    assert "A record can appear in more than one type" in md  # percentages are shown, so the note applies
+
+
+def test_schema_footer_does_not_repeat_the_section_as_a_type(monkeypatch):
+    Aw(monkeypatch, issues=_issues(subTypeDistribution=_chart(_real_schema_days()), totalAnomalyCount=48, recordsChecked=960,
+                                   events=[]), monitors=[_schema_mon()])
+    md = run(dq.aw_get_data_quality("dq1", start_time="2026-10-05", end_time="2026-10-06"))["verbatim_markdown"]
+    assert "Schema Check: Schema Check." not in md and "Data Integrity: Missing Data, Field Type Mismatch." in md
+
+
+# -------------------------------------------------------------------------------- round 4: who the user means
+def _people():
+    return [_mon("mon-a", "ting", modelName="Model-X"), _mon("mon-b", "ting", modelName="Model-Y"),
+            _mon("mon-c", "demoUser", modelName="Model-X", dataSources=[{"name": "ApiLogs"}]),
+            _mon("solo", "rajat", modelName="Lonely", dataSources=[{"name": "Kafka"}])]
+
+
+@pytest.mark.parametrize("query,how,names", [
+    ("MON-A", "monitor name", ["mon-a"]), ("model-x", "model", ["mon-a", "mon-c"]), ("TING", "owner", ["mon-a", "mon-b"]),
+    ("apilogs", "data source", ["mon-c"]), ("lone", "part of a name", ["solo"]), ("mon-", "part of a name", ["mon-a", "mon-b", "mon-c"]),
+])
+def test_a_monitor_can_be_named_by_any_detail(query, how, names):
+    label, hits = aw_tools.find_monitors(_people(), query)
+    assert label == how and [m["monitorName"] for m in hits] == names
+
+
+def test_nothing_fits_and_short_queries_do_not_match_everything():
+    assert aw_tools.find_monitors(_people(), "zzz") == (None, []) and aw_tools.find_monitors(_people(), "") == (None, [])
+    assert aw_tools.find_monitors(_people(), "o") == (None, [])  # one character would match everything
+
+
+def test_owner_name_shows_that_owners_monitors_and_one_hit_is_the_report(monkeypatch):
+    mons = _people()
+    Aw(monkeypatch, issues=_issues(), volume=_vol(), monitors=mons, listing={"monitors": mons, "totalElements": 4})
+    r = run(dq.aw_get_data_quality("ting"))                      # an owner with two monitors: their overview
+    assert [m["monitorName"] for m in r["monitors"]] == ["mon-a", "mon-b"]
+    assert r["opening"].startswith('No monitor is named "ting"; it matches the owner, so here are its 2 monitors.')
+    r = run(dq.aw_get_data_quality("rajat"))                     # an owner with one monitor: that monitor's report
+    assert r["monitorName"] == "solo" and r["opening"].startswith('"rajat" was read as owner: monitor "solo" (owner: rajat). ')
+    assert r["message"].startswith('"rajat" was read as owner')
+    r = run(dq.aw_get_data_quality_volume("kafka"))              # the volume tool reads names the same way
+    assert r["monitorName"] == "solo" and "was read as data source" in r["opening"]
+    r = run(aw_tools.aw_get_data_quality_config("rajat"))        # and so does the config tool
+    assert r["monitorName"] == "solo" and r["interpreted"].startswith('"rajat" was read as owner')
+
+
+def test_overview_search_and_one_monitor_delegation(monkeypatch):
+    mons = _people()
+    Aw(monkeypatch, issues=_issues(), volume=_vol(), monitors=mons, listing={"monitors": mons, "totalElements": 4})
+    r = run(dq.aw_get_data_quality_overview(search="Model-X"))
+    assert [m["monitorName"] for m in r["monitors"]] == ["mon-a", "mon-c"] and r["opening"].startswith('"Model-X" matches the model: 2 monitors.')
+    assert "matching \"Model-X\"" in r["verbatim_markdown"].split("\n")[0]
+    one = run(dq.aw_get_data_quality_overview(search="lonely"))  # one monitor: no one-row overview
+    assert one["monitorName"] == "solo" and "monitors" not in one and one["opening"].startswith('"lonely" has one monitor. ')
+    one = run(dq.aw_get_data_quality_overview(model_name="Lonely"))
+    assert one["monitorName"] == "solo"
+    nope = run(dq.aw_get_data_quality_overview(search="qqq"))
+    assert nope["status"] == "not_found" and "qqq" in nope["message"] and "closestNames" in nope
