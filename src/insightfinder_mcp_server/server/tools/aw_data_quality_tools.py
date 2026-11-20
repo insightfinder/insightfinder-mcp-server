@@ -16,7 +16,7 @@ import calendar
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, NamedTuple, Optional
 
 try:
@@ -28,7 +28,7 @@ from ..server import mcp_server
 from .aw_labels import (ISSUE_TYPE_HELP, ISSUE_TYPES, RULE_IDS, SCHEMA_OPTIONS, SECTION_SCHEMA, SECTIONS,
                         display_name, issue_type_ids, num, ordered_types, pct, ratio, sections_by_type, signed,
                         signed_pct)
-from .aw_tools import _client, _pick, _resolve_dq_monitor
+from .aw_tools import _client, _pick, _resolve_dq_monitor, closest_names, find_monitors
 from .get_time import parse_time_parameters
 
 logger = logging.getLogger(__name__)
@@ -70,9 +70,14 @@ def _md(day: str) -> str:
     return day[5:]
 
 
+def _this_year() -> int:
+    return datetime.now(timezone.utc).year
+
+
 def _pretty(day: str) -> str:
+    """"Oct 12", with the year ("Oct 12, 2024") when it is not the current year, so a wrong year is never hidden."""
     d = datetime.strptime(day, "%Y-%m-%d")
-    return f"{d:%b} {d.day}"
+    return f"{d:%b} {d.day}" + ("" if d.year == _this_year() else f", {d.year}")
 
 
 # --------------------------------------------------------------------------------------------------- time windows
@@ -92,6 +97,84 @@ def _noon(date: str) -> int:
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
+_MONTHS = {name.lower(): i for i, name in enumerate(calendar.month_name) if name}
+_MONTHS.update({name.lower(): i for i, name in enumerate(calendar.month_abbr) if name})
+_MONTHS["sept"] = 9
+_WEEKDAYS = {name.lower(): i for i, name in enumerate(calendar.day_name)}
+_WEEKDAYS.update({"mon": 0, "tue": 1, "tues": 1, "wed": 2, "thu": 3, "thur": 3, "thurs": 3, "fri": 4, "sat": 5, "sun": 6})
+_RANGE_SEP = re.compile(r"\s+(?:to|through|until|-|\u2013|\u2014)\s+", re.I)
+_NUMERIC = re.compile(r"(\d{1,2})[/-](\d{1,2})(?:[/-](\d{4}))?")                       # 10/12, 10-12, 10/12/2026
+_MONTH_DAY = re.compile(r"([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?")  # Oct 12, October 12th, Oct 12, 2026
+_DAY_MONTH = re.compile(r"(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]{3,9})\.?(?:,?\s+(\d{4}))?")  # 12 Oct, 12 October 2026
+_WEEKDAY = re.compile(r"(?:(last|on|this)\s+)?([a-z]{3,9})")
+_MONTH_WORD = re.compile(r"(?:(last|in)\s+)?([a-z]{3,9})(?:\s+(\d{4}))?")
+WHEN_FORMS = ("a date (2026-10-05, 10/12, Oct 12, 12 October 2026), a weekday (monday, last friday), a month (october, "
+              "last month), a range (Oct 6 to Oct 13), today, yesterday, this week, last week, this month, 3d, 24h, or epoch ms")
+
+
+def _ymd(month: int, day: int, year: Optional[int], today: date) -> Optional[date]:
+    """A calendar date; without a year the most recent such date up to today (a day ahead is allowed: the owner may
+    already be in tomorrow). None when it is not a date."""
+    for y in ([year] if year else range(today.year, today.year - 5, -1)):
+        try:
+            d = date(y, month, day)
+        except ValueError:
+            continue
+        if year or d <= today + timedelta(days=1):
+            return d
+    return None
+
+
+def _one_date(text: str, today: date) -> Optional[str]:
+    """One date in a human spelling as YYYY-MM-DD, or None when the text is not one (keywords, epoch and ISO pass through)."""
+    t = re.sub(r"^(?:from|on|the)\s+", "", text.strip().lower().rstrip("."))
+    if not t:
+        return None
+    found = None
+    if m := _NUMERIC.fullmatch(t):
+        a, b = int(m.group(1)), int(m.group(2))
+        month, day = (b, a) if a > 12 >= b else (a, b)   # 25/12 can only be day/month
+        found = _ymd(month, day, int(m.group(3)) if m.group(3) else None, today)
+    elif (m := _MONTH_DAY.fullmatch(t)) and m.group(1) in _MONTHS:
+        found = _ymd(_MONTHS[m.group(1)], int(m.group(2)), int(m.group(3)) if m.group(3) else None, today)
+    elif (m := _DAY_MONTH.fullmatch(t)) and m.group(2) in _MONTHS:
+        found = _ymd(_MONTHS[m.group(2)], int(m.group(1)), int(m.group(3)) if m.group(3) else None, today)
+    elif (m := _WEEKDAY.fullmatch(t)) and m.group(2) in _WEEKDAYS:
+        back = (today.weekday() - _WEEKDAYS[m.group(2)]) % 7
+        found = today - timedelta(days=back or (7 if m.group(1) == "last" else 0))   # "last friday" is never today
+    return found.isoformat() if found else None
+
+
+def _month_range(text: str, today: date) -> Optional[tuple]:
+    """"last month", "october", "in october", "october 2025": the whole month (up to today for the current one)."""
+    t = text.strip().lower()
+    if t in ("last month", "previous month"):
+        end = today.replace(day=1) - timedelta(days=1)
+        return end.replace(day=1).isoformat(), end.isoformat()
+    m = _MONTH_WORD.fullmatch(t)
+    if not m or m.group(2) not in _MONTHS:
+        return None
+    month = _MONTHS[m.group(2)]
+    year = int(m.group(3)) if m.group(3) else (today.year if month <= today.month else today.year - 1)
+    first = date(year, month, 1)
+    end = date(year, month, calendar.monthrange(year, month)[1])
+    return first.isoformat(), (min(end, today) if first <= today else end).isoformat()
+
+
+def _expand_when(st: str, et: str, today: date) -> tuple:
+    """Human spellings in start_time / end_time as ISO dates (a range in start_time alone is split); anything
+    else is returned unchanged for the existing keyword, epoch and date-time handling."""
+    st = re.sub(r"^from\s+", "", st.strip(), flags=re.I)
+    if st and not et and len(parts := _RANGE_SEP.split(st)) == 2:
+        st, et = parts[0].strip(), parts[1].strip()
+    if st and not et and (rng := _month_range(st, today)):
+        return rng
+    first, second = _one_date(st, today), _one_date(et, today)
+    if first and not et and not _DATE.fullmatch(st):
+        second = first  # "10/12" or "last friday" alone is that one day (an ISO date alone keeps meaning "until now")
+    return first or st, second or et
+
+
 def _window(start_time: Optional[str], end_time: Optional[str], now: Optional[int] = None) -> Window:
     """The time window of a question. Default (nothing given): yesterday 00:00 to now, the Workbench's opening range.
     Keywords follow the Workbench presets: today, yesterday, this week (from Sunday), this month, last week (the 7
@@ -99,6 +182,7 @@ def _window(start_time: Optional[str], end_time: Optional[str], now: Optional[in
     dates (whole days in the owner's time zone) and epoch ms or date-times (used exactly as given)."""
     now = int(time.time() * 1000) if now is None else int(now)
     st, et = (str(start_time).strip() if start_time else ""), (str(end_time).strip() if end_time else "")
+    st, et = _expand_when(st, et, datetime.fromtimestamp(now / 1000, tz=timezone.utc).date())
     kw = re.sub(r"[\s_\-]+", "", st.lower())
     if not st and not et:
         return Window(now - DAY_MS, now, True, True, "yesterday and today so far")
@@ -137,7 +221,10 @@ def _window(start_time: Optional[str], end_time: Optional[str], now: Optional[in
         if end - start > 366 * DAY_MS:
             raise ValueError("the time range cannot be longer than 366 days")
         return Window(start, end, True, False, "the dates asked for")
-    s, e = parse_time_parameters(start_time, end_time, "UTC")  # epoch ms and date-times, used exactly as given
+    try:
+        s, e = parse_time_parameters(st or None, et or None, "UTC")  # epoch ms and date-times, used exactly as given
+    except ValueError as ex:
+        raise ValueError(f"{ex}. Accepted: {WHEN_FORMS}") from ex
     e = now if e is None else e
     s = e - DAY_MS if s is None else s
     if s > e:
@@ -176,9 +263,10 @@ def _window_info(win: Window, tz: Optional[str], days: Optional[List[str]] = Non
         last = datetime.fromtimestamp(win.end / 1000, zone).strftime("%Y-%m-%d")
         now = datetime.now(zone)
         info.update(firstDay=first, lastDay=last, includesToday=last >= now.strftime("%Y-%m-%d"),
-                    nowLocal=now.strftime("%H:%M"))
+                    nowLocal=now.strftime("%H:%M"), today=now.strftime("%Y-%m-%d"))
     elif win.whole_days and days:  # unknown zone name: the response's own day rows are the owner's dates
-        info.update(firstDay=days[0], lastDay=days[-1], includesToday=win.end >= now_ms - DAY_MS // 2, nowLocal=None)
+        info.update(firstDay=days[0], lastDay=days[-1], includesToday=win.end >= now_ms - DAY_MS // 2, nowLocal=None,
+                    today=_day(now_ms))
     else:
         info.update(start=_iso(win.start), end=_iso(win.end), timezone="UTC" if not win.whole_days else (tz or "UTC"))
     return info
@@ -198,7 +286,7 @@ def _in_progress_day(info: Dict[str, Any]) -> Optional[str]:
 
 
 def _opening(info: Dict[str, Any], scope_text: str, extra: str = "") -> str:
-    """The first sentence of the answer: what window was used and how to ask for another."""
+    """The first sentence of the answer: the scope and the window (with the year when it is not this year)."""
     if info.get("firstDay"):
         first, last = info["firstDay"], info["lastDay"]
         live = " today is still in progress" if info.get("includesToday") else ""
@@ -212,9 +300,23 @@ def _opening(info: Dict[str, Any], scope_text: str, extra: str = "") -> str:
             span = f"{_pretty(first)} to {_pretty(last)} ({info['timezone']}; whole days{',' + live if live else ''})"
     else:
         span = f"{info['start']} to {info['end']} UTC"
-    ask = (' Tell me a date or range (for example "last week" or "Oct 6 to Oct 13") if you need a different period.'
-           if info["isDefault"] else "")
-    return f"Showing {scope_text} for {span}.{ask}{extra}"
+    return f"Showing {scope_text} for {span}.{extra}"
+
+
+def _year_hint(info: Dict[str, Any]) -> str:
+    """For an answer without data in an earlier year: the same dates this year, so a wrong year is easy to correct.
+    Empty when the window is not wholly in an earlier year."""
+    first, last, today = info.get("firstDay"), info.get("lastDay"), info.get("today")
+    if not (first and last and today) or last[:4] >= today[:4]:
+        return ""
+    try:
+        a, b = (datetime.strptime(d, "%Y-%m-%d").replace(year=int(today[:4])).strftime("%Y-%m-%d") for d in (first, last))
+    except ValueError:  # Feb 29
+        return ""
+    if a > today:
+        return ""
+    return (f" The same date this year is {_pretty(a)}; ask for it if you meant this year." if a == b else
+            f" The same dates this year are {_pretty(a)} to {_pretty(b)}; ask for them if you meant this year.")
 
 
 def _window_text(info: Dict[str, Any]) -> str:
@@ -349,7 +451,8 @@ def _type_table(dg: Digest, names: List[str], in_progress: Optional[str]) -> Lis
     groups = {}
     for n in names:
         groups.setdefault(sec[n], []).append(display_name(n))
-    return lines + ["", " ".join(f"{s}: {', '.join(groups[s])}." for s in SECTIONS if s in groups)]
+    parts = [f"{s}: {', '.join(groups[s])}." for s in SECTIONS if s in groups and groups[s] != [s]]  # not "Schema Check: Schema Check."
+    return lines + (["", " ".join(parts)] if parts else [])
 
 
 def _schema_items(dg: Digest) -> int:
@@ -397,7 +500,7 @@ def _quality_parts(dg: Digest, m: Dict[str, Any], win_info: Dict[str, Any], filt
     schema = _schema_status(m, schema_n, checked)
     if checked == 0:
         status = "no_data"
-        msg = "No data was checked in this window (no records arrived, or no rules are active). This is not the same as healthy."
+        msg = "No data was checked in this window (no records arrived, or no rule was active); this is not the same as no issues."
     elif active:
         status = "no_anomalous_data" if total == 0 else "success"
         msg = (f"No anomalous data matches this filter ({num(checked)} total data were checked in the window)." if total == 0 else
@@ -407,6 +510,8 @@ def _quality_parts(dg: Digest, m: Dict[str, Any], win_info: Dict[str, Any], filt
         msg = (f"{num(quality_n)} items of anomalous data (Data Integrity and Data Consistency) in {num(checked)} total data."
                if quality_n else f"No Data Integrity or Data Consistency anomalies in {num(checked)} total data."
                if schema_n else f"{num(checked)} total data were checked and no anomalous data was found.")
+    if status in ("no_data", "no_anomalous_data"):
+        msg += _year_hint(win_info)
     if show_schema:
         msg += " " + schema["text"]
     in_progress = _in_progress_day(win_info)
@@ -497,68 +602,11 @@ def _sections(value) -> Optional[List[str]]:
     return items
 
 
-@mcp_server.tool()
-async def aw_get_data_quality(monitor_name: str,
-                              owner: Optional[str] = None,
-                              start_time: Optional[str] = None,
-                              end_time: Optional[str] = None,
-                              data_source: Optional[str] = None,
-                              fields: Optional[List[str]] = None,
-                              issue_type: Optional[str] = None,
-                              group: Optional[str] = None,
-                              day: Optional[str] = None,
-                              page: int = 1,
-                              page_size: int = 10,
-                              sections: Optional[List[str]] = None) -> Dict[str, Any]:
-    """
-    Report on ONE named DATA_QUALITY monitor in AI WatchTower (AW): data quality, schema check and volume together,
-    in the Workbench's words and layout.
-
-    Use this tool when the user names a monitor: "how is X doing", "what data quality issues does X have", which
-    types or fields fail, example records, whether X's schema check finds anything, or whether X's volume is normal.
-    monitor_name may also be a MODEL name: the tool then shows that model's monitors (use it for "issues in model M").
-    Do NOT use it when no monitor is named (use aw_get_data_quality_overview), for the rules and settings of a
-    monitor (aw_get_data_quality_config), or for why something failed (no tool here explains causes).
-
-    Words (use exactly these): "Anomalous Data / Total Data" is the number of items with a problem over the number of
-    records checked (total data); "Total N items" is the sum over the types; sections are Data Integrity, Data
-    Consistency and Schema Check; types are Missing Data, Data Outliers, Field Type Mismatch, Disqualified Data Range,
-    Custom, Inconsistency (and the schema types). Never say "flagged entries". The default window is yesterday 00:00
-    to now in the owner's time zone; a day always runs from 00:00. Begin your answer with the `opening` sentence, then
-    a short summary, then append `verbatim_markdown` as it is (do not retype the tables).
-
-    Status: success; no_anomalous_data (data was checked, none anomalous); no_data (nothing was checked in the
-    window: say so, it is not the same as healthy); not_found (the result lists `closestNames`); ambiguous (several
-    owners, ask which); error.
-
-    Args:
-        monitor_name (str): Exact monitor name.
-        owner (str, optional): Monitor owner (userName); looked up when omitted.
-        start_time (str, optional): today, yesterday, this week (from Sunday), this month, last week, "3d" / "last 3 days"
-            (3 whole days ending today), a date "2026-10-05" (whole days in the owner's time zone), epoch ms, or
-            "24h" (hours are used exactly). Default: yesterday and today so far.
-        end_time (str, optional): A date or epoch ms; a plain date includes that whole day.
-        data_source (str, optional): One data source name of the monitor (case-insensitive); an unknown name is
-            an error listing the valid ones. Default: AW uses the first data source that has data.
-        fields (list[str], optional): Only these fields.
-        issue_type (str, optional): integrity, consistency, schema, or one type: Missing Data, Data Outliers,
-            Field Type Mismatch, Disqualified Data Range, Custom, Inconsistency, Field Order Mismatch,
-            Unexpected Field, Lost Field.
-        group (str, optional): Only this group value.
-        day (str, optional): Drill into one day: "YYYY-MM-DD" (owner-local date) or a day key from an earlier result.
-        page (int): Page of example events, from 1.
-        page_size (int): Events per page, 1-50 (default 10). At most 10 rows per event and 100 in total are shown.
-        sections (list[str], optional): any of quality, schema, volume. Default: all three, or only quality when a
-            filter (issue_type, fields, group, day) is set.
-
-    When a filter is set, only the total items and the examples are filtered; the per-day table covers the whole window.
-
-    Returns:
-        {"status", "message", "opening", "window", "owner", "ownerTimezone", "totalData", "totalItems", "countsByType",
-        "daily": [{day, dayKey, totalData, items, byType}], "schemaCheck", "volume", "topFields", "fieldsAvailable",
-        "groupsAvailable", "examples": [{time, type, field, value, correctValue, group}], "paging", "truncated",
-        "verbatim_markdown"}
-    """
+async def _monitor_report(monitor_name: str, owner: Optional[str], start_time: Optional[str], end_time: Optional[str],
+                          data_source: Optional[str], fields: Optional[List[str]], issue_type: Optional[str],
+                          group: Optional[str], day: Optional[str], page: int, page_size: int,
+                          sections: Optional[List[str]], lead: str = "") -> Dict[str, Any]:
+    """Body of aw_get_data_quality; `lead` is put before the opening sentence and the message."""
     try:
         if not monitor_name:
             return {"status": "error", "message": "monitor_name is required"}
@@ -583,11 +631,13 @@ async def aw_get_data_quality(monitor_name: str,
         if err:
             return err
         m, failure = await _resolve_dq_monitor(client, monitor_name, owner)
-        if failure and failure.get("status") == "model_match":  # a model name: show the model's monitors
-            return await _overview("organization", failure["modelName"], start_time, end_time, 20,
-                                   lead=f'No monitor is named "{_cell(monitor_name)}"; it is a model, so here are its monitors. ')
+        if failure and failure.get("status") in ("model_match", "multi_match"):  # a model, owner, ...: show those monitors
+            return await _overview("organization", None, start_time, end_time, 20, lead=lead + _cell(failure["lead"]),
+                                   only={(c["userName"], c["monitorName"]) for c in failure["candidates"]})
         if failure:
             return _resolve_failure(failure)
+        lead += _cell(m.pop("_interpreted", ""))  # how a name that was not the monitor's own was read
+        monitor_name = m["monitorName"]
         source, failure = _source(m, data_source)
         if failure:
             return failure
@@ -624,9 +674,8 @@ async def aw_get_data_quality(monitor_name: str,
         scope_text = f'monitor "{name}" (owner: {_cell(m.get("userName"))})'
         res: Dict[str, Any] = {"monitorFound": True, "monitorName": name, "owner": _cell(m.get("userName")),
                                "scope": {"owner": _cell(m.get("userName"))}, "ownerTimezone": tz, "dataSource": shown_source,
-                               "window": info, "sections": secs, "opening": _opening(info, scope_text)}
-        lines = [f"*{res['opening']}*", "",
-                 f"**Data quality: {name}** (owner: {_cell(m.get('userName'))}, {_window_text(info)}, data source: {shown_source})", ""]
+                               "window": info, "sections": secs, "opening": lead + _opening(info, scope_text)}
+        lines = [f"**Data quality: {name}** (owner: {_cell(m.get('userName'))}, {_window_text(info)}, data source: {shown_source})", ""]
         status, msgs = "success", []
         if dq_res is not None:
             data = dq_res["data"]
@@ -696,11 +745,81 @@ async def aw_get_data_quality(monitor_name: str,
                 msgs.append("Volume: " + v["message"])
                 if dq_res is None:
                     status = "no_data" if v["noData"] else "success"
-        res.update(status=status, message=" ".join(msgs) or "Done.", verbatim_markdown="\n".join(lines))
+        res.update(status=status, message=lead + (" ".join(msgs) or "Done."), verbatim_markdown="\n".join(lines))
         return res
     except Exception as ex:
         logger.error(f"Error in aw_get_data_quality: {ex}")
         return {"status": "error", "message": f"Error in aw_get_data_quality: {ex}"}
+
+
+@mcp_server.tool()
+async def aw_get_data_quality(monitor_name: str,
+                              owner: Optional[str] = None,
+                              start_time: Optional[str] = None,
+                              end_time: Optional[str] = None,
+                              data_source: Optional[str] = None,
+                              fields: Optional[List[str]] = None,
+                              issue_type: Optional[str] = None,
+                              group: Optional[str] = None,
+                              day: Optional[str] = None,
+                              page: int = 1,
+                              page_size: int = 10,
+                              sections: Optional[List[str]] = None) -> Dict[str, Any]:
+    """
+    Report on ONE named DATA_QUALITY monitor in AI WatchTower (AW): data quality, schema check and volume together,
+    in the Workbench's words and layout.
+
+    Use this tool when the user names a monitor: "how is X doing", "what data quality issues does X have", which
+    types or fields fail, example records, whether X's schema check finds anything, or whether X's volume is normal.
+    monitor_name may also be a model name, an owner (user) name, a data source or part of a name, in any letter case: one
+    match is reported (the opening says how it was read), several show their overview table (use it for "issues in model M").
+    Do NOT use it when no monitor is named (use aw_get_data_quality_overview), for the rules and settings of a
+    monitor (aw_get_data_quality_config), or for why something failed (no tool here explains causes).
+
+    Words (use exactly these): "Anomalous Data / Total Data" is the number of items with a problem over the number of
+    records checked (total data); "Total N items" is the sum over the types; sections are Data Integrity, Data
+    Consistency and Schema Check; types are Missing Data, Data Outliers, Field Type Mismatch, Disqualified Data Range,
+    Custom, Inconsistency (and the schema types). Never say "flagged entries". The default window is yesterday 00:00
+    to now in the owner's time zone; a day always runs from 00:00. Begin your answer with the `opening` sentence, then
+    a short summary, then append `verbatim_markdown` as it is (do not retype the tables).
+
+    Status: success; no_anomalous_data (data was checked, none anomalous); no_data (nothing was checked in the
+    window: say so, it is not the same as healthy); not_found (the result lists `closestNames`); ambiguous (several
+    owners, ask which); error.
+
+    Args:
+        monitor_name (str): The monitor name, or a model name, owner name, data source or part of a name.
+        owner (str, optional): Monitor owner (userName); looked up when omitted.
+        start_time (str, optional): Pass the period as the user wrote it and do NOT add a year: the tool picks it (a date
+            without a year is the most recent such date, and a single date like "10/12" is that one day). today,
+            yesterday, this week (from Sunday), this month, last week, last month, a weekday ("monday", "last friday"),
+            "3d" / "last 3 days" (3 whole days ending today), a date ("2026-10-05", "10/12", "Oct 12"; whole days in the
+            owner's time zone), a range ("Oct 6 to Oct 13"), epoch ms, or "24h" (hours are used exactly). Default:
+            yesterday and today so far.
+        end_time (str, optional): A date or epoch ms; a plain date includes that whole day.
+        data_source (str, optional): One data source name of the monitor (case-insensitive); an unknown name is
+            an error listing the valid ones. Default: AW uses the first data source that has data.
+        fields (list[str], optional): Only these fields.
+        issue_type (str, optional): integrity, consistency, schema, or one type: Missing Data, Data Outliers,
+            Field Type Mismatch, Disqualified Data Range, Custom, Inconsistency, Field Order Mismatch,
+            Unexpected Field, Lost Field.
+        group (str, optional): Only this group value.
+        day (str, optional): Drill into one day: "YYYY-MM-DD" (owner-local date) or a day key from an earlier result.
+        page (int): Page of example events, from 1.
+        page_size (int): Events per page, 1-50 (default 10). At most 10 rows per event and 100 in total are shown.
+        sections (list[str], optional): any of quality, schema, volume. Default: all three, or only quality when a
+            filter (issue_type, fields, group, day) is set.
+
+    When a filter is set, only the total items and the examples are filtered; the per-day table covers the whole window.
+
+    Returns:
+        {"status", "message", "opening", "window", "owner", "ownerTimezone", "totalData", "totalItems", "countsByType",
+        "daily": [{day, dayKey, totalData, items, byType}], "schemaCheck", "volume", "topFields", "fieldsAvailable",
+        "groupsAvailable", "examples": [{time, type, field, value, correctValue, group}], "paging", "truncated",
+        "verbatim_markdown"}
+    """
+    return await _monitor_report(monitor_name, owner, start_time, end_time, data_source, fields, issue_type, group, day,
+                                 page, page_size, sections)
 
 
 @mcp_server.tool()
@@ -724,10 +843,13 @@ async def aw_get_data_quality_volume(monitor_name: str,
     Status: success; no_data (no counts at all in the window); not_found (lists `closestNames`); ambiguous; error.
 
     Args:
-        monitor_name (str): Exact monitor name.
+        monitor_name (str): The monitor name, or a model name, owner name, data source or part of a name.
         owner (str, optional): Monitor owner (userName); looked up when omitted.
-        start_time (str, optional): today, yesterday, this week, this month, last week, "3d" / "last 3 days", a date
-            "2026-10-05", epoch ms or "24h". Default: yesterday and today so far (the owner's days start at 00:00).
+        start_time (str, optional): Pass the period as the user wrote it and do NOT add a year: the tool picks it (a date
+            without a year is the most recent such date, and a single date like "10/12" is that one day). today,
+            yesterday, this week, this month, last week, last month, a weekday, "3d" / "last 3 days", a date
+            ("2026-10-05", "10/12", "Oct 12"), a range ("Oct 6 to Oct 13"), epoch ms or "24h". Default: yesterday and
+            today so far (the owner's days start at 00:00).
         end_time (str, optional): A date or epoch ms; a plain date includes that whole day.
         group (str, optional): One group value; default is all groups summed (Total).
         data_source (str, optional): One data source name of the monitor (case-insensitive); an unknown name is
@@ -749,11 +871,13 @@ async def aw_get_data_quality_volume(monitor_name: str,
         if err:
             return err
         m, failure = await _resolve_dq_monitor(client, monitor_name, owner)
-        if failure and failure.get("status") == "model_match":  # a model name: show the model's monitors
-            return await _overview("organization", failure["modelName"], start_time, end_time, 20,
-                                   lead=f'No monitor is named "{_cell(monitor_name)}"; it is a model, so here are its monitors. ')
+        if failure and failure.get("status") in ("model_match", "multi_match"):  # a model, owner, ...: show those monitors
+            return await _overview("organization", None, start_time, end_time, 20, lead=_cell(failure["lead"]),
+                                   only={(c["userName"], c["monitorName"]) for c in failure["candidates"]})
         if failure:
             return _resolve_failure(failure)
+        lead = _cell(m.pop("_interpreted", ""))
+        monitor_name = m["monitorName"]
         source, failure = _source(m, data_source)
         if failure:
             return failure
@@ -766,14 +890,14 @@ async def aw_get_data_quality_volume(monitor_name: str,
         v = _volume_parts(d)
         name = _cell(m.get("monitorName"))
         shown_source = _cell(data_source.strip()) if data_source else DEFAULT_SOURCE
-        opening = _opening(info, f'monitor "{name}" (owner: {_cell(m.get("userName"))})')
-        lines = [f"*{opening}*", "",
-                 f"**Volume: {name}** (owner: {_cell(m.get('userName'))}, {_window_text(info)}, data source: {shown_source}, "
+        opening = lead + _opening(info, f'monitor "{name}" (owner: {_cell(m.get("userName"))})')
+        message = lead + v["message"] + (_year_hint(info) if v["noData"] else "")
+        lines = [f"**Volume: {name}** (owner: {_cell(m.get('userName'))}, {_window_text(info)}, data source: {shown_source}, "
                  f"group: {_cell(group or 'Total')}, mode: {d.get('detectionMode')}, sensitivity: {d.get('sensitivity')})", "",
-                 v["message"], ""] + _volume_lines(v["rows"])
+                 message, ""] + _volume_lines(v["rows"])
         if len(d.get("points") or []) > MAX_DAYS:
             lines.append(f"\nShowing the latest {MAX_DAYS} of {len(d['points'])} days.")
-        return {"status": "no_data" if v["noData"] else "success", "message": v["message"], "monitorFound": True,
+        return {"status": "no_data" if v["noData"] else "success", "message": message, "monitorFound": True,
                 "opening": opening, "window": info,
                 "monitorName": name, "owner": _cell(m.get("userName")), "scope": {"owner": _cell(m.get("userName"))},
                 "dataSource": shown_source, "ownerTimezone": tz, "group": _cell(group or "Total"),
@@ -789,8 +913,11 @@ async def aw_get_data_quality_volume(monitor_name: str,
 
 
 async def _overview(scope: str, model_name: Optional[str], start_time: Optional[str], end_time: Optional[str],
-                    max_monitors: int, lead: str = "") -> Dict[str, Any]:
-    """Body of aw_get_data_quality_overview; `lead` is put before the opening sentence and the message."""
+                    max_monitors: int, lead: str = "", search: Optional[str] = None,
+                    only: Optional[set] = None) -> Dict[str, Any]:
+    """Body of aw_get_data_quality_overview; `lead` is put before the opening sentence and the message. `search` is
+    what the user called the monitors (model, owner, data source, name or part of one); `only` is a set of
+    (owner, monitor name) a caller already chose."""
     try:
         scope = (scope or "").lower()
         if scope not in ("mine", "organization") or not 1 <= max_monitors <= 50:
@@ -807,9 +934,25 @@ async def _overview(scope: str, model_name: Optional[str], start_time: Optional[
             return _failure(res if res["status"] != "success" else {"status": "empty"})
         listed = sorted(res["data"].get("monitors") or [],
                         key=lambda m: (str(m.get("monitorName", "")).lower(), str(m.get("userName", "")).lower()))
+        if only is not None:
+            listed = [m for m in listed if (m.get("userName"), m.get("monitorName")) in only]
         if model_name:
             listed = [m for m in listed if str(m.get("modelName", "")).lower() == model_name.strip().lower()]
-        total = max(res["data"].get("totalElements", len(listed)), len(listed)) if not model_name else len(listed)
+        matched = None
+        if search:
+            matched, listed = find_monitors(listed, search)
+            if not listed:
+                close = closest_names(res["data"].get("monitors") or [], search)
+                return {"status": "not_found", "scope": scope, "closestNames": close,
+                        "message": f'No data quality monitors match "{_cell(search)}" (monitor name, model, owner or data source).'
+                                   + (" Closest names: " + ", ".join(_cell(n) for n in close) + "." if close else "")}
+            lead = lead or (f'"{_cell(search)}" matches the {matched}: {len(listed)} monitors. ' if len(listed) > 1 else "")
+        filtered = bool(model_name or search or only is not None)
+        if filtered and len(listed) == 1:  # one monitor: its own report says more than a one-row overview
+            one = listed[0]
+            return await _monitor_report(one["monitorName"], one.get("userName"), start_time, end_time, None, None, None,
+                                         None, None, 1, 10, None, lead=lead or f'"{_cell(model_name or search)}" has one monitor. ')
+        total = len(listed) if filtered else max(res["data"].get("totalElements", len(listed)), len(listed))
         if not listed:
             return {"status": "not_found", "scope": scope, "message": f"No data quality monitors are visible with scope '{scope}'"
                     + (f" for model '{_cell(model_name)}'" if model_name else "") + "."}
@@ -866,20 +1009,28 @@ async def _overview(scope: str, model_name: Optional[str], start_time: Optional[
         info = _window_info(win, tz, seen_days)
         if len(set(zones)) > 1:
             info["note"] = "Monitors have different owner time zones; each monitor's days start at its owner's 00:00."
-        scope_text = ("the monitors of model " + _cell(model_name)) if model_name else \
-            ("all data quality monitors in the organization" if scope == "organization" else "your data quality monitors")
-        scope_text += f" ({len(picked)} of {total} queried)" if not_shown else f" ({len(picked)})"
-        top_name = next((r["monitorName"] for r in ok if r["totalItems"]), None)
-        extra = f' Name a monitor (for example "{top_name}") and I will show its data quality, schema check and volume.' if top_name \
-            else " Name a monitor and I will show its data quality, schema check and volume."
+        if model_name:
+            what = f"the monitors of model {_cell(model_name)}"
+        elif search:
+            what = f'the monitors matching "{_cell(search)}"'
+        elif only is not None:
+            what = "the monitors you asked about"
+        else:
+            what = "all data quality monitors in the organization" if scope == "organization" else "your data quality monitors"
+        what += f" ({len(picked)} of {total} queried)" if not_shown else f" ({len(picked)})"
         n_nodata = sum(1 for r in ok if not r["totalData"])
         msg = (f"{num(items_all)} items of anomalous data in {num(data_all)} total data across {len(ok)} of {len(picked)} monitors queried; "
                f"{len(ok) - n_nodata} monitors had data checked and {n_nodata} had no data in this window"
                + (f", {len(rows) - len(ok)} failed." if len(rows) > len(ok) else ".")
-               if data_all else f"No data was checked in this window for any of the {len(picked)} monitors queried.")
-        opening = lead + _opening(info, scope_text, extra)
+               if data_all else f"No data was checked in this window for any of the {len(picked)} monitors queried "
+               "(no records arrived, or no rule was active); this is not the same as no issues.")
+        if status in ("no_data", "no_anomalous_data"):
+            msg += _year_hint(info)
+        opening = lead + _opening(info, what)
         msg = lead + msg
-        lines = [f"*{opening}*", "", f"**Data quality overview** ({scope}, {_window_text(info)})", "",
+        caption = f"{scope}, {'model ' + _cell(model_name) + ', ' if model_name else ''}" \
+                  f"{'matching ' + chr(34) + _cell(search) + chr(34) + ', ' if search else ''}{_window_text(info)}"
+        lines = [f"**Data quality overview** ({caption})", "",
                  "| Monitor | Model | Owner | Anomalous Data / Total Data | Top type | Schema Check | Volume |",
                  "|---|---|---|---|---|---|---|"]
         for r in rows:
@@ -890,8 +1041,14 @@ async def _overview(scope: str, model_name: Optional[str], start_time: Optional[
                          ratio(r["totalItems"], r["totalData"]) if r["totalData"] else "no data",
                          r["topType"] or "-", r["schemaCheck"], r["volume"]]
             lines.append("| " + " | ".join(cells) + " |")  # every cell is already sanitized
-        lines += ["", "Anomalous Data / Total Data counts the items of Data Integrity and Data Consistency; the Schema Check "
-                  "column counts schema items separately. " + MIXED_NOTE]
+        notes = []  # only the notes that apply to the rows above
+        if any(r.get("schemaItems") or r.get("schemaState") == "enabled_clean" for r in ok):
+            notes.append("Anomalous Data / Total Data counts the items of Data Integrity and Data Consistency; the Schema Check "
+                         "column counts schema items separately.")
+        if any(r.get("totalItems") for r in ok):
+            notes.append(MIXED_NOTE)
+        if notes:
+            lines += ["", " ".join(notes)]
         if not_shown:
             lines.append(f"\n{not_shown} more not shown (raise max_monitors, up to 50).")
         return {"status": status, "message": msg, "opening": opening, "window": info,
@@ -907,37 +1064,43 @@ async def aw_get_data_quality_overview(scope: str = "organization",
                                        model_name: Optional[str] = None,
                                        start_time: Optional[str] = None,
                                        end_time: Optional[str] = None,
-                                       max_monitors: int = 20) -> Dict[str, Any]:
+                                       max_monitors: int = 20,
+                                       search: Optional[str] = None) -> Dict[str, Any]:
     """
     All DATA_QUALITY monitors in AI WatchTower (AW) at a glance: data quality, schema check and volume in one table.
 
-    Use this tool when NO monitor is named: "what data quality issues do we have", "is volume normal", "what about the
-    schema check", "which monitors have problems", or a question about one model's monitors (model_name). One call
-    answers all three topics: pick the column the user asked about for your summary. Do NOT use it when a monitor is
-    named (use aw_get_data_quality). Table columns: Monitor, Model, Owner, Anomalous Data / Total Data (the items with
-    a problem over the records checked), Top type, Schema Check (Enabled with its anomalous / total, or Disabled) and
-    Volume (the worst Level in the window: Normal, Warning, Critical, In processing, or Off). Use exactly these words;
-    never say "flagged entries". Rows are ranked by items, worst first. Scope "organization" lists every monitor the
-    user's role may see; "mine" only the user's own. Monitors are taken in name order, at most max_monitors are
-    queried and the rest are counted as "not shown". One monitor that fails shows its error and does not fail the call.
-    Never say something applies to "all monitors" unless the table covers all of them.
+    Use this tool when NO single monitor is named: "what data quality issues do we have", "is volume normal", "what
+    about the schema check", "which monitors have problems", or a question about the monitors of one model, one owner
+    (user) or one data source (search). One call answers all three topics: pick the column the user asked about for
+    your summary. Do NOT use it when one monitor is named (use aw_get_data_quality). Table columns: Monitor, Model,
+    Owner, Anomalous Data / Total Data (the items with a problem over the records checked), Top type, Schema Check
+    (Enabled with its anomalous / total, or Disabled) and Volume (the worst Level in the window: Normal, Warning,
+    Critical, In processing, or Off). Use exactly these words; never say "flagged entries". Rows are ranked by items,
+    worst first. Scope "organization" lists every monitor the user's role may see; "mine" only the user's own.
+    Monitors are taken in name order, at most max_monitors are queried and the rest are counted as "not shown". One
+    monitor that fails shows its error and does not fail the call. Never say something applies to "all monitors"
+    unless the table covers all of them.
 
-    Begin your answer with the `opening` sentence (it states the window and how to ask for another), then a short
-    summary of the topic asked, then append `verbatim_markdown` as it is. End by inviting the user to name a monitor
-    for its data quality, schema check and volume.
+    Begin your answer with the `opening` sentence, then a short summary of the topic asked, then append
+    `verbatim_markdown` as it is. End by inviting the user to name a monitor for its data quality, schema check and
+    volume. If `search` matches exactly one monitor, the result is that monitor's own report.
 
     Args:
         scope (str): "organization" (default) or "mine".
         model_name (str, optional): Only the monitors of this model (case-insensitive).
-        start_time (str, optional): today, yesterday, this week, this month, last week, "3d" / "last 3 days", a date
-            "2026-10-05", epoch ms or "24h". Default: yesterday and today so far (each owner's days start at 00:00).
+        start_time (str, optional): Pass the period as the user wrote it and do NOT add a year: the tool picks it
+            (a date without a year is the most recent such date, and a single date like "10/12" is that one day). today, yesterday, this week, this month, last week,
+            last month, a weekday ("monday"), "3d" / "last 3 days", a date ("2026-10-05", "10/12", "Oct 12"), a
+            range ("Oct 6 to Oct 13"), epoch ms or "24h". Default: yesterday and today so far (each owner's days
+            start at 00:00).
         end_time (str, optional): A date or epoch ms; a plain date includes that whole day.
         max_monitors (int): Monitors to query, 1-50 (default 20).
+        search (str, optional): What the user called the monitors: a model, an owner (user name), a data source, a
+            monitor name or part of one, in any letter case.
 
     Returns:
         {"status": "success" | "no_data" | "no_anomalous_data" | "not_found" | "error", "message", "opening", "window",
         "scope", "monitors": [{monitorName, owner, model, version, dataSource, status, totalItems, totalData,
         topType, schemaCheck, volume, message}], "monitorsTotal", "notShown", "verbatim_markdown"}
     """
-    return await _overview(scope, model_name, start_time, end_time, max_monitors)
-
+    return await _overview(scope, model_name, start_time, end_time, max_monitors, search=search)
