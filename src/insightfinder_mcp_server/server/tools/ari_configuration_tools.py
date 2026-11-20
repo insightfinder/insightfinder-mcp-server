@@ -27,6 +27,9 @@ LLM_SERVER_URLS = {
 
 _ARI_BASE = "/api/external/v1"
 
+# The tenant's own OpenAI-compatible server: any model name, a required server URL, optional key.
+CUSTOM_MODEL_TYPE = "Custom"
+
 
 def _get_api_client():
     api_client = get_current_api_client()
@@ -87,6 +90,9 @@ async def getARIModelInfo(modelType: Optional[str] = None) -> Dict[str, Any]:
     - To discover which LLM providers (OpenAI, Anthropic, Gemini) are supported
     - To list available model versions for a specific provider before configuring ARI
     - To look up valid modelVersion values required by setupARIConfiguration
+
+    The "Custom" type has no version list: its modelVersion is whatever model name the
+    user's own server serves.
 
     Args:
         modelType: Optional. If omitted, returns all supported provider types.
@@ -209,7 +215,12 @@ async def setupARIConfiguration(
     - To configure which LLM model ARI should use (new setup)
     - To change the active model, API key, or server URL (update existing config)
 
-    **Supported model types:** OpenAI, Anthropic, Gemini
+    **Supported model types:** OpenAI, Anthropic, Gemini, Custom
+
+    **Custom:** the user's own OpenAI-compatible server (vLLM, Ollama, LiteLLM, ...).
+    modelVersion is the model name that server serves (not checked against a list),
+    llmServerUrl is required (its OpenAI-compatible base, usually ending in /v1), and
+    llmApiKey may be empty when the server has no auth.
 
     **Default LLM server URLs (auto-selected from modelType if not provided):**
     - OpenAI    → https://openai.com
@@ -220,7 +231,7 @@ async def setupARIConfiguration(
 
     Args:
         modelType: LLM provider. One of: OpenAI, Anthropic, Gemini (required)
-        llmApiKey: API key for the LLM provider (required)
+        llmApiKey: API key for the LLM provider (required; may be empty for Custom)
         modelVersion: Model version ID from the provider's versions list (required).
                       Must match a value in "versions" (not "modelVersionDisplayNames").
         mcpApiKey: API key for the MCP server (required)
@@ -256,6 +267,14 @@ async def setupARIConfiguration(
             "validModelTypes": valid_types,
         }
     modelType = matched_type
+    is_custom = modelType.lower() == CUSTOM_MODEL_TYPE.lower()
+
+    if is_custom and not llmServerUrl:
+        return {
+            "status": "error",
+            "message": ("llmServerUrl is required for Custom: the OpenAI-compatible base URL "
+                        "of your model server (for example https://llm.example.com/v1)."),
+        }
 
     # Resolve llmServerUrl
     if not llmServerUrl:
@@ -269,12 +288,19 @@ async def setupARIConfiguration(
                 ),
             }
 
-    # Validate modelVersion against the versions list (not display names)
-    valid_versions, _, err = await _fetch_valid_versions(base_url, headers, modelType)
-    if err:
-        return err
+    # Validate modelVersion against the versions list (not display names). Custom has no list:
+    # the model name is whatever the user's own server serves, so only presence is checked.
+    if is_custom:
+        valid_versions = []
+        if not modelVersion:
+            return {"status": "error",
+                    "message": "modelVersion (the model name your server serves) is required for Custom."}
+    else:
+        valid_versions, _, err = await _fetch_valid_versions(base_url, headers, modelType)
+        if err:
+            return err
 
-    if modelVersion not in valid_versions:
+    if not is_custom and modelVersion not in valid_versions:
         return {
             "status": "error",
             "message": (
